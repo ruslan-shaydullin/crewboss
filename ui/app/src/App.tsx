@@ -75,7 +75,7 @@ export default function App() {
         onCancel={() => setConfirm(null)} onOk={(reason) => { const f = confirm.onOk; setConfirm(null); f(reason) }}
         withInput={confirm.withInput} />}
       {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
-      {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} ask={ask} onToast={toast} />}
+      {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} onToast={toast} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} />}
     </div>
@@ -423,10 +423,9 @@ function Modal({ title, body, onCancel, onOk, withInput }: {
   )
 }
 
-function NewIssueModal({ state, onClose, ask, onToast }: {
+function NewIssueModal({ state, onClose, onToast }: {
   state: State | null
   onClose: () => void
-  ask: (title: string, body: string, onOk: () => void) => void
   onToast: (msg: string, err?: boolean) => void
 }) {
   const [kind, setKind] = useState<'charter' | 'task'>('charter')
@@ -439,6 +438,7 @@ function NewIssueModal({ state, onClose, ask, onToast }: {
   const [description, setDescription] = useState('')
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
 
@@ -446,17 +446,21 @@ function NewIssueModal({ state, onClose, ask, onToast }: {
     ? !!(title.trim() && what.trim() && why.trim())
     : !!(title.trim() && description.trim() && charterN)
 
-  const handleSubmit = () => {
-    if (!isValid) return
+  const handleSubmit = async () => {
+    if (!isValid || submitting) return
     const p: IssuePayload = kind === 'charter'
       ? { kind: 'charter', title, what, why, scope, constraints, acceptance }
       : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined }
-    ask(`Create ${kind}`, `Create a new ${kind} issue titled "${title}"?`, () => {
-      createIssue(p).then((r) => {
-        onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
-        if (r.ok) onClose()
-      }).catch((e: unknown) => onToast('request failed: ' + String(e), true))
-    })
+    setSubmitting(true)
+    try {
+      const r = await createIssue(p)
+      onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
+      if (r.ok) onClose()
+    } catch (e: unknown) {
+      onToast('request failed: ' + String(e), true)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -493,7 +497,7 @@ function NewIssueModal({ state, onClose, ask, onToast }: {
         )}
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" disabled={!isValid} onClick={handleSubmit}>Create</button>
+          <button className="btn pri" disabled={!isValid || submitting} onClick={handleSubmit}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </div>
