@@ -53,6 +53,20 @@ Drop-in Claude Code config реализующий паттерн **crewboss** (r
 require approvals + required checks + up-to-date + dismiss-stale-approvals) — это
 серверный якорь, который держит даже там, где локальный хук обходится bypass.
 
+## Решение «два лаунчера» (tech-lead 2026-06-11, reversible)
+
+| Лаунчер | Статус | Расположение |
+|---|---|---|
+| `crewboss-launcher-gh.sh` | **CANONICAL** (боевой) | `_box-snapshot/cbnet/`→`reference/runtime/` (#65) |
+| `crewboss-launcher.sh` | **LEGACY** (Arch-2 ref) | `reference/launcher/crewboss-launcher.sh` |
+
+Боевой лаунчер работает через GitHub-board (issues+labels), поддерживает фоновый параллелизм
+и kill-switch флаг (`run/kill_switch`). Arch-2-референс (worktree+foreground, kill-файл
+`.crewboss-launcher.stop`) остаётся в `reference/launcher/` пока тесты `launcher-*.test.sh`
+не перенесены на gh-версию. **НЕ УДАЛЯТЬ** legacy-файл — тесты зависят от него.
+
+Runtime-манифест: `reference/runtime-manifest.tsv` (sha256 + статус canonical/pending-backport).
+
 ## Статус
 
 - **chunk-1:** identity/tool-слой — **5 agent-файлов** (executor/task-helper/tech-lead/boss/analyst) + dev-assistant default + базовый `settings.json`. ✅

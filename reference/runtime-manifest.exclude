@@ -1,0 +1,14 @@
+# reference/runtime-manifest.exclude — snapshot files explicitly NOT in the runtime manifest.
+# Format: <filename>  <reason>
+# Source: _box-snapshot/cbnet/ (67 files, 2026-06-11, operator delivery #61)
+#
+# Each line accounts for a snapshot file that is NOT a deployed runtime artifact:
+# not needed on production boxes, run-state/log/secret placeholder, or historical probe-only.
+# Policy: only exclude files that are clearly not runtime (profiling payloads, one-shot probes).
+# Ad-hoc operator scripts (run-charter.sh, run-rework.sh, watch-rework.sh) go in the manifest
+# as pending-backport rather than here, because they are operationally invoked on the box.
+payload-claude.sh	seccomp profiling payload — runs INSIDE jail for syscall surface capture (R3c probe only); not deployed as a production runtime file
+payload-edit.sh	seccomp profiling payload — inside-jail file-edit probe for strace capture (R4 discovery); not a deployed runtime file
+payload-exec.sh	seccomp profiling payload — inside-jail exec probe for strace capture (R4 discovery); not a deployed runtime file
+payload-git.sh	seccomp profiling payload — inside-jail git/gh probe for strace capture (R4 discovery); not a deployed runtime file
+probe.sh	syscall probe script — runs INSIDE jail during seccomp surface profiling only; not a deployed runtime file
