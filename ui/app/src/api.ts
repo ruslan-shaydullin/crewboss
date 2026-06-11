@@ -118,6 +118,19 @@ export async function deleteComment(n: number, commentId: string): Promise<CmdRe
   }
 }
 
+export async function resolveDecision(n: number, decisionText: string): Promise<CmdResult> {
+  try {
+    const r = await fetch(config.url + '/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ action: 'resolve-decision', number: n, decision_text: decisionText }),
+    })
+    return (await r.json()) as CmdResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
 export async function setCheck(n: number, index: number, checked: boolean): Promise<CmdResult> {
   try {
     const r = await fetch(config.url + '/api/command', {
