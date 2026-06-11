@@ -35,10 +35,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHABLE="$HERE/launchable.sh"
 
 ONCE=0; DRY=0; BOARD_FILE=""
+# CREWBOSS_CHARTER can be set via env or --charter N; scopes the run to leaves of charter N only.
+CHARTER_SCOPE="${CREWBOSS_CHARTER:-}"
 while [ $# -gt 0 ]; do case "$1" in
   --once) ONCE=1 ;; --dry-run) DRY=1 ;; --board-file) BOARD_FILE="$2"; shift ;;
+  --charter) CHARTER_SCOPE="$2"; shift ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; shift; done
+export CREWBOSS_CHARTER="$CHARTER_SCOPE"
 
 launched_total=0
 log(){ echo "[launcher $LAUNCHER_ID] $*"; }
