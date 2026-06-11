@@ -3,8 +3,9 @@
 > vite --port 5500 --strictPort
 
 
-  VITE v6.4.3  ready in 88 ms
+  VITE v6.4.3  ready in 89 ms
 
   ➜  Local:   http://localhost:5500/
   ➜  Network: http://192.168.31.161:5500/
   ➜  Network: http://198.18.0.1:5500/
+10:43:59 PM [vite] (client) hmr update /src/App.tsx
