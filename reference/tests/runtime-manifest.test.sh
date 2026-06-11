@@ -141,67 +141,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 4: pending-backport sanity (known-minimum 18 names + marker-grep-gate = 19)
+# Test 4: backport completeness — NO pending-backport rows (tightened by #65)
 # ---------------------------------------------------------------------------
-echo "=== Test 4: pending-backport sanity ==="
-# Known minimum: 18 names from charter #60 analysis + marker-grep-gate (run-gov-gatefire.sh)
-KNOWN_MIN=(
-  proxy.py
-  bridge.py
-  redact.pl
-  crewboss-spawn.sh
-  crewboss-prep-spawn.sh
-  crewboss-prep-spawn-gh.sh
-  crewboss-launcher.sh
-  crewboss-launcher-gh.sh
-  board-gh.sh
-  launchable.sh
-  labels-setup.sh
-  gen-policy.sh
-  claude.kafel
-  crewboss-doctor.sh
-  charter-leaf-prep.sh
-  rework-prep.sh
-  start-stack.sh
-  crewboss-api.py
-  run-gov-gatefire.sh
-)
+# RED condition: any pending-backport row exists in the manifest (state before #65 backport)
+# GREEN condition: all 13 reference/runtime/ files are canonical; zero pending-backport rows.
+echo "=== Test 4: backport completeness (no pending-backport rows) ==="
 if [ ! -f "$MANIFEST" ]; then
-  no "manifest missing — skipping known-minimum check"
+  no "manifest missing — skipping backport-completeness check"
 else
   t4_fail=0
-  for name in "${KNOWN_MIN[@]}"; do
-    found=$(grep -v '^[[:space:]]*#' "$MANIFEST" | \
-            awk -F'\t' -v n="$name" '
-              {
-                p = $1; gsub(/\r/, "", p)
-                sub(/.*\//, "", p)
-                if (p == n) { print; exit }
-              }')
-    if [ -z "$found" ]; then
-      printf '    MISSING from manifest: %s\n' "$name"
+  # Check 1: no pending-backport rows in data (comment lines excluded)
+  pending_rows=$(grep -v '^[[:space:]]*#' "$MANIFEST" | \
+                 awk -F'\t' 'NF==4 && $3=="pending-backport"')
+  if [ -n "$pending_rows" ]; then
+    echo "$pending_rows" | while IFS=$'\t' read -r rp sha st pu; do
+      printf '    STILL PENDING: %s\n' "$rp"
+    done
+    pending_count=$(echo "$pending_rows" | wc -l | tr -d ' ')
+    no "$pending_count pending-backport row(s) remain — backport incomplete"
+    t4_fail=$((t4_fail+1))
+  fi
+  # Check 2: all 13 reference/runtime/ canonical targets exist on disk + have canonical status
+  RUNTIME_TARGETS=(
+    charter-leaf-prep.sh
+    claude.kafel
+    crewboss-launcher-gh.sh
+    crewboss-prep-spawn-gh.sh
+    crewboss-spawn.sh
+    proxy.py
+    rework-prep.sh
+    run-charter.sh
+    run-gov-gatefire.sh
+    run-rework.sh
+    start-api.sh
+    start-stack.sh
+    watch-rework.sh
+  )
+  for name in "${RUNTIME_TARGETS[@]}"; do
+    rp="reference/runtime/$name"
+    status_in_manifest=$(grep -v '^[[:space:]]*#' "$MANIFEST" | \
+      awk -F'\t' -v p="$rp" '$1==p {print $3; exit}')
+    if [ -z "$status_in_manifest" ]; then
+      printf '    NOT IN MANIFEST: %s\n' "$rp"
+      t4_fail=$((t4_fail+1))
+    elif [ "$status_in_manifest" != "canonical" ]; then
+      printf '    WRONG STATUS: %s (got "%s", want "canonical")\n' "$rp" "$status_in_manifest"
+      t4_fail=$((t4_fail+1))
+    fi
+    if [ ! -f "$REPO_ROOT/$rp" ]; then
+      printf '    FILE MISSING ON DISK: %s\n' "$rp"
       t4_fail=$((t4_fail+1))
     fi
   done
-  # marker-grep-gate MUST be pending-backport specifically
-  mggate_status=$(grep -v '^[[:space:]]*#' "$MANIFEST" | \
-    awk -F'\t' '
-      {
-        p = $1; gsub(/\r/, "", p); sub(/.*\//, "", p)
-        if (p == "run-gov-gatefire.sh") { print $3; exit }
-      }' | \
-    head -1 | tr -d '[:space:]')
-  if [ -z "$mggate_status" ]; then
-    printf '    marker-grep-gate (run-gov-gatefire.sh) not found in manifest\n'
-    t4_fail=$((t4_fail+1))
-  elif [ "$mggate_status" != "pending-backport" ]; then
-    printf '    marker-grep-gate status is "%s", want "pending-backport"\n' "$mggate_status"
-    t4_fail=$((t4_fail+1))
-  fi
   if [ "$t4_fail" -eq 0 ]; then
-    ok "all 19 known-minimum names present; marker-grep-gate (run-gov-gatefire.sh) is pending-backport"
+    ok "no pending-backport rows; all 13 reference/runtime/ files present + canonical in manifest"
   else
-    no "$t4_fail known-minimum name(s) missing or marker-grep-gate not pending-backport"
+    no "backport completeness check failed ($t4_fail assertion(s))"
   fi
 fi
 
