@@ -23,6 +23,7 @@ jq -r '
   (map({key:(.number|tostring), value:.}) | from_entries) as $by
   | .[]
   | select(.state == "OPEN")
+  | select( [.labels[].name] | any(. == "type:agent") )
   | . as $leaf
   | (numsAfter(.body; "Charter") | first) as $cN
   | select($cN != null)
