@@ -152,7 +152,7 @@ body {
 .toast { background:var(--raise); border:1px solid var(--line2); padding:11px 15px; border-radius:11px; animation:rise .25s ease; max-width:340px; font-size:13px; box-shadow:var(--shadow) }
 .toast.err { border-color:rgba(240,103,106,.5); color:#f0676a }
 .toast.exiting { animation:toast-out .28s ease-in forwards }
-.modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:60; animation:fade-in .18s ease }
+.modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:80; animation:fade-in .18s ease }
 .modal { background:linear-gradient(180deg,var(--panel),#0a0a0d); border:1px solid var(--line2); border-radius:var(--r); padding:24px; max-width:440px; width:calc(100% - 40px); box-shadow:0 30px 80px -20px rgba(0,0,0,.9); animation:scale-in .18s cubic-bezier(.2,.7,.2,1) }
 .modal h3 { margin:0 0 9px; font-weight:640; letter-spacing:-0.02em } .modal p { color:var(--mut2); margin:0 0 20px; line-height:1.55 }
 .m-actions { display:flex; gap:10px; justify-content:flex-end }
