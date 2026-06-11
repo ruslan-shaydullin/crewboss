@@ -92,7 +92,8 @@ cmd_run(){
                 # normally-finished spawn before route-finished could route it.
     while :; do
       # kill-switch: stop the loop now (running spawns finish on their own / next reconcile).
-      [ -f "$RUN/kill_switch" ] && { log "kill-switch present -> stop"; break; }
+      # exit 42: kill-switch-blocked (machine-readable; hint: unkill to clear the flag).
+      [ -f "$RUN/kill_switch" ] && { log "kill-switch present — run blocked (hint: unkill to clear $RUN/kill_switch)"; exit 42; }
       # route finished background spawns (by status.json phase; phase=unknown -> treat as crash/fail)
       for d in "$STATE"/*/; do [ -e "$d" ] || continue; id=$(basename "$d"); pid=$(sget "$id" pid)
         { [ -n "$pid" ] && [ "$pid" != PENDING ]; } || continue

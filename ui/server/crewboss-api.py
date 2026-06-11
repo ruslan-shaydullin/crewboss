@@ -200,6 +200,9 @@ def do_command(body):
     elif a=="kill":   flag("kill_switch",True);  return {"ok":True,"msg":"kill-switch on"}
     elif a=="unkill": flag("kill_switch",False); return {"ok":True,"msg":"kill-switch off"}
     elif a=="run":
+        ks = os.path.join(RUN, "kill_switch")
+        if os.path.exists(ks):
+            return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
         os.makedirs(RUN,exist_ok=True)
         subprocess.Popen(["bash", os.path.join(CB_HOME,"crewboss-launcher-gh.sh"),"run"],
                          env=os.environ, stdout=open(os.path.join(RUN,"launcher.out"),"a"),
