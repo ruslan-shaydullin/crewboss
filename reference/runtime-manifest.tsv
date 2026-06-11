@@ -21,25 +21,25 @@
 #   Launcher tests (reference/tests/launcher-*.test.sh) continue to run against the LEGACY
 #   version until migration. DO NOT DELETE the legacy file — tests depend on it.
 #
-# marker-grep-gate: run-gov-gatefire.sh (pending-backport)
+# marker-grep-gate: run-gov-gatefire.sh (canonical — backported by #65)
 #   Behavioral gate discriminator for charter→main: fires a live jailed --agent session,
 #   greps for 'crewboss BLOCK' marker in gate output to discriminate correct gate wiring.
-#   Current proto/r8 version lacks *.css file coverage; backport to reference/runtime/ in #65;
-#   #70 extends the gate to *.css scenarios. MUST have status pending-backport per spec §62.
+#   Backported from box snapshot to reference/runtime/ by #65 (pkill-f → pid-file fix applied);
+#   #70 extends the gate to *.css scenarios.
 #
 # repo_path	sha256	status	purpose
 proto/r6/board-gh.sh	480f5335086f44d3c95d104871d488918cbc47c51c8ddd4d2c6b77a41b9e0629	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6
 proto/net/bridge.py	36b9cb3c62092fa20debe6e94e1929a06f661beab79cf8e487990ff6f5ecc551	canonical	In-jail CONNECT proxy bridge (proxy.sock → localhost:3128)
 proto/provision/build-provision.sh	e218b2cf013c4311f9ddddf9293ce5f4b388b506e849ca0ebe41c7182a5ffbab	canonical	Assembles self-contained provision.sh by embedding runtime files as base64 tarball
-reference/runtime/charter-leaf-prep.sh	6e604a87a5a9860307bcc940aa673d2ca44e97fd3db83306841763b19a86c02d	pending-backport	Charter-aware leaf dispatch: clones, creates charter/C branch, sets leaf/$ID-$TS; box-only → reference/runtime/ via #65
-reference/runtime/claude.kafel	c0856fcda3775bd12af8930925a1e927df2eaf15045e17156defa52f7f7076e0	pending-backport	Seccomp allowlist (kafel); box version adds getxattr/io_uring_enter/io_uring_setup/pkey_alloc/pkey_free vs proto/seccomp (drift); → #65
+reference/runtime/charter-leaf-prep.sh	6e604a87a5a9860307bcc940aa673d2ca44e97fd3db83306841763b19a86c02d	canonical	Charter-aware leaf dispatch: clones, creates charter/C branch, sets leaf/$ID-$TS; box-only → reference/runtime/ via #65
+reference/runtime/claude.kafel	c0856fcda3775bd12af8930925a1e927df2eaf15045e17156defa52f7f7076e0	canonical	Seccomp allowlist (kafel); box version adds getxattr/io_uring_enter/io_uring_setup/pkey_alloc/pkey_free vs proto/seccomp (drift); → #65
 ui/server/crewboss-api.py	1fef579f2b3fdecf77310b2ff979c26e530f244176925b7b2e5c3699f0540098	canonical	REST/SSE daemon API (board state, commands, kill_switch, run/kill_switch, team org-chart)
 proto/provision/crewboss-doctor.sh	db1907f0ee3a76b14afb131a49fcf0bfa339c8b32931d0ddd17c0c25d1f4f3d5	canonical	Preflight health check; hard-fails on blockers with remediation hints; FAIL on missing invariants
-reference/runtime/crewboss-launcher-gh.sh	8d33414e450082c5311caa4f1f5d1ed80181b972519f0a1232135f572bc1791c	pending-backport	CANONICAL launcher (GitHub-board, background-parallel, kill_switch run/kill_switch, R9 per-task proxy); → reference/runtime/ via #65
+reference/runtime/crewboss-launcher-gh.sh	8d33414e450082c5311caa4f1f5d1ed80181b972519f0a1232135f572bc1791c	canonical	CANONICAL launcher (GitHub-board, background-parallel, kill_switch run/kill_switch, R9 per-task proxy); → reference/runtime/ via #65
 proto/r5/crewboss-launcher.sh	eef78a95695afefa1404f0a39a16f631ae658282a14a43dcc12eca5ac56f82d8	canonical	R5 local-board launcher (historical epoch; reference/launcher/ has the Arch-2 variant — LEGACY)
-reference/runtime/crewboss-prep-spawn-gh.sh	fbee215169762b88dcb0539e7c15b45cd3d9999fab97d8c21d9c8b795157cf74	pending-backport	Spawn adapter (gh board): mirror-cache clone, sudo-cleanup, CB_GOVERNED injection; box version adds cache+sudo vs proto/r6 (drift); → #65
+reference/runtime/crewboss-prep-spawn-gh.sh	fbee215169762b88dcb0539e7c15b45cd3d9999fab97d8c21d9c8b795157cf74	canonical	Spawn adapter (gh board): mirror-cache clone, sudo-cleanup, CB_GOVERNED injection; box version adds cache+sudo vs proto/r6 (drift); → #65
 proto/r5/crewboss-prep-spawn.sh	a6283f0d6ae42f6ba36ab2b67bbdcb15ef16903ef41b2c3726fb416b343f675e	canonical	Spawn adapter (local board); R5 version
-reference/runtime/crewboss-spawn.sh	1103d0f4803da10126f53966fe82253d02795eb5c2a2a16a9f5148fc4d666468	pending-backport	Spawn primitive: --agent role (R9 epoch), CB_GOVERNED, per-task proxy socket, CB_TASK_TIMEOUT; proto/r5 lacks per-task socket (epoch drift); → #65
+reference/runtime/crewboss-spawn.sh	1103d0f4803da10126f53966fe82253d02795eb5c2a2a16a9f5148fc4d666468	canonical	Spawn primitive: --agent role (R9 epoch), CB_GOVERNED, per-task proxy socket, CB_TASK_TIMEOUT; proto/r5 lacks per-task socket (epoch drift); → #65
 proto/r10/crewboss-tui.py	dde57f764111325758913e859fe04a5b3b4ae859c6bffe6a2d8a40302fc7a28e	canonical	TUI dashboard (curses + --dump; reads board + run/*.json; controls via flag-files/labels); R10
 proto/seccomp/find-unknown.sh	27ee5f89f1ec581678d3bd9f95f8019380c66e3f605d868c8e3becb5aac79489	canonical	Finds syscall names unknown to kafel (R3c seccomp tooling)
 proto/seccomp/gen-names.sh	6c008e53393bab22882baca9ab8c75dc085b2795ef488cb0d668c6d7d85435df	canonical	Generates kafel-compatible syscall name list from union + essentials
@@ -49,17 +49,17 @@ reference/launcher/labels-setup.sh	525670fba6c8c49c4247f89ae4816a5ea89c0a990feae
 reference/launcher/launchable.sh	66857f10b303bd66e2915b83a3dda3c02168c5bab6a71bc683474b50910e7bfe	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed
 proto/provision/provision-template.sh	5432b0b89bc4fe4027cf1872eeb3555e89b68e324a756942b6c91ed701543cfb	canonical	Provision script template (__RUNTIME_PLACEHOLDER__ injected by build-provision.sh)
 proto/provision/provision.sh	865800cbb72766968f6481b299205660f5da578058ad006ec4a1f5a1b64321b5	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)
-reference/runtime/proxy.py	104726c15c0a0ee09a6908bae7c3e84119dbcff4b7bba78380dc44867b72611a	pending-backport	Egress HTTP/CONNECT proxy; box version adds npm allowlist (registry.npmjs.org) vs proto/net (drift finding: marker-grep-без-css); → #65
+reference/runtime/proxy.py	104726c15c0a0ee09a6908bae7c3e84119dbcff4b7bba78380dc44867b72611a	canonical	Egress HTTP/CONNECT proxy; box version adds npm allowlist (registry.npmjs.org) vs proto/net (drift finding: marker-grep-без-css); → #65
 proto/r5/redact.pl	c67e6f8fe6f9350e98194dfc85244000763323645adfc2531bbe740d1f10f184	canonical	Secret redaction filter (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, etc.) applied to spawn output
-reference/runtime/rework-prep.sh	bbfe9cc53e87fb6a1735ec776a46348eb242d807e9a7b3d77cd2dfcc4682b290	pending-backport	Rework dispatch: integrate or fresh-fix a leaf issue onto charter/C; box-only → reference/runtime/ via #65
+reference/runtime/rework-prep.sh	bbfe9cc53e87fb6a1735ec776a46348eb242d807e9a7b3d77cd2dfcc4682b290	canonical	Rework dispatch: integrate or fresh-fix a leaf issue onto charter/C; box-only → reference/runtime/ via #65
 ui/server/run-api-test2.sh	e082f53454088200e460f49a8235ad4ce52e38956d0e67c89e72212d79b71ba5	canonical	API integration test (health endpoint, state, command dispatch, query-token auth)
 proto/r6/run-board-gh-test.sh	4aae5f3f60a6384808e535af6d5226c0a684e71d235f2073be659ee6411847b8	canonical	board-gh.sh deterministic test (stubs gh, validates state machine); R6
-reference/runtime/run-charter.sh	e32efee98a486922b208915b994de088a9f7981e9001f13fb034987bbd77431d	pending-backport	Charter launcher wrapper (exports CB_SPAWN=charter-leaf-prep.sh, starts crewboss-launcher-gh.sh run); box-only → reference/runtime/ via #65
+reference/runtime/run-charter.sh	93a807ef869ebb444243bfae9e92e0c388a9bb77b469f19101759b6d72426e54	canonical	Charter launcher wrapper (exports CB_SPAWN=charter-leaf-prep.sh, starts crewboss-launcher-gh.sh run); box-only → reference/runtime/ via #65
 proto/r10/run-flags-test.sh	821c0e91a5c6907a6f1df35d40d01ac622ad4850d63c39061cbcad56bcc66e19	canonical	Kill-switch + pause flag-file test (stub spawn, real gh board); R10
 proto/r6/run-gh-e2e.sh	f04362e3c2eff81cda7f02896db1779f901197f5bac698a0883009d40402967f	canonical	R6 GitHub e2e capstone (real issue → real PR via jail+proxy+agent); R6
 proto/r8/run-gov-e2e.sh	b099bda14332cc5e12057672075082b13b076dd817aa1206277dbe7b0e0e66d7	canonical	Governance e2e (live executor in hardened jail, gate wired, self-merge attempt blocked); R8
 proto/r8/run-gov-gate-test.sh	a4dd6775213f01d7c3b4ee51279d5369f2742c8fee1268496ca947bd56d16752	canonical	Behavioral gate unit test Layer A (role-gating) inside hardened jail; no network; R8
-reference/runtime/run-gov-gatefire.sh	1a3e86c5690cca40d0cee0b7e7cefd2b563e9197b4846b3dc2521f41eafe8945	pending-backport	MARKER-GREP-GATE: behavioral gate discriminator for charter→main; fires live jailed --agent session, greps 'crewboss BLOCK' marker in output; box (proto/r8) version lacks *.css coverage; → reference/runtime/ via #65; #70 extends to *.css
+reference/runtime/run-gov-gatefire.sh	bbe931e1d9b74bc9d9dd60f6a1f950a733a3896461907b264a03b8aa5fe56aba	canonical	MARKER-GREP-GATE: behavioral gate discriminator for charter→main; fires live jailed --agent session, greps 'crewboss BLOCK' marker in output; box (proto/r8) version lacks *.css coverage; → reference/runtime/ via #65; #70 extends to *.css
 proto/r6/run-launcher-gh-test.sh	1e38bbcdc9d096ea6ec483e83183ed0155bbd191d53242c4ad539ea7e9b52822	canonical	Launcher-gh deterministic test (stub spawn, real gh board, claim/review/retry/reconcile); R6
 proto/net/run-net1.sh	f0c7b3c29782ff1e71974df6fcd6c22940802edce2bec86ca60b1420134b90ad	canonical	Network isolation test R3b-net1 (netns ON, no proxy; zero egress, DNS dead)
 proto/net/run-net2.sh	d9889de717a2a2d9fee03a4aa1e4a1a8522e3c10dcee2f85df44c76ab0967a44	canonical	Network isolation test R3b-net2 (netns + unix-socket proxy + bridge; curl-level tests)
@@ -75,7 +75,7 @@ proto/r4/run-r4b.sh	6c63ed425d1f265ece215f6c67677a7f9254677cb4f178636b1ffa71b0b4
 proto/r5/run-r5-test.sh	cd5ce22f37620a588cfb890bdb983eb339cbf55a13bdf127c9d560a62e960620	canonical	R5 spawn primitive rails live test (budget-check, redact, status.json, per-task proxy)
 proto/r5/run-r5b-test.sh	5475b1e1f3bfdc6cda5bffbeb5a52d6e2c67374fb934b3bfa6535bdda0ac180a	canonical	R5b launcher loop deterministic test (predicate/claim/route/retry/reconcile/lock, stub spawn)
 proto/r5/run-r5c-real.sh	1a7fa100c579af49c7b17c1c0c2604587ecc2fdfdbe1992538c3d9d4ab4b20f1	canonical	R5c capstone: launcher loop drives one real task end-to-end (real jail+agent+PR); R5
-reference/runtime/run-rework.sh	38b9d939f626ddd2418557cc8672dd8f525a97bf40969587c7952bf88c1b69b0	pending-backport	Rework dispatch wrapper (nohup operator script for multiple issues); box-only → reference/runtime/ via #65
+reference/runtime/run-rework.sh	38b9d939f626ddd2418557cc8672dd8f525a97bf40969587c7952bf88c1b69b0	canonical	Rework dispatch wrapper (nohup operator script for multiple issues); box-only → reference/runtime/ via #65
 proto/seccomp/run-sc-discover3.sh	59f490b28277d3c11979ef24fdf4f10b1e20d15e8e182efa1376d95de3759d68	canonical	Syscall discovery v3: traces entire in-jail bash payload (bash+bridge+claude/git/gh); R3c
 proto/seccomp/run-sc-policy2.sh	066cd92b8be58bf0fcdbc4edfe086318bdd6dfef84f4486fa2eb932ca67ec1c5	canonical	Seccomp policy v2 test (SYSCALL[n] numeric form for kafel-unknown names); R3c
 proto/r11/run-techlead-finish.sh	50e7bfe58accf2cccd8ae6260a1282ace8498a219830ccbc9f6d3d786d320756	canonical	Continues charter run after tech-lead decomposes (R11 idle-debounce fix test)
@@ -85,8 +85,8 @@ proto/r4/sc-edit.list	8d9474809b999f325580b893ae62d4488f5a0371d1a024923373d85319
 proto/seccomp/sc-git.list	e44664b46dec3c0d410db5e32df82ee65d41d5dbc241b45545500bf20d25e541	canonical	Syscall surface capture: git operations (R3c strace output)
 proto/r4/sc-r4union.list	dd67c2fa891056b5d00a3e54db4d63649a118e84add9fcb7d68dfe77de8192be	canonical	R4 syscall union (edit+git+claude surfaces combined)
 proto/seccomp/sc-union.list	3dcd5bc0826a08056148391f157e1ed6994797f6742fbd36eeb6da156f0f6384	canonical	Full syscall union (all surfaces: claude+git+edit+R4 combined)
-reference/runtime/start-api.sh	b4096cc347cc499491434acd7ad40e26c2ab108c3dbfc59910077e5cd7f129b6	pending-backport	API test starter (CB_REPO=crewboss-proto, CB_API_TOKEN=secret123, stub spawn); box-only → reference/runtime/ via #65
-reference/runtime/start-stack.sh	b06357e4abdb5baab9edc49d6c5bd1f3ba67779ee2a33e723d3462a5206b6fad	pending-backport	Production stack starter (API daemon + optional launcher loop via 'with-loop' arg); box-only → reference/runtime/ via #65
+reference/runtime/start-api.sh	c192241a5d21860ed1b9bd92277107b0eb9089eee6d5ee26882b299d0b250e23	canonical	API test starter (CB_REPO=crewboss-proto, CB_API_TOKEN=secret123, stub spawn); box-only → reference/runtime/ via #65
+reference/runtime/start-stack.sh	37fc748dae9e0dc33282463ec9283a58ce9e1a0500d4d94ebf4169c9bb0d7c75	canonical	Production stack starter (API daemon + optional launcher loop via 'with-loop' arg); box-only → reference/runtime/ via #65
 proto/r9/stub-spawn-bg.sh	8d81584e175a7f44096a00010307b28faf0f4e6e2a05a4f728d7cea76d6265d8	canonical	Background test stub (simulates spawn with delay; routes via status.json; R9 parallel tests)
 proto/r5/stub-spawn.sh	3fc44b4893e18db532ebfde7606a830aa0b27a2fb2e008dab55d01be2e98cf90	canonical	Test stub for crewboss-spawn.sh (no jail, no cost; exit code from run/stub-ctl/<id>)
-reference/runtime/watch-rework.sh	9b0edd515208efb39eb945c7056a591f298916c0279df6440e1dcac1e92d28bf	pending-backport	Rework monitoring watcher (polls status.json for task IDs 7,6,26); box-only → reference/runtime/ via #65
+reference/runtime/watch-rework.sh	9b0edd515208efb39eb945c7056a591f298916c0279df6440e1dcac1e92d28bf	canonical	Rework monitoring watcher (polls status.json for task IDs 7,6,26); box-only → reference/runtime/ via #65
