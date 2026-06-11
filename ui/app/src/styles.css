@@ -252,3 +252,26 @@ body {
 .node-role { font-weight:640; font-size:13.5px; letter-spacing:-0.01em }
 .node-meta { display:flex; gap:9px; margin-top:5px; color:var(--mut); font-size:11px }
 .node-span { color:var(--mut2) }
+
+/* role modal form */
+.modal.role-modal { max-width:540px }
+.fld select,
+.fld textarea { display:block; width:100%; margin-top:6px; background:var(--bg); border:1px solid var(--line2); color:var(--ink); padding:9px 12px; border-radius:10px; font:inherit }
+.fld textarea { resize:vertical; min-height:90px }
+.fld input[type=checkbox] { display:inline; width:auto; margin:0; padding:0; background:transparent; border:none; box-shadow:none }
+.fld-check { display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--mut); font-size:13px; margin:0 0 15px }
+.fld-check input[type=checkbox] { cursor:pointer; width:auto; margin:0 }
+.role-tools { display:flex; flex-wrap:wrap; gap:10px; margin-top:7px }
+.role-tool { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; color:var(--ink) }
+.role-tool input[type=checkbox] { cursor:pointer }
+.role-warn { color:var(--plan); font-size:11px; line-height:1 }
+.role-hint { font-size:11px; color:var(--plan); margin-top:5px }
+.role-error { background:#0e090a; border:1px solid rgba(240,103,106,.45); border-radius:9px; padding:10px 13px; color:#f0676a; font:11.5px/1.55 ui-monospace,"SF Mono",Menlo,Consolas,monospace; white-space:pre-wrap; margin-top:10px; max-height:220px; overflow-y:auto }
+/* node card edit button */
+.node-edit-btn { background:none; border:1px solid transparent; color:var(--mut); cursor:pointer; padding:1px 6px; font-size:11px; line-height:1.4; border-radius:5px; transition:.12s; opacity:0 }
+.node:hover .node-edit-btn { opacity:1 }
+.node-edit-btn:hover { color:var(--ink); background:var(--raise); border-color:var(--line2) }
+/* pool chip edit button */
+.chip-edit-btn { background:none; border:none; color:var(--mut); cursor:pointer; padding:0 0 0 5px; font-size:11px; opacity:0; transition:opacity .12s; vertical-align:middle; line-height:1 }
+.chip:hover .chip-edit-btn { opacity:1 }
+.chip-edit-btn:hover { color:var(--ink) }

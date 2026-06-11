@@ -74,6 +74,62 @@ export async function saveTeam(t: Team): Promise<{ ok: boolean; msg: string }> {
   } catch (e) { return { ok: false, msg: 'save failed (box offline?) — use Export' } }
 }
 
+// ── Role CRUD ────────────────────────────────────────────────────────────────
+export type RoleFrontmatter = {
+  name?: string
+  kind?: string
+  domain?: string
+  tools?: string
+  profile?: string
+  code_blind?: string   // "true" | "" (raw string from YAML-frontmatter)
+  skills?: string
+}
+
+export type RoleDetail = {
+  ok: boolean
+  name: string
+  frontmatter: RoleFrontmatter
+  prompt: string
+}
+
+export type RoleSave = {
+  name: string
+  kind: string
+  domain: string
+  tools: string
+  profile: string
+  code_blind: boolean
+  skills: string
+  prompt: string
+}
+
+export async function fetchRole(name: string): Promise<RoleDetail | null> {
+  try {
+    const r = await fetch(config.url + '/api/role/' + encodeURIComponent(name), {
+      headers: { Authorization: 'Bearer ' + config.token },
+    })
+    if (r.ok) {
+      const data = (await r.json()) as RoleDetail
+      if (data?.ok) return data
+    }
+  } catch { /* offline */ }
+  return null
+}
+
+export async function saveRole(role: RoleSave): Promise<{ ok: boolean; msg?: string }> {
+  try {
+    const r = await fetch(config.url + '/api/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify(role),
+    })
+    return (await r.json()) as { ok: boolean; msg?: string }
+  } catch (e) {
+    return { ok: false, msg: 'save failed (box offline?): ' + e }
+  }
+}
+
+// ── Tree ──────────────────────────────────────────────────────────────────────
 export type TreeNode = OrgNode & { children: TreeNode[] }
 export function buildTree(nodes: OrgNode[]): TreeNode[] {
   const by: Record<string, TreeNode> = {}

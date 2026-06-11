@@ -13,7 +13,7 @@ Endpoints (all under /api, bearer-auth except /api/health):
     POST /api/command {action,...}   -> run | pause | resume | kill | unkill | approve(#) | hold(#) | unhold(#)
 Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate origin).
 """
-import json, os, subprocess, sys, threading, time
+import json, os, shutil, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO   = os.environ.get("CB_REPO", "")
@@ -32,7 +32,9 @@ def read_json(path, default):
     except Exception: return default
 
 import re
-_CHARTER_RE = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_CHARTER_RE  = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_ROLE_NAME_RE = re.compile(r'^[a-z0-9-]+$')
+_ANSI_RE      = re.compile(r'\x1b\[[0-9;]*m')
 def _charter_of(body):
     m = _CHARTER_RE.search(body or "")
     return int(m.group(1)) if m else None
@@ -200,6 +202,120 @@ def save_team(body):
     except Exception as e:
         return {"ok":False,"msg":f"save failed: {e}"}
 
+def _plain_copy_tree(src, dst):
+    """Recursively copy a directory using plain open/read/write (avoids sendfile syscall)."""
+    os.makedirs(dst, exist_ok=True)
+    for item in os.listdir(src):
+        s = os.path.join(src, item); d = os.path.join(dst, item)
+        if os.path.isdir(s): _plain_copy_tree(s, d)
+        else:
+            with open(s, 'rb') as fi: data = fi.read()
+            with open(d, 'wb') as fo: fo.write(data)
+
+def _plain_copy_file(src, dst):
+    with open(src, 'rb') as fi: data = fi.read()
+    with open(dst, 'wb') as fo: fo.write(data)
+
+def _parse_role_md(path):
+    """Return (frontmatter_dict, body_str) from a roles/<name>.md file."""
+    try:
+        lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+    except Exception:
+        return {}, ''
+    if not lines or lines[0].strip() != '---':
+        return {}, '\n'.join(lines).strip()
+    fm = {}; i = 1
+    while i < len(lines):
+        if lines[i].strip() == '---': break
+        if ':' in lines[i]:
+            k, v = lines[i].split(':', 1); fm[k.strip()] = v.strip()
+        i += 1
+    body = '\n'.join(lines[i+1:]).strip() if i + 1 < len(lines) else ''
+    return fm, body
+
+def get_role(name):
+    if not _ROLE_NAME_RE.match(name):
+        return {"ok": False, "msg": "invalid role name"}
+    path = os.path.join(CB_TEAM, 'roles', name + '.md')
+    if not os.path.exists(path):
+        return {"ok": False, "msg": f"role '{name}' not found"}
+    fm, prompt = _parse_role_md(path)
+    return {"ok": True, "name": name, "frontmatter": fm, "prompt": prompt}
+
+def _role_invariant_check(name, kind, tools, code_blind):
+    """Mirror the doctor's role-invariant rules so we catch errors even for roles not yet in org."""
+    _has = lambda t: bool(re.search(r'(?i)\b' + t + r'\b', tools))
+    errs = []
+    if kind in ('manager', 'analyst'):
+        for t in ('Edit', 'Write', 'Agent'):
+            if _has(t): errs.append(f"  FAIL {kind} '{name}' must NOT have {t} (tools: {tools})")
+    elif kind == 'executor':
+        if not _has('Edit') and not _has('Write'):
+            errs.append(f"  FAIL executor '{name}' has no Edit/Write (tools: {tools})")
+    else:
+        errs.append(f"  FAIL role '{name}' has unknown kind '{kind}' (expected executor|analyst|manager)")
+    if code_blind and _has('Read'):
+        errs.append(f"  FAIL code-blind role '{name}' must NOT have Read (tools: {tools})")
+    if errs:
+        n = len(errs)
+        return "== role invariants ==\n" + "\n".join(errs) + f"\n\nmanifest-doctor: {n} problem(s)"
+    return ""
+
+def save_role(body):
+    name = str(body.get('name', '')).strip()
+    if not _ROLE_NAME_RE.match(name):
+        return {"ok": False, "msg": "invalid role name (must match ^[a-z0-9-]+$)"}
+    kind      = str(body.get('kind',    '')).strip()
+    domain    = str(body.get('domain',  '')).strip()
+    tools     = str(body.get('tools',   '')).strip()
+    profile   = str(body.get('profile', '')).strip()
+    code_blind= bool(body.get('code_blind', False))
+    skills    = str(body.get('skills',  '') or '').strip()
+    prompt    = str(body.get('prompt',  '') or '').strip()
+
+    # Pre-validate role invariants (mirrors doctor rules; catches new roles not yet in org)
+    inv_err = _role_invariant_check(name, kind, tools, code_blind)
+    if inv_err:
+        return {"ok": False, "msg": inv_err}
+
+    fm_lines = ['---', f'name: {name}', f'kind: {kind}', f'domain: {domain}',
+                f'tools: {tools}', f'profile: {profile}']
+    if code_blind: fm_lines.append('code_blind: true')
+    if skills:     fm_lines.append(f'skills: {skills}')
+    fm_lines.append('---')
+    content = '\n'.join(fm_lines) + '\n' + (prompt + '\n' if prompt else '')
+
+    tmpdir = tempfile.mkdtemp(prefix='crewboss-role-')
+    try:
+        tmp_manifest = os.path.join(tmpdir, 'manifest')
+        if os.path.isdir(CB_TEAM):
+            _plain_copy_tree(CB_TEAM, tmp_manifest)
+        else:
+            os.makedirs(tmp_manifest)
+        os.makedirs(os.path.join(tmp_manifest, 'roles'), exist_ok=True)
+        with open(os.path.join(tmp_manifest, 'roles', name + '.md'), 'w', encoding='utf-8') as f:
+            f.write(content)
+        # locate manifest-doctor.sh (prefer CB_TEAM copy, fall back to repo's team-example)
+        doctor = os.path.join(CB_TEAM, 'manifest-doctor.sh')
+        if not os.path.isfile(doctor):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            doctor = os.path.abspath(os.path.join(script_dir, '..', '..', 'team-example', 'manifest-doctor.sh'))
+        if not os.path.isfile(doctor):
+            return {"ok": False, "msg": "manifest-doctor.sh not found"}
+        r = subprocess.run(['bash', doctor, tmp_manifest], capture_output=True, text=True, timeout=30)
+        out = _ANSI_RE.sub('', (r.stdout + r.stderr).strip())
+        if r.returncode == 0:
+            real_roles = os.path.join(CB_TEAM, 'roles')
+            os.makedirs(real_roles, exist_ok=True)
+            _plain_copy_file(os.path.join(tmp_manifest, 'roles', name + '.md'),
+                             os.path.join(real_roles, name + '.md'))
+            return {"ok": True}
+        return {"ok": False, "msg": out}
+    except Exception as e:
+        return {"ok": False, "msg": f"error: {e}"}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _cors(self):
@@ -227,6 +343,11 @@ class H(BaseHTTPRequestHandler):
             if not tail.isdigit(): return self._send(400,{"ok":False,"msg":"bad task id"})
             return self._send(200, build_task(int(tail)))
         if path=="/api/team": return self._send(200, build_team())
+        if path.startswith("/api/role/"):
+            name = path[len("/api/role/"):]
+            if not name or "/" in name or ".." in name:
+                return self._send(400, {"ok":False,"msg":"invalid role name"})
+            return self._send(200, get_role(name))
         if path=="/api/events":
             self.send_response(200); self.send_header("Content-Type","text/event-stream")
             self.send_header("Cache-Control","no-cache"); self._cors(); self.end_headers()
@@ -248,7 +369,8 @@ class H(BaseHTTPRequestHandler):
         try: body=json.loads(self.rfile.read(n) or b"{}")
         except Exception: body={}
         if path=="/api/command": return self._send(200, do_command(body))
-        if path=="/api/team":     return self._send(200, save_team(body))
+        if path=="/api/team":    return self._send(200, save_team(body))
+        if path=="/api/role":    return self._send(200, save_role(body))
         return self._send(404,{"ok":False,"msg":"not found"})
 
 if __name__=="__main__":
