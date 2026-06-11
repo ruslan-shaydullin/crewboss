@@ -126,9 +126,8 @@ body {
 .agent.role-tech-lead { border-color:rgba(179,155,255,.32) }
 .agent.role-boss { border-color:rgba(224,182,74,.32) }
 .agent-mono { position:relative; width:34px; height:34px; flex:none; border-radius:9px; display:grid; place-items:center;
-  font-weight:700; font-size:15px; color:var(--ink); background:linear-gradient(180deg,#23232b,#16161b);
-  border:1px solid var(--line2) }
-.role-tech-lead .agent-mono { color:var(--review) } .role-boss .agent-mono { color:var(--plan) } .role-executor .agent-mono { color:var(--prog) }
+  font-size:18px; background:linear-gradient(180deg,#23232b,#16161b); border:1px solid var(--line2) }
+.fleet-emoji { line-height:1; user-select:none }
 .agent-wave { position:absolute; inset:-1px; border-radius:9px; border:1.5px solid currentColor; opacity:.0; animation:wave 1.8s ease-out infinite }
 .agent-body { flex:1; min-width:0 }
 .agent-top { display:flex; align-items:center; gap:7px }
@@ -138,10 +137,32 @@ body {
 .agent-title { color:var(--mut2); font-size:12px; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .agent-phase { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:11px; margin-top:4px; text-transform:uppercase; letter-spacing:.06em }
 .phase-dot { width:6px; height:6px; border-radius:50%; background:var(--done); animation:pulse 1.4s ease-in-out infinite }
+/* level badge + progress bar (gamification) */
+.lvl-badge { font-size:10px; font-weight:700; padding:1px 6px; border-radius:5px; letter-spacing:.04em;
+  background:rgba(91,156,240,.18); color:var(--prog); border:1px solid rgba(91,156,240,.3); flex:none }
+.lvl-bar-wrap { margin-top:5px }
+.lvl-bar { height:3px; background:#202026; border-radius:3px; overflow:hidden }
+.lvl-fill { height:100%; background:linear-gradient(90deg,var(--prog),var(--review)); border-radius:3px; transition:width .5s ease }
 
 @keyframes pulse { 0%,100%{ box-shadow:0 0 0 0 rgba(70,206,142,.5); opacity:1 } 50%{ box-shadow:0 0 0 6px rgba(70,206,142,0); opacity:.5 } }
 @keyframes wave { 0%{ opacity:.5; transform:scale(1) } 100%{ opacity:0; transform:scale(1.35) } }
 @keyframes rise { from{ opacity:0; transform:translateY(8px) } to{ opacity:1; transform:none } }
+/* celebration: leaf → done mini-salute */
+@keyframes salute { 0%{ box-shadow:0 0 0 0 rgba(70,206,142,.75) } 60%{ box-shadow:0 0 0 14px rgba(70,206,142,0) } 100%{ box-shadow:0 0 0 0 rgba(70,206,142,0) } }
+.task.celebrating { animation:salute .85s ease-out, rise .3s ease }
+/* PR accent */
+@keyframes pr-glow { 0%,100%{ border-color:rgba(91,156,240,.4) } 50%{ border-color:rgba(91,156,240,.85); box-shadow:0 0 14px rgba(91,156,240,.3) } }
+.task.pr-accent { animation:pr-glow 1s ease-in-out 2 }
+/* fullscreen confetti canvas */
+.confetti-canvas { position:fixed; inset:0; pointer-events:none; z-index:200 }
+/* reduced-motion alternative: brief full-viewport flash */
+.confetti-flash { position:fixed; inset:0; pointer-events:none; z-index:200; background:rgba(70,206,142,.12); animation:flash .5s ease-out forwards }
+@keyframes flash { from{ opacity:1 } to{ opacity:0 } }
+/* settings gamification toggle */
+.settings-row { margin:0 0 15px }
+.settings-toggle { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--ink); font-size:13px }
+.settings-toggle input[type=checkbox] { width:16px; height:16px; cursor:pointer; accent-color:var(--prog) }
+.hint-inline { color:var(--mut); font-size:12px }
 
 /* toasts + modal */
 .toasts { position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column; gap:8px; z-index:50 }
@@ -252,3 +273,11 @@ body {
 .node-role { font-weight:640; font-size:13.5px; letter-spacing:-0.01em }
 .node-meta { display:flex; gap:9px; margin-top:5px; color:var(--mut); font-size:11px }
 .node-span { color:var(--mut2) }
+/* fleet character in org node */
+.node-fleet-emoji { font-size:14px; line-height:1; user-select:none }
+/* node level badge + bar (gamification) */
+.node-lvl { display:flex; align-items:center; gap:7px; margin-top:8px }
+.node-lvl-badge { font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; letter-spacing:.04em;
+  background:rgba(91,156,240,.18); color:var(--prog); border:1px solid rgba(91,156,240,.28); flex:none }
+.node-lvl-bar { flex:1; height:3px; background:#202026; border-radius:3px; overflow:hidden }
+.node-lvl-fill { height:100%; background:linear-gradient(90deg,var(--prog),var(--review)); border-radius:3px; transition:width .5s ease }

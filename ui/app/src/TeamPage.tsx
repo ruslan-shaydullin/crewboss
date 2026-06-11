@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { buildTree, fetchTeam, saveTeam, type OrgNode, type RoleDef, type Team, type TreeNode } from './team'
+import { computeXP, getFleetChar, xpToLevel, type LevelInfo } from './fleet'
+import type { Task } from './api'
 
 const sig = (nodes: OrgNode[]) => JSON.stringify([...nodes.map((n) => [n.role, n.reports_to])].sort())
 type Drag = { role: string; from: 'node' | 'pool' } | null
 
-export default function TeamPage() {
+export default function TeamPage({ board, gamification }: { board: Task[]; gamification: boolean }) {
   const [team, setTeam] = useState<Team | null>(null)
   const [nodes, setNodes] = useState<OrgNode[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -90,6 +92,9 @@ export default function TeamPage() {
   const withKids = nodes.filter((n) => nodes.some((m) => m.reports_to === n.role)).map((n) => n.role)
   const toggle = (r: string) => setCollapsed((c) => { const s = new Set(c); if (s.has(r)) s.delete(r); else s.add(r); return s })
 
+  const xp  = computeXP(board)
+  const lvl = xpToLevel(xp)
+
   return (
     <section className="team">
       <div className="team-bar">
@@ -97,6 +102,7 @@ export default function TeamPage() {
           <span className="lg manager">manager {counts.manager || 0}</span>
           <span className="lg analyst">analyst {counts.analyst || 0}</span>
           <span className="lg executor">executor {counts.executor || 0}</span>
+          {gamification && <span className="lg live-lg">⚡ Fleet L{lvl.level}</span>}
         </div>
         <div className="grow" />
         <div className="team-tools">
@@ -120,7 +126,8 @@ export default function TeamPage() {
         <div className="orgchart" style={{ zoom }}>
           <ul className="org">{roots.map((n) => (
             <OrgLi key={n.role} n={n} collapsed={collapsed} onToggle={toggle}
-              drag={drag} over={over} reason={reasonOnNode} setDrag={setDrag} setOver={setOver} onDrop={dropOnNode} />
+              drag={drag} over={over} reason={reasonOnNode} setDrag={setDrag} setOver={setOver} onDrop={dropOnNode}
+              lvl={lvl} gamification={gamification} />
           ))}</ul>
         </div>
       </div>
@@ -148,6 +155,7 @@ type LiProps = {
   n: TreeNode; collapsed: Set<string>; onToggle: (r: string) => void
   drag: Drag; over: string | null; reason: (d: Drag, t: string) => string | null
   setDrag: (d: Drag) => void; setOver: (r: string | null) => void; onDrop: (t: string) => void
+  lvl: LevelInfo; gamification: boolean
 }
 function OrgLi(p: LiProps) {
   const isCollapsed = p.collapsed.has(p.n.role)
@@ -160,10 +168,12 @@ function OrgLi(p: LiProps) {
   )
 }
 
-function NodeCard({ n, hasKids, collapsedNode, onToggle, drag, over, reason, setDrag, setOver, onDrop }:
+function NodeCard({ n, hasKids, collapsedNode, onToggle, drag, over, reason, setDrag, setOver, onDrop, lvl, gamification }:
   LiProps & { hasKids: boolean; collapsedNode: boolean }) {
   const span = n.children.length
   const dropState = over === n.role && drag ? (reason(drag, n.role) ? 'drop-bad' : 'drop-ok') : ''
+  const fc = getFleetChar(n.role, n.kind)
+  const pct = Math.round((lvl.progress / lvl.needed) * 100)
   return (
     <div
       className={['node', 'k-' + n.kind, n.live ? 'running' : '', drag?.role === n.role ? 'dragging' : '', dropState].join(' ').trim()}
@@ -175,6 +185,7 @@ function NodeCard({ n, hasKids, collapsedNode, onToggle, drag, over, reason, set
       onDrop={(e) => { e.preventDefault(); onDrop(n.role) }}
     >
       <div className="node-top">
+        <span className="node-fleet-emoji" style={{ color: fc.color }} title={`${fc.name} · ${fc.ship}`}>{fc.emoji}</span>
         <span className="node-kind">{n.kind}</span>
         {n.code_blind && <span className="node-lock" title="code-blind (no code access)">🔒</span>}
         <span className="grow" />
@@ -189,6 +200,12 @@ function NodeCard({ n, hasKids, collapsedNode, onToggle, drag, over, reason, set
         <span className="node-domain">{n.domain || '—'}</span>
         {span > 0 && <span className="node-span">{span} report{span > 1 ? 's' : ''}</span>}
       </div>
+      {gamification && (
+        <div className="node-lvl">
+          <span className="node-lvl-badge" title={`Fleet level ${lvl.level} · ${lvl.xp} XP`}>L{lvl.level}</span>
+          <div className="node-lvl-bar"><div className="node-lvl-fill" style={{ width: pct + '%' }} /></div>
+        </div>
+      )}
     </div>
   )
 }

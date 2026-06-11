@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { command, config, fetchTask, subscribe, type Agent, type State, type Task, type TaskDetail } from './api'
+import { computeXP, getFleetChar, guessKind, xpToLevel, type LevelInfo } from './fleet'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean }
@@ -26,6 +27,59 @@ function useCountUp(value: number, ms = 600): number {
   return n
 }
 
+// --- confetti burst (canvas, pointer-events:none, ~1.5s) ---
+const CONFETTI_COLORS = ['#5b9cf0', '#b39bff', '#46ce8e', '#e0b64a', '#f06780', '#f0ac67']
+const CONFETTI_N = 110
+
+function launchConfetti(reduced: boolean): void {
+  if (reduced) {
+    const el = document.createElement('div')
+    el.className = 'confetti-flash'
+    document.body.appendChild(el)
+    setTimeout(() => el.remove(), 550)
+    return
+  }
+  const canvas = document.createElement('canvas')
+  canvas.className = 'confetti-canvas'
+  canvas.width = window.innerWidth
+  canvas.height = window.innerHeight
+  document.body.appendChild(canvas)
+  const ctx = canvas.getContext('2d')!
+  type P = { x: number; y: number; vx: number; vy: number; color: string; w: number; h: number; rot: number; vrot: number }
+  const particles: P[] = Array.from({ length: CONFETTI_N }, () => ({
+    x: Math.random() * canvas.width,
+    y: -10 - Math.random() * 80,
+    vx: (Math.random() - 0.5) * 5,
+    vy: 3 + Math.random() * 4,
+    color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+    w: 7 + Math.random() * 8,
+    h: 3 + Math.random() * 5,
+    rot: Math.random() * Math.PI,
+    vrot: (Math.random() - 0.5) * 0.18,
+  }))
+  const DURATION = 1500
+  const start = performance.now()
+  let raf = 0
+  const tick = (now: number) => {
+    const elapsed = now - start
+    const alpha = Math.max(0, 1 - elapsed / DURATION)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    for (const p of particles) {
+      p.x += p.vx; p.y += p.vy; p.rot += p.vrot
+      ctx.save()
+      ctx.globalAlpha = alpha
+      ctx.translate(p.x, p.y)
+      ctx.rotate(p.rot)
+      ctx.fillStyle = p.color
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h)
+      ctx.restore()
+    }
+    if (elapsed < DURATION) { raf = requestAnimationFrame(tick) }
+    else { cancelAnimationFrame(raf); canvas.remove() }
+  }
+  raf = requestAnimationFrame(tick)
+}
+
 export default function App() {
   const [state, setState] = useState<State | null>(null)
   const [conn, setConn] = useState(false)
@@ -37,8 +91,70 @@ export default function App() {
   const [, setTick] = useState(0)
   const tid = useRef(0)
 
+  // gamification (read from config, reactive via state)
+  const [gamification, setGamification] = useState(config.gamification)
+
+  // celebration state
+  const [leafCelebrations, setLeafCelebrations] = useState<Set<number>>(new Set())
+  const [prAccents, setPrAccents] = useState<Set<number>>(new Set())
+  const prevState = useRef<State | null>(null)
+  const reducedMotion = useRef(window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+
   useEffect(() => subscribe(setState, setConn), [])
   useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i) }, [])
+
+  // diff snapshots → fire celebrations
+  useEffect(() => {
+    if (!state) { prevState.current = null; return }
+    const prev = prevState.current
+    if (prev && gamification) {
+      const newDones = new Set<number>()
+      const newPRs   = new Set<number>()
+      let   charterBurst = false
+
+      for (const t of state.board) {
+        const p = prev.board.find((x) => x.n === t.n)
+        if (t.kind === 'leaf' && t.state === 'done' && p && p.state !== 'done') {
+          newDones.add(t.n)
+        }
+        if (t.pr && !(p?.pr)) {
+          newPRs.add(t.n)
+        }
+      }
+
+      // charter closed or all its leaves just went done
+      const charters = state.board.filter((x) => x.kind === 'charter')
+      for (const c of charters) {
+        const prevC  = prev.board.find((x) => x.n === c.n)
+        const leaves = state.board.filter((x) => x.kind === 'leaf' && x.charter === c.n)
+        const prevLv = prev.board.filter((x) => x.kind === 'leaf' && x.charter === c.n)
+        const allDoneNow = leaves.length > 0 && leaves.every((l) => l.state === 'done')
+        const allDonePrev = prevLv.length > 0 && prevLv.every((l) => l.state === 'done')
+        if ((c.state === 'done' && prevC?.state !== 'done') || (allDoneNow && !allDonePrev)) {
+          charterBurst = true
+        }
+      }
+
+      if (newDones.size > 0) setLeafCelebrations((s) => new Set([...s, ...newDones]))
+      if (newPRs.size   > 0) setPrAccents((s) => new Set([...s, ...newPRs]))
+      if (charterBurst)       launchConfetti(reducedMotion.current)
+    }
+    prevState.current = state
+  }, [state, gamification])
+
+  // auto-clear leaf celebrations
+  useEffect(() => {
+    if (leafCelebrations.size === 0) return
+    const t = setTimeout(() => setLeafCelebrations(new Set()), 1200)
+    return () => clearTimeout(t)
+  }, [leafCelebrations])
+
+  // auto-clear PR accents
+  useEffect(() => {
+    if (prAccents.size === 0) return
+    const t = setTimeout(() => setPrAccents(new Set()), 2200)
+    return () => clearTimeout(t)
+  }, [prAccents])
 
   const toast = useCallback((msg: string, err?: boolean) => {
     const id = ++tid.current
@@ -49,6 +165,10 @@ export default function App() {
     const r = await command(action, number); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
   }, [toast])
   const ask = useCallback((title: string, body: string, onOk: () => void) => setConfirm({ title, body, onOk }), [])
+
+  const board = state?.board ?? []
+  const xp    = computeXP(board)
+  const lvl   = xpToLevel(xp)
 
   return (
     <div className="app">
@@ -62,16 +182,18 @@ export default function App() {
         <>
           <Hero state={state} />
           <div className="layout">
-            <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen} />
-            <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+            <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
+              leafCelebrations={leafCelebrations} prAccents={prAccents} />
+            <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} lvl={lvl} gamification={gamification} />
           </div>
         </>
-      ) : <TeamPage />}
+      ) : <TeamPage board={board} gamification={gamification} />}
 
       <div className="toasts">{toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}</div>
       {confirm && <Modal title={confirm.title} body={confirm.body}
         onCancel={() => setConfirm(null)} onOk={() => { const f = confirm.onOk; setConfirm(null); f() }} />}
-      {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
+      {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()}
+        gamification={gamification} onGamificationChange={(v) => { config.gamification = v; setGamification(v) }} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} />}
     </div>
@@ -137,9 +259,10 @@ function Stat({ n, label, live, accent }: { n: number; label: string; live?: boo
   )
 }
 
-function Board({ state, conn, onAction, ask, onOpen }: {
+function Board({ state, conn, onAction, ask, onOpen, leafCelebrations, prAccents }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number) => void; ask: (t: string, b: string, ok: () => void) => void; onOpen: (n: number) => void
+  leafCelebrations: Set<number>; prAccents: Set<number>
 }) {
   if (!state) return (
     <section className="board">
@@ -154,15 +277,18 @@ function Board({ state, conn, onAction, ask, onOpen }: {
   if (!state.board.length) return <section className="board"><div className="empty">no issues on the board yet</div></section>
   return (
     <section className="board">
-      {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
-      {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen} />}
+      {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen}
+        leafCelebrations={leafCelebrations} prAccents={prAccents} />)}
+      {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen}
+        leafCelebrations={leafCelebrations} prAccents={prAccents} />}
     </section>
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, leafCelebrations, prAccents }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number) => void
   ask: (t: string, b: string, ok: () => void) => void; onOpen: (n: number) => void
+  leafCelebrations: Set<number>; prAccents: Set<number>
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
@@ -182,7 +308,8 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
             "Releases this charter's tasks to be launched (executors run, spending from the pool).",
             () => onAction('approve', c.n))}>Approve plan</button>}
       </div>
-      {total > 0 && <div className="task-grid">{leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}</div>}
+      {total > 0 && <div className="task-grid">{leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen}
+        celebrating={leafCelebrations.has(l.n)} prAccent={prAccents.has(l.n)} />)}</div>}
       {total === 0 && <div className="leaf-empty">awaiting decomposition…</div>}
     </div>
   )
@@ -201,10 +328,14 @@ function Ring({ pct, label }: { pct: number; label: string }) {
   )
 }
 
-function TaskCard({ t, onOpen }: { t: Task; onOpen: (n: number) => void }) {
+function TaskCard({ t, onOpen, celebrating, prAccent }: { t: Task; onOpen: (n: number) => void; celebrating: boolean; prAccent: boolean }) {
   const working = t.state === 'in-progress'
+  let cls = 'task'
+  if (working)     cls += ' working'
+  if (celebrating) cls += ' celebrating'
+  if (prAccent)    cls += ' pr-accent'
   return (
-    <div className={'task' + (working ? ' working' : '')} onClick={() => onOpen(t.n)}>
+    <div className={cls} onClick={() => onOpen(t.n)}>
       <div className="task-top">
         <span className="num">#{t.n}</span>
         <span className={'badge b-' + t.state}>{t.state}</span>
@@ -235,30 +366,43 @@ function SkeletonBoard() {
   )
 }
 
-function AgentsRail({ agents, onOpen }: { agents: Agent[]; onOpen: (n: number) => void }) {
+function AgentsRail({ agents, onOpen, lvl, gamification }: {
+  agents: Agent[]; onOpen: (n: number) => void; lvl: LevelInfo; gamification: boolean
+}) {
   return (
     <aside className="rail">
       <div className="rail-head"><span>Agents</span><span className="rail-count">{agents.length}</span></div>
       {agents.length === 0
         ? <div className="rail-empty"><div className="z">z z z</div>no agents running</div>
-        : agents.map((a, i) => <AgentCard key={(a.task ?? 'boss') + ':' + i} a={a} onOpen={onOpen} />)}
+        : agents.map((a, i) => <AgentCard key={(a.task ?? 'boss') + ':' + i} a={a} onOpen={onOpen} lvl={lvl} gamification={gamification} />)}
     </aside>
   )
 }
 
-function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
-  const initial = a.role[0]?.toUpperCase() ?? '?'
+function AgentCard({ a, onOpen, lvl, gamification }: { a: Agent; onOpen: (n: number) => void; lvl: LevelInfo; gamification: boolean }) {
+  const fc = getFleetChar(a.role, guessKind(a.role))
+  const pct = Math.round((lvl.progress / lvl.needed) * 100)
   return (
     <div className={'agent role-' + a.role} onClick={() => a.task != null && onOpen(a.task)} style={a.task != null ? { cursor: 'pointer' } : undefined}>
-      <div className="agent-mono">{initial}<span className="agent-wave" /></div>
+      <div className="agent-mono" style={{ color: fc.color }} title={`${fc.name} · ${fc.ship}`}>
+        <span className="fleet-emoji">{fc.emoji}</span>
+        <span className="agent-wave" />
+      </div>
       <div className="agent-body">
         <div className="agent-top">
           <span className="agent-role">{a.role}</span>
           {a.task != null && <span className="agent-task">#{a.task}</span>}
-          <span className="grow" /><span className="agent-elapsed">{elapsed(a.started)}</span>
+          <span className="grow" />
+          {gamification && <span className="lvl-badge" title={`Fleet level ${lvl.level} · ${lvl.xp} XP`}>L{lvl.level}</span>}
+          <span className="agent-elapsed">{elapsed(a.started)}</span>
         </div>
         <div className="agent-title">{a.title || a.phase}</div>
         <div className="agent-phase"><span className="phase-dot" />{a.phase}</div>
+        {gamification && (
+          <div className="lvl-bar-wrap" title={`${lvl.progress}/${lvl.needed} to L${lvl.level + 1}`}>
+            <div className="lvl-bar"><div className="lvl-fill" style={{ width: pct + '%' }} /></div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -335,7 +479,9 @@ function Modal({ title, body, onCancel, onOk }: { title: string; body: string; o
   )
 }
 
-function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function SettingsModal({ onClose, onSaved, gamification, onGamificationChange }: {
+  onClose: () => void; onSaved: () => void; gamification: boolean; onGamificationChange: (v: boolean) => void
+}) {
   const [url, setUrl] = useState(config.url)
   const [token, setToken] = useState(config.token)
   return (
@@ -345,8 +491,15 @@ function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         <label className="fld">API URL<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://127.0.0.1:8787" /></label>
         <label className="fld">API token<input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="CB_API_TOKEN" /></label>
         <p className="hint">Tunnel: <code>ssh -N -L 8787:127.0.0.1:8787 ec2-user@&lt;ip&gt;</code></p>
+        <div className="settings-row">
+          <label className="settings-toggle">
+            <input type="checkbox" checked={gamification} onChange={(e) => onGamificationChange(e.target.checked)} />
+            <span>Gamification</span>
+            <span className="hint-inline">celebrations &amp; levels (fleet identities always on)</span>
+          </label>
+        </div>
         <div className="m-actions"><button className="btn" onClick={onClose}>Close</button>
-          <button className="btn pri" onClick={() => { config.url = url.trim(); config.token = token.trim(); onSaved() }}>Save & reconnect</button></div>
+          <button className="btn pri" onClick={() => { config.url = url.trim(); config.token = token.trim(); onSaved() }}>Save &amp; reconnect</button></div>
       </div>
     </div>
   )

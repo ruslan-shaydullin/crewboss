@@ -25,13 +25,17 @@ export type State = {
   autonomy: { repo: string }
 }
 
-const KURL = 'cb_api'
-const KTOK = 'cb_token'
+const KURL  = 'cb_api'
+const KTOK  = 'cb_token'
+const KGAME = 'cb_gamification'
 export const config = {
   get url() { return localStorage.getItem(KURL) || 'http://127.0.0.1:8787' },
   set url(v: string) { localStorage.setItem(KURL, v) },
   get token() { return localStorage.getItem(KTOK) || '' },
   set token(v: string) { localStorage.setItem(KTOK, v) },
+  /** Gamification toggle (default on). Persisted in localStorage. */
+  get gamification(): boolean { return localStorage.getItem(KGAME) !== 'false' },
+  set gamification(v: boolean) { localStorage.setItem(KGAME, String(v)) },
 }
 
 export async function fetchState(): Promise<State | null> {
