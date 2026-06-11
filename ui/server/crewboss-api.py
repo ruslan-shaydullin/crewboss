@@ -134,9 +134,18 @@ def build_task(n):
     try: os.kill(int(open(pidf).read().strip()), 0); alive = True
     except Exception: alive = False
     started = rd(os.path.join(RUN, "state", str(n), "starttime")).strip()
+    body = ""
+    if REPO:
+        try:
+            raw = sh(["gh", "issue", "view", str(n), "-R", REPO, "--json", "body"]) or ""
+            if raw.strip():
+                body = json.loads(raw).get("body", "") or ""
+        except Exception:
+            body = ""
     return dict(n=n, status=st, alive=alive, started=started,
                 prompt=rd(os.path.join(w, "task.prompt"), 4000).strip(),
-                log=rd(os.path.join(w, "run.log"), 16000))  # run.log is written already-redacted
+                log=rd(os.path.join(w, "run.log"), 16000),  # run.log is written already-redacted
+                body=body)
 
 CB_TEAM = os.environ.get("CB_TEAM", os.path.join(CB_HOME, "team"))
 def _frontmatter(path):
@@ -245,6 +254,62 @@ def do_command(body):
         if r.returncode != 0:
             return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "delete failed")}
         return {"ok":True,"msg":"comment deleted"}
+    elif a=="set-check":
+        index = body.get("index")
+        checked = body.get("checked")
+        if not n.isdigit() or index is None:
+            return {"ok":False,"msg":"number and index required"}
+        try: index = int(index)
+        except Exception: return {"ok":False,"msg":"index must be integer"}
+        # Fetch current issue body
+        raw = sh(["gh","issue","view",n,"-R",REPO,"--json","body"]) or ""
+        if not raw.strip():
+            return {"ok":False,"msg":"could not fetch issue body"}
+        try: issue_body = json.loads(raw).get("body","") or ""
+        except Exception: return {"ok":False,"msg":"could not parse issue body"}
+        # Find checkbox lines (supports - and * markers, indentation, [ ] and [x]/[X])
+        CHECKBOX_LINE_RE = re.compile(r'^\s*[-*]\s+\[[ xX]\]')
+        lines = issue_body.split("\n")
+        checkbox_indices = [i for i, ln in enumerate(lines) if CHECKBOX_LINE_RE.match(ln)]
+        if index < 0 or index >= len(checkbox_indices):
+            return {"ok":False,"msg":f"checkbox index {index} out of range (found {len(checkbox_indices)})"}
+        line_idx = checkbox_indices[index]
+        original_line = lines[line_idx]
+        # Extract item text for history comment
+        m = re.match(r'^\s*[-*]\s+\[[ xX]\]\s*(.*)', original_line)
+        item_text = m.group(1).strip() if m else original_line.strip()
+        # Toggle checkbox marker
+        if checked:
+            new_line = re.sub(r'\[ \]', '[x]', original_line, count=1)
+        else:
+            new_line = re.sub(r'\[[xX]\]', '[ ]', original_line, count=1)
+        lines[line_idx] = new_line
+        new_body = "\n".join(lines)
+        # Write updated body back to GitHub
+        tmp_body = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+                f.write(new_body); tmp_body = f.name
+            r = subprocess.run(["gh","issue","edit",n,"-R",REPO,"--body-file",tmp_body],
+                                capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "gh edit failed")}
+        finally:
+            if tmp_body:
+                try: os.unlink(tmp_body)
+                except Exception: pass
+        # Post history comment
+        history_text = f"✅ выполнено: {item_text}" if checked else f"↩️ снята отметка: {item_text}"
+        tmp_comment = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                f.write(history_text); tmp_comment = f.name
+            sh(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp_comment])
+        finally:
+            if tmp_comment:
+                try: os.unlink(tmp_comment)
+                except Exception: pass
+        return {"ok":True,"msg":f"checkbox {index} updated"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
