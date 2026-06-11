@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { command, config, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean }
@@ -32,6 +32,7 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [settings, setSettings] = useState(false)
+  const [newIssue, setNewIssue] = useState(false)
   const [view, setView] = useState<'board' | 'team'>('board')
   const [open, setOpen] = useState<number | null>(null)
   const [, setTick] = useState(0)
@@ -56,7 +57,8 @@ export default function App() {
         onRun={() => ask('Run launcher', 'Claims every launchable task and runs REAL agents — this spends from your pool ($).', () => run('run'))}
         onPause={() => run(state?.flags.paused ? 'resume' : 'pause')}
         onKill={() => state?.flags.killed ? run('unkill') : ask('Kill-switch', 'Stops the launcher loop at the next tick. In-flight agents finish on their own.', () => run('kill'))}
-        onSettings={() => setSettings(true)} />
+        onSettings={() => setSettings(true)}
+        onNew={() => setNewIssue(true)} />
 
       {view === 'board' ? (
         <>
@@ -73,15 +75,16 @@ export default function App() {
         onCancel={() => setConfirm(null)} onOk={(reason) => { const f = confirm.onOk; setConfirm(null); f(reason) }}
         withInput={confirm.withInput} />}
       {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
+      {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} ask={ask} onToast={toast} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} />}
     </div>
   )
 }
 
-function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings }: {
+function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew }: {
   state: State | null; conn: boolean; view: 'board' | 'team'; setView: (v: 'board' | 'team') => void
-  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void
+  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void
 }) {
   const paused = state?.flags.paused, killed = state?.flags.killed
   return (
@@ -96,6 +99,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
         <span className="repo">{state?.autonomy.repo || '—'}</span>
       </div>
       <div className="hdr-r">
+        <button className="btn" onClick={onNew}>+ New</button>
         <button className="btn pri" onClick={onRun}>▶ Run</button>
         <button className="btn" onClick={onPause}>{paused ? 'Resume' : 'Pause'}</button>
         <button className={'btn' + (killed ? '' : ' warn')} onClick={onKill}>{killed ? 'Un-kill' : 'Kill'}</button>
@@ -413,6 +417,83 @@ function Modal({ title, body, onCancel, onOk, withInput }: {
         <div className="m-actions">
           <button className="btn" onClick={onCancel}>Cancel</button>
           <button className="btn pri" disabled={withInput === true && !reason.trim()} onClick={() => onOk(withInput ? reason : undefined)}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NewIssueModal({ state, onClose, ask, onToast }: {
+  state: State | null
+  onClose: () => void
+  ask: (title: string, body: string, onOk: () => void) => void
+  onToast: (msg: string, err?: boolean) => void
+}) {
+  const [kind, setKind] = useState<'charter' | 'task'>('charter')
+  const [title, setTitle] = useState('')
+  const [what, setWhat] = useState('')
+  const [why, setWhy] = useState('')
+  const [scope, setScope] = useState('')
+  const [constraints, setConstraints] = useState('')
+  const [acceptance, setAcceptance] = useState('')
+  const [description, setDescription] = useState('')
+  const [charterN, setCharterN] = useState('')
+  const [dependsOn, setDependsOn] = useState('')
+
+  const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
+
+  const isValid = kind === 'charter'
+    ? !!(title.trim() && what.trim() && why.trim())
+    : !!(title.trim() && description.trim() && charterN)
+
+  const handleSubmit = () => {
+    if (!isValid) return
+    const p: IssuePayload = kind === 'charter'
+      ? { kind: 'charter', title, what, why, scope, constraints, acceptance }
+      : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined }
+    ask(`Create ${kind}`, `Create a new ${kind} issue titled "${title}"?`, () => {
+      createIssue(p).then((r) => {
+        onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
+        if (r.ok) onClose()
+      }).catch((e: unknown) => onToast('request failed: ' + String(e), true))
+    })
+  }
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal ni-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ni-head">
+          <h3>New issue</h3>
+          <button className="btn ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="ni-tabs">
+          <button className={'ni-tab' + (kind === 'charter' ? ' on' : '')} onClick={() => setKind('charter')}>Charter</button>
+          <button className={'ni-tab' + (kind === 'task' ? ' on' : '')} onClick={() => setKind('task')}>Task</button>
+        </div>
+        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" /></label>
+        {kind === 'charter' ? (
+          <>
+            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} /></label>
+            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} /></label>
+            <label className="fld">Scope<textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="In-scope / out-of-scope" rows={2} /></label>
+            <label className="fld">Constraints<textarea value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="Technical, time, or budget constraints" rows={2} /></label>
+            <label className="fld">Acceptance<textarea value={acceptance} onChange={(e) => setAcceptance(e.target.value)} placeholder="Acceptance criteria (checklist)" rows={3} /></label>
+          </>
+        ) : (
+          <>
+            <label className="fld">Description *<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this task does" rows={3} /></label>
+            <label className="fld">Charter *
+              <select value={charterN} onChange={(e) => setCharterN(e.target.value)}>
+                <option value="">— select charter —</option>
+                {charters.map((c) => <option key={c.n} value={String(c.n)}>#{c.n} {c.title}</option>)}
+              </select>
+            </label>
+            <label className="fld">Depends-on (optional)<input value={dependsOn} onChange={(e) => setDependsOn(e.target.value)} placeholder="Issue number, e.g. 42" /></label>
+          </>
+        )}
+        <div className="m-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn pri" disabled={!isValid} onClick={handleSubmit}>Create</button>
         </div>
       </div>
     </div>

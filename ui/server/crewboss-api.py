@@ -231,6 +231,68 @@ def do_command(body):
         return {"ok":True,"msg":f"requested changes #{n}"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
+def do_issue(body):
+    """Create a GitHub issue via gh CLI. kind=charter or kind=task."""
+    kind  = body.get("kind", "")
+    title = (body.get("title") or "").strip()
+    if not kind or not title:
+        return {"ok": False, "msg": "kind and title required"}
+
+    if kind == "charter":
+        what        = (body.get("what")        or "").strip()
+        why         = (body.get("why")         or "").strip()
+        scope       = (body.get("scope")       or "").strip()
+        constraints = (body.get("constraints") or "").strip()
+        acceptance  = (body.get("acceptance")  or "").strip()
+        if not what or not why:
+            return {"ok": False, "msg": "what and why are required for charter"}
+        text = (
+            "## Цель\n\n"
+            f"**WHAT:** {what}\n\n"
+            f"**WHY:** {why}\n\n"
+            "## Скоуп\n\n"
+            f"{scope}\n\n"
+            "## Констрейнты\n\n"
+            f"{constraints}\n\n"
+            "## Acceptance\n\n"
+            f"{acceptance}\n"
+        )
+        label = "type:charter,status:needs-plan"
+    elif kind == "task":
+        desc      = (body.get("description") or "").strip()
+        charter_n = body.get("charter")
+        depends   = (body.get("depends_on")  or "").strip()
+        if not desc or not charter_n:
+            return {"ok": False, "msg": "description and charter are required for task"}
+        text = desc + f"\n\nCharter: #{charter_n}"
+        if depends:
+            text += f"\nDepends-on: #{depends}"
+        text += "\n"
+        label = "type:agent"
+    else:
+        return {"ok": False, "msg": f"unknown kind: {kind}"}
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(text)
+        fname = f.name
+    try:
+        args = ["gh", "issue", "create", "--title", title, "--label", label, "--body-file", fname]
+        if REPO:
+            args += ["-R", REPO]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok": False, "msg": (r.stderr or r.stdout or "gh error").strip()}
+        url = (r.stdout or "").strip()
+        m = re.search(r"/issues/(\d+)", url)
+        num = int(m.group(1)) if m else None
+        return {"ok": True, "msg": f"created #{num}" if num else "created", "number": num}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+    finally:
+        try: os.unlink(fname)
+        except Exception: pass
+
+
 def save_team(body):
     """Persist an edited org (policy+departments+nodes) back to CB_TEAM/org.json. The browser
     validates invariants live; here we keep only the structure and write atomically."""
@@ -298,7 +360,8 @@ class H(BaseHTTPRequestHandler):
         try: body=json.loads(self.rfile.read(n) or b"{}")
         except Exception: body={}
         if path=="/api/command": return self._send(200, do_command(body))
-        if path=="/api/team":     return self._send(200, save_team(body))
+        if path=="/api/team":    return self._send(200, save_team(body))
+        if path=="/api/issue":   return self._send(200, do_issue(body))
         return self._send(404,{"ok":False,"msg":"not found"})
 
 if __name__=="__main__":

@@ -152,8 +152,19 @@ body {
 .modal h3 { margin:0 0 9px; font-weight:640; letter-spacing:-0.02em } .modal p { color:var(--mut2); margin:0 0 20px; line-height:1.55 }
 .m-actions { display:flex; gap:10px; justify-content:flex-end }
 .fld { display:block; color:var(--mut); font-size:13px; margin:0 0 15px }
-.fld input { display:block; width:100%; margin-top:6px; background:var(--bg); border:1px solid var(--line2); color:var(--ink); padding:10px 12px; border-radius:10px; font:inherit }
+.fld input, .fld textarea, .fld select { display:block; width:100%; margin-top:6px; background:var(--bg); border:1px solid var(--line2); color:var(--ink); padding:10px 12px; border-radius:10px; font:inherit }
+.fld textarea { resize:vertical; min-height:58px }
+.fld select { appearance:none; -webkit-appearance:none; cursor:pointer }
 .hint { color:var(--mut); font-size:12px } .hint code { background:var(--bg); padding:2px 6px; border-radius:5px; border:1px solid var(--line) }
+
+/* new-issue modal */
+.ni-modal { max-width:580px; max-height:90vh; overflow-y:auto }
+.ni-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px }
+.ni-head h3 { margin:0; font-weight:640; letter-spacing:-0.02em }
+.ni-tabs { display:flex; gap:4px; margin-bottom:18px; background:var(--raise); border:1px solid var(--line); border-radius:10px; padding:3px }
+.ni-tab { flex:1; background:transparent; border:0; color:var(--mut); padding:6px 12px; border-radius:7px; cursor:pointer; font:inherit; font-weight:560; font-size:13px; transition:.15s }
+.ni-tab:hover { color:var(--ink) }
+.ni-tab.on { background:var(--card); color:var(--ink); box-shadow:0 1px 0 var(--hi) inset }
 
 /* task card foot extras */
 .working-tag { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--prog); font-weight:650 }

@@ -75,6 +75,25 @@ export async function fetchTask(n: number): Promise<TaskDetail | null> {
   } catch { return null }
 }
 
+export type IssuePayload =
+  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string }
+  | { kind: 'task'; title: string; description: string; charter: number; depends_on?: string }
+
+export type IssueResult = { ok: boolean; msg: string; number?: number }
+
+export async function createIssue(payload: IssuePayload): Promise<IssueResult> {
+  try {
+    const r = await fetch(config.url + '/api/issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify(payload),
+    })
+    return (await r.json()) as IssueResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
 export type IssueComment = { author: string; created: string; body: string }
 export async function fetchComments(n: number): Promise<IssueComment[]> {
   try {
