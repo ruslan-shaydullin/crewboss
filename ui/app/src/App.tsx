@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
-type Toast = { id: number; msg: string; err?: boolean }
+type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
 type Confirm = { title: string; body: string; onOk: (reason?: string) => void; withInput?: boolean } | null
+
+/** Respect prefers-reduced-motion globally */
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
 
 /** animate a number toward `value` (easeOutCubic) — premium count-up on change. */
 function useCountUp(value: number, ms = 600): number {
@@ -12,6 +17,7 @@ function useCountUp(value: number, ms = 600): number {
   useEffect(() => {
     const a = from.current, b = value
     if (a === b) { setN(b); return }
+    if (prefersReducedMotion()) { from.current = b; setN(b); return }
     let raf = 0, start = 0
     const tick = (t: number) => {
       if (!start) start = t
@@ -24,6 +30,47 @@ function useCountUp(value: number, ms = 600): number {
     return () => cancelAnimationFrame(raf)
   }, [value, ms])
   return n
+}
+
+/**
+ * FLIP hook: measures children by data-flip-key before/after renders and
+ * plays translate animations for moved items. No deps — runs every render
+ * so the snapshot is always fresh.
+ */
+function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
+  const snapshot = useRef<Map<string, DOMRect>>(new Map())
+
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const prev = snapshot.current
+    const reduced = prefersReducedMotion()
+
+    // INVERT + PLAY: animate children from old positions to new
+    Array.from(el.children).forEach((child) => {
+      const key = (child as HTMLElement).dataset.flipKey
+      if (!key) return
+      const oldRect = prev.get(key)
+      if (!oldRect) return
+      const newRect = child.getBoundingClientRect()
+      const dx = oldRect.left - newRect.left
+      const dy = oldRect.top - newRect.top
+      if ((Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) || reduced) return
+      ;(child as HTMLElement).animate(
+        [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }],
+        { duration: 300, easing: 'cubic-bezier(.2,.7,.2,1)' }
+      )
+    })
+
+    // FIRST (for next render): snapshot current positions
+    const next = new Map<string, DOMRect>()
+    Array.from(el.children).forEach((child) => {
+      const key = (child as HTMLElement).dataset.flipKey
+      if (key) next.set(key, child.getBoundingClientRect())
+    })
+    snapshot.current = next
+  })
 }
 
 export default function App() {
@@ -44,7 +91,11 @@ export default function App() {
   const toast = useCallback((msg: string, err?: boolean) => {
     const id = ++tid.current
     setToasts((t) => [...t, { id, msg, err }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
+    // Start exit animation before removing
+    setTimeout(() => {
+      setToasts((t) => t.map((x) => x.id === id ? { ...x, exiting: true } : x))
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 300)
+    }, 3100)
   }, [])
   const run = useCallback(async (action: string, number?: number, comment?: string) => {
     const r = await command(action, number, comment); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
@@ -70,7 +121,11 @@ export default function App() {
         </>
       ) : <TeamPage />}
 
-      <div className="toasts">{toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}</div>
+      <div className="toasts">
+        {toasts.map((t) => (
+          <div key={t.id} className={'toast' + (t.err ? ' err' : '') + (t.exiting ? ' exiting' : '')}>{t.msg}</div>
+        ))}
+      </div>
       {confirm && <Modal title={confirm.title} body={confirm.body}
         onCancel={() => setConfirm(null)} onOk={(reason) => { const f = confirm.onOk; setConfirm(null); f(reason) }}
         withInput={confirm.withInput} />}
@@ -172,6 +227,8 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
   const pct = total > 0 ? Math.round((100 * done) / total) : 0
+  const gridRef = useRef<HTMLDivElement>(null)
+  useFlip(gridRef)
   return (
     <div className="charter">
       <div className="charter-head">
@@ -192,7 +249,11 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
             true)}>Request changes</button>
         </>}
       </div>
-      {total > 0 && <div className="task-grid">{leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}</div>}
+      {total > 0 && (
+        <div className="task-grid" ref={gridRef}>
+          {leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}
+        </div>
+      )}
       {total === 0 && <div className="leaf-empty">awaiting decomposition…</div>}
     </div>
   )
@@ -211,13 +272,59 @@ function Ring({ pct, label }: { pct: number; label: string }) {
   )
 }
 
+/** Color glow per state for card highlight animation */
+const STATE_GLOW: Record<string, string> = {
+  'in-progress': 'rgba(91,156,240,.55)',
+  'review':      'rgba(179,155,255,.55)',
+  'done':        'rgba(70,206,142,.55)',
+  'blocked':     'rgba(240,103,106,.55)',
+  'held':        'rgba(232,151,74,.55)',
+  'plan-review': 'rgba(224,182,74,.55)',
+  'approved':    'rgba(70,206,142,.4)',
+}
+
 function TaskCard({ t, onOpen }: { t: Task; onOpen: (n: number) => void }) {
   const working = t.state === 'in-progress'
+  const cardRef = useRef<HTMLDivElement>(null)
+  const badgeRef = useRef<HTMLSpanElement>(null)
+  const mountedRef = useRef(false)
+
+  useEffect(() => {
+    // Skip animation on initial mount
+    if (!mountedRef.current) { mountedRef.current = true; return }
+    if (prefersReducedMotion()) return
+
+    // Badge: cross-fade/scale in with new color
+    if (badgeRef.current) {
+      badgeRef.current.animate(
+        [{ opacity: 0, transform: 'scale(0.6)' }, { opacity: 1, transform: 'scale(1)' }],
+        { duration: 280, easing: 'cubic-bezier(.2,.7,.2,1)' }
+      )
+    }
+    // Card: brief glow with new state color
+    if (cardRef.current) {
+      const color = STATE_GLOW[t.state] ?? 'rgba(255,255,255,.2)'
+      cardRef.current.animate(
+        [
+          { boxShadow: `0 0 0 3px ${color}`, offset: 0 },
+          { boxShadow: `0 0 0 3px ${color}`, offset: 0.25 },
+          { boxShadow: '0 0 0 0 transparent', offset: 1 },
+        ],
+        { duration: 750, easing: 'ease-out' }
+      )
+    }
+  }, [t.state]) // only re-runs when state changes
+
   return (
-    <div className={'task' + (working ? ' working' : '')} onClick={() => onOpen(t.n)}>
+    <div
+      ref={cardRef}
+      className={'task' + (working ? ' working' : '')}
+      data-flip-key={String(t.n)}
+      onClick={() => onOpen(t.n)}
+    >
       <div className="task-top">
         <span className="num">#{t.n}</span>
-        <span className={'badge b-' + t.state}>{t.state}</span>
+        <span ref={badgeRef} className={'badge b-' + t.state}>{t.state}</span>
         <span className="grow" />
         {t.cost != null && String(t.cost) !== '' && <span className="cost">${Number(t.cost).toFixed(3)}</span>}
       </div>
@@ -246,20 +353,34 @@ function SkeletonBoard() {
 }
 
 function AgentsRail({ agents, onOpen }: { agents: Agent[]; onOpen: (n: number) => void }) {
+  const listRef = useRef<HTMLElement>(null)
+  useFlip(listRef as React.RefObject<HTMLElement | null>)
   return (
-    <aside className="rail">
+    <aside className="rail" ref={listRef as React.RefObject<HTMLElement>}>
       <div className="rail-head"><span>Agents</span><span className="rail-count">{agents.length}</span></div>
       {agents.length === 0
         ? <div className="rail-empty"><div className="z">z z z</div>no agents running</div>
-        : agents.map((a, i) => <AgentCard key={(a.task ?? 'boss') + ':' + i} a={a} onOpen={onOpen} />)}
+        : agents.map((a) => (
+            <AgentCard
+              key={String(a.task ?? 'boss') + ':' + a.role}
+              a={a}
+              onOpen={onOpen}
+            />
+          ))}
     </aside>
   )
 }
 
 function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
   const initial = a.role[0]?.toUpperCase() ?? '?'
+  const flipKey = String(a.task ?? 'boss') + ':' + a.role
   return (
-    <div className={'agent role-' + a.role} onClick={() => a.task != null && onOpen(a.task)} style={a.task != null ? { cursor: 'pointer' } : undefined}>
+    <div
+      className={'agent role-' + a.role}
+      data-flip-key={flipKey}
+      onClick={() => a.task != null && onOpen(a.task)}
+      style={a.task != null ? { cursor: 'pointer' } : undefined}
+    >
       <div className="agent-mono">{initial}<span className="agent-wave" /></div>
       <div className="agent-body">
         <div className="agent-top">
@@ -274,6 +395,23 @@ function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
   )
 }
 
+/** Plays a short exit animation on the overlay refs, then calls `done`. */
+function animateOverlayOut(
+  bgRef: React.RefObject<HTMLElement | null>,
+  panelRef: React.RefObject<HTMLElement | null>,
+  done: () => void,
+  slideDir: 'scale' | 'right' = 'scale'
+) {
+  if (prefersReducedMotion() || !bgRef.current || !panelRef.current) { done(); return }
+  const dur = 180
+  bgRef.current.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur, easing: 'ease-in', fill: 'forwards' })
+  const panelKf = slideDir === 'right'
+    ? [{ transform: 'translateX(0)', opacity: 1 }, { transform: 'translateX(40px)', opacity: 0 }]
+    : [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(.97)', opacity: 0 }]
+  panelRef.current.animate(panelKf, { duration: dur, easing: 'ease-in', fill: 'forwards' })
+  setTimeout(done, dur + 10)
+}
+
 function TaskDrawer({ n, task, onClose, onAction, ask }: {
   n: number; task: Task | null; onClose: () => void
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -284,14 +422,14 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [sending, setSending] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
-
-  // toast helper scoped to drawer (re-use App's pattern locally)
   const [toasts, setToasts] = useState<Toast[]>([])
   const toast = useCallback((msg: string, err?: boolean) => {
     const id = ++tid.current
     setToasts((t) => [...t, { id, msg, err }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
   }, [])
+  const bgRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let on = true
@@ -319,19 +457,21 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
     if (r.ok) { setCommentText(''); loadComments() }
   }
 
+  const close = () => animateOverlayOut(bgRef, panelRef, onClose, 'right')
+
   const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
   const cost = d?.status.cost_usd
   const pr = d?.status.pr || task?.pr
   return (
-    <div className="drawer-bg" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    <div ref={bgRef} className="drawer-bg" onClick={close}>
+      <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-head">
           <div>
             <div className="drawer-id"><span className="num">#{n}</span>{task && <span className={'badge b-' + task.state}>{task.state}</span>}
               {d?.alive && <span className="live-tag"><span className="phase-dot" />live</span>}</div>
             <h2 className="drawer-title">{task?.title ?? 'task #' + n}</h2>
           </div>
-          <button className="btn ghost" onClick={onClose}>✕</button>
+          <button className="btn ghost" onClick={close}>✕</button>
         </div>
 
         <div className="drawer-stats">
@@ -407,16 +547,20 @@ function Modal({ title, body, onCancel, onOk, withInput }: {
   title: string; body: string; onCancel: () => void; onOk: (reason?: string) => void; withInput?: boolean
 }) {
   const [reason, setReason] = useState('')
+  const bgRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const cancel = () => animateOverlayOut(bgRef, panelRef, onCancel)
+  const ok = () => animateOverlayOut(bgRef, panelRef, () => onOk(withInput ? reason : undefined))
   return (
-    <div className="modal-bg" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div ref={bgRef} className="modal-bg" onClick={cancel}>
+      <div ref={panelRef} className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3><p>{body}</p>
         {withInput && (
           <label className="fld"><textarea rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Причина…" /></label>
         )}
         <div className="m-actions">
-          <button className="btn" onClick={onCancel}>Cancel</button>
-          <button className="btn pri" disabled={withInput === true && !reason.trim()} onClick={() => onOk(withInput ? reason : undefined)}>Confirm</button>
+          <button className="btn" onClick={cancel}>Cancel</button>
+          <button className="btn pri" disabled={withInput === true && !reason.trim()} onClick={ok}>Confirm</button>
         </div>
       </div>
     </div>
@@ -426,7 +570,7 @@ function Modal({ title, body, onCancel, onOk, withInput }: {
 function NewIssueModal({ state, onClose, ask, onToast }: {
   state: State | null
   onClose: () => void
-  ask: (title: string, body: string, onOk: () => void) => void
+  ask: (title: string, body: string, onOk: (reason?: string) => void, withInput?: boolean) => void
   onToast: (msg: string, err?: boolean) => void
 }) {
   const [kind, setKind] = useState<'charter' | 'task'>('charter')
@@ -503,14 +647,17 @@ function NewIssueModal({ state, onClose, ask, onToast }: {
 function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [url, setUrl] = useState(config.url)
   const [token, setToken] = useState(config.token)
+  const bgRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const close = () => animateOverlayOut(bgRef, panelRef, onClose)
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div ref={bgRef} className="modal-bg" onClick={close}>
+      <div ref={panelRef} className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>Connection</h3>
         <label className="fld">API URL<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://127.0.0.1:8787" /></label>
         <label className="fld">API token<input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="CB_API_TOKEN" /></label>
         <p className="hint">Tunnel: <code>ssh -N -L 8787:127.0.0.1:8787 ec2-user@&lt;ip&gt;</code></p>
-        <div className="m-actions"><button className="btn" onClick={onClose}>Close</button>
+        <div className="m-actions"><button className="btn" onClick={close}>Close</button>
           <button className="btn pri" onClick={() => { config.url = url.trim(); config.token = token.trim(); onSaved() }}>Save & reconnect</button></div>
       </div>
     </div>
