@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# LEGACY — Arch-2 reference launcher (worktree+foreground; kill-file .crewboss-launcher.stop).
+# Decision (tech-lead 2026-06-11, reversible): CANONICAL launcher = crewboss-launcher-gh.sh
+# (GitHub-board, background-parallel, kill_switch at run/kill_switch).
+# This file is kept because reference/tests/launcher-*.test.sh still run against it.
+# DO NOT DELETE until launcher tests are migrated to crewboss-launcher-gh.sh.
+# See reference/runtime-manifest.tsv (two-launchers decision) and reference/README.md.
+#
 # crewboss-launcher.sh — Arch-2 launcher (REFERENCE). Polls the board and launches one
 # executor per launchable leaf as a SEPARATE process (no in-session spawn). The launcher
 # is NOT crewboss-gated itself — its safety is its OWN code (kill-switch, budget cap).
