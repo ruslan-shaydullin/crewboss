@@ -69,8 +69,10 @@ function startStubServer() {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ n: 3, status: { phase: 'coding', cost_usd: 0.012 }, alive: true, started: new Date(Date.now() - 45000).toISOString(), prompt: 'stub prompt', log: '', body: '' }));
       } else if (url === '/api/team') {
-        // Return 404 so TeamPage falls back to its bundled FALLBACK_TEAM
-        res.writeHead(404); res.end('{}');
+        // Return present:false so fetchTeam() falls back to its bundled
+        // FALLBACK_TEAM — no 404 console.error from the browser.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ present: false, nodes: [], roles: [], departments: [], policy: {} }));
       } else {
         res.writeHead(404); res.end('{}');
       }

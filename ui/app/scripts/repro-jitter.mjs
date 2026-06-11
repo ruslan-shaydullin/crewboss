@@ -84,7 +84,10 @@ function startStubServer() {
         res.write(`event: state\ndata: ${JSON.stringify(STUB_STATE)}\n\n`);
         req.on('close', () => {});
       } else if (url === '/api/team') {
-        res.writeHead(404); res.end('{}');
+        // Return present:false so fetchTeam() uses its bundled FALLBACK_TEAM
+        // without a 404 console.error from the browser.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ present: false, nodes: [], roles: [], departments: [], policy: {} }));
       } else {
         res.writeHead(404); res.end('{}');
       }
