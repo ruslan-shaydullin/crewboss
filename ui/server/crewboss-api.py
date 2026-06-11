@@ -13,7 +13,7 @@ Endpoints (all under /api, bearer-auth except /api/health):
     POST /api/command {action,...}   -> run | pause | resume | kill | unkill | approve(#) | hold(#) | unhold(#)
 Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate origin).
 """
-import json, os, subprocess, sys, threading, time
+import json, os, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO   = os.environ.get("CB_REPO", "")
@@ -101,6 +101,22 @@ def build_state():
                 budget=dict(spent=budget.get("spent_usd",0), cap=cap, runs=budget.get("runs",[])),
                 flags=flags, autonomy=dict(repo=REPO))
 
+def build_comments(n):
+    """Comments for issue n: last 50, via gh CLI."""
+    try:
+        raw = sh(["gh", "issue", "view", str(n), "-R", REPO, "--json", "comments"]) or ""
+        if not raw.strip():
+            return {"ok": False, "comments": []}
+        data = json.loads(raw)
+        comments = data.get("comments", [])
+        comments = comments[-50:]
+        result = [{"author": c.get("author", {}).get("login", ""),
+                   "created": c.get("createdAt", ""),
+                   "body": c.get("body", "")} for c in comments]
+        return {"ok": True, "comments": result}
+    except Exception:
+        return {"ok": False, "comments": []}
+
 def build_task(n):
     """Detail for one task: live status + the brief it was given + the redacted run log."""
     w = os.path.join(RUN, "work", str(n))
@@ -183,6 +199,36 @@ def do_command(body):
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","hold"]); return {"ok":True,"msg":f"hold #{n}"}
     elif a=="unhold" and n.isdigit():
         sh(["gh","issue","edit",n,"-R",REPO,"--remove-label","hold"]); return {"ok":True,"msg":f"unhold #{n}"}
+    elif a=="comment":
+        comment_text = str(body.get("comment","")).strip()
+        if not n.isdigit() or not comment_text:
+            return {"ok":False,"msg":"comment required"}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(comment_text); tmp_path = tmp.name
+        try:
+            sh(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp_path])
+        finally:
+            try: os.remove(tmp_path)
+            except Exception: pass
+        return {"ok":True,"msg":f"commented #{n}"}
+    elif a=="request-changes":
+        comment = str(body.get("comment","")).strip()
+        if not n.isdigit() or not comment:
+            return {"ok":False,"msg":"comment required"}
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w",suffix=".txt",delete=False,encoding="utf-8") as f:
+                f.write(f"🔁 План возвращён на доработку:\n\n{comment}"); tmp = f.name
+            r = subprocess.run(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp],
+                               capture_output=True,text=True,timeout=30)
+            if r.returncode != 0:
+                return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "gh comment failed")}
+        finally:
+            if tmp:
+                try: os.unlink(tmp)
+                except Exception: pass
+        sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:needs-plan","--remove-label","status:plan-review"])
+        return {"ok":True,"msg":f"requested changes #{n}"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def save_team(body):
@@ -226,6 +272,10 @@ class H(BaseHTTPRequestHandler):
             tail = path.rsplit("/",1)[-1]
             if not tail.isdigit(): return self._send(400,{"ok":False,"msg":"bad task id"})
             return self._send(200, build_task(int(tail)))
+        if path.startswith("/api/comments/"):
+            tail = path.rsplit("/",1)[-1]
+            if not tail.isdigit(): return self._send(400,{"ok":False,"msg":"bad issue id"})
+            return self._send(200, build_comments(int(tail)))
         if path=="/api/team": return self._send(200, build_team())
         if path=="/api/events":
             self.send_response(200); self.send_header("Content-Type","text/event-stream")

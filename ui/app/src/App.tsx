@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { command, config, fetchTask, subscribe, type Agent, type State, type Task, type TaskDetail } from './api'
+import { command, config, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean }
-type Confirm = { title: string; body: string; onOk: () => void } | null
+type Confirm = { title: string; body: string; onOk: (reason?: string) => void; withInput?: boolean } | null
 
 /** animate a number toward `value` (easeOutCubic) — premium count-up on change. */
 function useCountUp(value: number, ms = 600): number {
@@ -45,10 +45,10 @@ export default function App() {
     setToasts((t) => [...t, { id, msg, err }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
   }, [])
-  const run = useCallback(async (action: string, number?: number) => {
-    const r = await command(action, number); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
+  const run = useCallback(async (action: string, number?: number, comment?: string) => {
+    const r = await command(action, number, comment); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
   }, [toast])
-  const ask = useCallback((title: string, body: string, onOk: () => void) => setConfirm({ title, body, onOk }), [])
+  const ask = useCallback((title: string, body: string, onOk: (reason?: string) => void, withInput?: boolean) => setConfirm({ title, body, onOk, withInput }), [])
 
   return (
     <div className="app">
@@ -70,7 +70,8 @@ export default function App() {
 
       <div className="toasts">{toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}</div>
       {confirm && <Modal title={confirm.title} body={confirm.body}
-        onCancel={() => setConfirm(null)} onOk={() => { const f = confirm.onOk; setConfirm(null); f() }} />}
+        onCancel={() => setConfirm(null)} onOk={(reason) => { const f = confirm.onOk; setConfirm(null); f(reason) }}
+        withInput={confirm.withInput} />}
       {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} />}
@@ -139,7 +140,7 @@ function Stat({ n, label, live, accent }: { n: number; label: string; live?: boo
 
 function Board({ state, conn, onAction, ask, onOpen }: {
   state: State | null; conn: boolean
-  onAction: (a: string, n?: number) => void; ask: (t: string, b: string, ok: () => void) => void; onOpen: (n: number) => void
+  onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
 }) {
   if (!state) return (
     <section className="board">
@@ -161,8 +162,8 @@ function Board({ state, conn, onAction, ask, onOpen }: {
 }
 
 function CharterCard({ c, leaves, onAction, ask, onOpen }: {
-  c: Task | null; leaves: Task[]; onAction: (a: string, n?: number) => void
-  ask: (t: string, b: string, ok: () => void) => void; onOpen: (n: number) => void
+  c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
@@ -177,10 +178,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
         {total > 0 && <Ring pct={pct} label={`${done}/${total}`} />}
-        {c && c.state === 'plan-review' &&
+        {c && c.state === 'plan-review' && <>
           <button className="btn sm pri" onClick={() => ask('Approve plan #' + c.n,
             "Releases this charter's tasks to be launched (executors run, spending from the pool).",
-            () => onAction('approve', c.n))}>Approve plan</button>}
+            () => onAction('approve', c.n))}>Approve plan</button>
+          <button className="btn sm ghost" onClick={() => ask('Request changes #' + c.n,
+            'Опишите, что нужно доработать в плане:',
+            (reason) => onAction('request-changes', c.n, reason),
+            true)}>Request changes</button>
+        </>}
       </div>
       {total > 0 && <div className="task-grid">{leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}</div>}
       {total === 0 && <div className="leaf-empty">awaiting decomposition…</div>}
@@ -266,16 +272,48 @@ function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
 
 function TaskDrawer({ n, task, onClose, onAction, ask }: {
   n: number; task: Task | null; onClose: () => void
-  onAction: (a: string, n?: number) => void; ask: (t: string, b: string, ok: () => void) => void
+  onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
 }) {
   const [d, setD] = useState<TaskDetail | null>(null)
+  const [comments, setComments] = useState<IssueComment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [sending, setSending] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
+  const tid = useRef(0)
+
+  // toast helper scoped to drawer (re-use App's pattern locally)
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const toast = useCallback((msg: string, err?: boolean) => {
+    const id = ++tid.current
+    setToasts((t) => [...t, { id, msg, err }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
+  }, [])
+
   useEffect(() => {
     let on = true
     const load = async () => { const x = await fetchTask(n); if (on) setD(x) }
     load(); const i = setInterval(load, 2500); return () => { on = false; clearInterval(i) }
   }, [n])
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [d?.log])
+
+  const loadComments = useCallback(async () => {
+    const cs = await fetchComments(n); setComments(cs)
+  }, [n])
+  useEffect(() => {
+    loadComments()
+    const i = setInterval(loadComments, 15000)
+    return () => clearInterval(i)
+  }, [loadComments])
+
+  const sendComment = async () => {
+    const text = commentText.trim()
+    if (!text) return
+    setSending(true)
+    const r = await command('comment', n, text)
+    setSending(false)
+    toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
+    if (r.ok) { setCommentText(''); loadComments() }
+  }
 
   const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
   const cost = d?.status.cost_usd
@@ -301,7 +339,13 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
 
         {task && task.state !== 'done' && (
           <div className="drawer-actions">
-            {task.state === 'plan-review' && <button className="btn sm pri" onClick={() => ask('Approve plan #' + n, "Releases this charter's tasks to be launched.", () => onAction('approve', n))}>Approve plan</button>}
+            {task.state === 'plan-review' && <>
+              <button className="btn sm pri" onClick={() => ask('Approve plan #' + n, "Releases this charter's tasks to be launched.", () => onAction('approve', n))}>Approve plan</button>
+              <button className="btn sm ghost" onClick={() => ask('Request changes #' + n,
+                'Опишите, что нужно доработать в плане:',
+                (reason) => onAction('request-changes', n, reason),
+                true)}>Request changes</button>
+            </>}
             {task.state === 'held'
               ? <button className="btn sm" onClick={() => onAction('unhold', n)}>Un-hold</button>
               : <button className="btn sm ghost" onClick={() => onAction('hold', n)}>Hold</button>}
@@ -309,6 +353,37 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
         )}
 
         {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
+
+        <div className="drawer-section">Discussion</div>
+        <div className="discussion">
+          {comments.length === 0
+            ? <div className="disc-empty muted">no comments yet</div>
+            : comments.map((c, i) => (
+              <div className="disc-comment" key={i}>
+                <div className="disc-meta">
+                  <span className="disc-author">{c.author}</span>
+                  {c.created && <span className="disc-time muted">{elapsed(c.created)}</span>}
+                </div>
+                <div className="disc-body">{c.body}</div>
+              </div>
+            ))}
+          <div className="disc-compose">
+            <textarea
+              className="disc-input"
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="Leave a comment…"
+              rows={3}
+            />
+            <button
+              className="btn sm pri"
+              disabled={!commentText.trim() || sending}
+              onClick={sendComment}
+            >{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>
+        {toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}
+
         <div className="drawer-section">Agent log {d?.alive && <span className="muted">· live</span>}</div>
         <pre className="log" ref={logRef}>{d?.log?.trim() || (d?.alive ? 'agent working… (output appears when it streams/finishes)' : 'no log yet')}</pre>
       </div>
@@ -324,12 +399,21 @@ function elapsed(iso: string): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-function Modal({ title, body, onCancel, onOk }: { title: string; body: string; onCancel: () => void; onOk: () => void }) {
+function Modal({ title, body, onCancel, onOk, withInput }: {
+  title: string; body: string; onCancel: () => void; onOk: (reason?: string) => void; withInput?: boolean
+}) {
+  const [reason, setReason] = useState('')
   return (
     <div className="modal-bg" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3><p>{body}</p>
-        <div className="m-actions"><button className="btn" onClick={onCancel}>Cancel</button><button className="btn pri" onClick={onOk}>Confirm</button></div>
+        {withInput && (
+          <label className="fld"><textarea rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Причина…" /></label>
+        )}
+        <div className="m-actions">
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn pri" disabled={withInput === true && !reason.trim()} onClick={() => onOk(withInput ? reason : undefined)}>Confirm</button>
+        </div>
       </div>
     </div>
   )
