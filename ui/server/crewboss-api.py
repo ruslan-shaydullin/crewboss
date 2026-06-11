@@ -254,6 +254,26 @@ def do_command(body):
         if r.returncode != 0:
             return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "delete failed")}
         return {"ok":True,"msg":"comment deleted"}
+    elif a=="resolve-decision" and n.isdigit():
+        decision_text = str(body.get("decision_text") or body.get("comment") or "").strip()
+        comment_body = f"✅ Решение:\n\n{decision_text}" if decision_text else "✅ Задача решена."
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                f.write(comment_body); tmp = f.name
+            rc = subprocess.run(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp],
+                                capture_output=True, text=True, timeout=30)
+            if rc.returncode != 0:
+                return {"ok":False,"msg":(rc.stderr.strip() or rc.stdout.strip() or "comment failed")}
+        finally:
+            if tmp:
+                try: os.unlink(tmp)
+                except Exception: pass
+        rc2 = subprocess.run(["gh","issue","close",n,"-R",REPO],
+                             capture_output=True, text=True, timeout=30)
+        if rc2.returncode != 0:
+            return {"ok":False,"msg":(rc2.stderr.strip() or rc2.stdout.strip() or "close failed")}
+        return {"ok":True,"msg":f"resolved #{n}"}
     elif a=="set-check":
         index = body.get("index")
         checked = body.get("checked")

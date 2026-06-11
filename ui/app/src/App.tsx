@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -113,6 +113,9 @@ export default function App() {
     const r = await command(action, number, comment); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
   }, [toast])
   const ask = useCallback((title: string, body: string, onOk: (reason?: string) => void, withInput?: boolean) => setConfirm({ title, body, onOk, withInput }), [])
+  const resolveAsk = useCallback((n: number) => {
+    ask(`Решить задачу #${n}`, 'Опишите решение (опционально):', (text) => run('resolve-decision', n, text ?? ''), true)
+  }, [ask, run])
 
   return (
     <div className="app">
@@ -132,7 +135,7 @@ export default function App() {
           </div>
         </>
       ) : view === 'human' ? (
-        <HumanDecisionsPage state={state} onOpen={setOpen} />
+        <HumanDecisionsPage state={state} onOpen={setOpen} onResolve={resolveAsk} />
       ) : <TeamPage />}
 
       <div className="toasts">
@@ -235,8 +238,8 @@ function Board({ state, conn, onAction, ask, onOpen }: {
   )
 }
 
-function HumanDecisionsPage({ state, onOpen }: {
-  state: State | null; onOpen: (n: number) => void
+function HumanDecisionsPage({ state, onOpen, onResolve }: {
+  state: State | null; onOpen: (n: number) => void; onResolve: (n: number) => void
 }) {
   if (!state) return (
     <section className="board" data-testid="human-page">
@@ -267,17 +270,18 @@ function HumanDecisionsPage({ state, onOpen }: {
           charter={c}
           tasks={tasks.filter((t) => t.charter === c.n)}
           onOpen={onOpen}
+          onResolve={onResolve}
         />
       ))}
       {orphans.length > 0 && (
-        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} />
+        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} onResolve={onResolve} />
       )}
     </section>
   )
 }
 
-function HumanCharterGroup({ charter, tasks, onOpen }: {
-  charter: Task | null; tasks: Task[]; onOpen: (n: number) => void
+function HumanCharterGroup({ charter, tasks, onOpen, onResolve }: {
+  charter: Task | null; tasks: Task[]; onOpen: (n: number) => void; onResolve: (n: number) => void
 }) {
   return (
     <div className="charter" data-testid="human-charter-group" data-charter={charter?.n ?? 'none'}>
@@ -292,13 +296,13 @@ function HumanCharterGroup({ charter, tasks, onOpen }: {
         <span className="muted" style={{ fontSize: 12 }}>{tasks.length} задач{tasks.length === 1 ? 'а' : tasks.length < 5 ? 'и' : ''}</span>
       </div>
       <div className="task-grid">
-        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} />)}
+        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} onResolve={onResolve} />)}
       </div>
     </div>
   )
 }
 
-function HumanTaskCard({ t, onOpen }: { t: Task; onOpen: (n: number) => void }) {
+function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) => void; onResolve: (n: number) => void }) {
   return (
     <div
       className="task"
@@ -316,6 +320,11 @@ function HumanTaskCard({ t, onOpen }: { t: Task; onOpen: (n: number) => void }) 
       <div className="task-foot">
         <span className="badge" style={{ fontSize: 10, background: 'rgba(70,206,142,.1)', color: 'var(--done)', border: '1px solid rgba(70,206,142,.25)' }}>human-decision</span>
         {t.pr ? <a className="pr" href={t.pr} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>view PR ↗</a> : <span className="muted xs-link">open ↗</span>}
+        <button
+          className="btn sm pri"
+          data-testid="resolve-btn"
+          onClick={(e) => { e.stopPropagation(); onResolve(t.n) }}
+        >Решить</button>
       </div>
     </div>
   )
@@ -546,6 +555,8 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [comments, setComments] = useState<IssueComment[]>([])
   const [commentText, setCommentText] = useState('')
   const [sending, setSending] = useState(false)
+  const [resolveText, setResolveText] = useState('')
+  const [resolving, setResolving] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -625,6 +636,34 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
               ? <button className="btn sm" onClick={() => onAction('unhold', n)}>Un-hold</button>
               : <button className="btn sm ghost" onClick={() => onAction('hold', n)}>Hold</button>}
           </div>
+        )}
+
+        {task && task.labels.includes('type:human-decision') && task.state !== 'done' && (
+          <>
+            <div className="drawer-section">Решить задачу</div>
+            <div className="disc-compose">
+              <textarea
+                className="disc-input"
+                value={resolveText}
+                onChange={(e) => setResolveText(e.target.value)}
+                placeholder="Текст решения (опционально)…"
+                rows={3}
+                data-testid="resolve-text"
+              />
+              <button
+                className="btn sm pri"
+                data-testid="resolve-submit-btn"
+                disabled={resolving}
+                onClick={async () => {
+                  setResolving(true)
+                  const r = await resolveDecision(n, resolveText)
+                  setResolving(false)
+                  toast(r.msg || (r.ok ? 'resolved' : 'failed'), !r.ok)
+                  if (r.ok) close()
+                }}
+              >{resolving ? 'Решение…' : 'Решить'}</button>
+            </div>
+          </>
         )}
 
         {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
