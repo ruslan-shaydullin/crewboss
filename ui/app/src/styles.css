@@ -170,6 +170,10 @@ body {
 .ni-tab { flex:1; background:transparent; border:0; color:var(--mut); padding:6px 12px; border-radius:7px; cursor:pointer; font:inherit; font-weight:560; font-size:13px; transition:.15s }
 .ni-tab:hover { color:var(--ink) }
 .ni-tab.on { background:var(--card); color:var(--ink); box-shadow:0 1px 0 var(--hi) inset }
+.ni-success { display:flex; align-items:center; gap:14px; padding:20px 16px; background:rgba(70,206,142,.07); border:1px solid rgba(70,206,142,.2); border-radius:12px; margin-bottom:16px }
+.ni-success-icon { font-size:22px; color:var(--done); line-height:1 }
+.ni-success-text { font-size:14px; line-height:1.5 }
+.ni-run-warning { font-size:12px; color:var(--mut2); background:rgba(240,167,74,.06); border:1px solid rgba(240,167,74,.18); border-radius:9px; padding:10px 14px; margin-bottom:16px; line-height:1.5 }
 
 /* task card foot extras */
 .working-tag { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--prog); font-weight:650 }

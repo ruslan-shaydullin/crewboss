@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -595,6 +595,8 @@ function NewIssueModal({ state, onClose, onToast }: {
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
+  const [launching, setLaunching] = useState(false)
 
   const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
 
@@ -610,13 +612,58 @@ function NewIssueModal({ state, onClose, onToast }: {
     setSubmitting(true)
     try {
       const r = await createIssue(p)
-      onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
-      if (r.ok) onClose()
+      if (r.ok && kind === 'charter') {
+        setCharterSuccess(r)
+      } else {
+        onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
+        if (r.ok) onClose()
+      }
     } catch (e: unknown) {
       onToast('request failed: ' + String(e), true)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const handleLaunch = async () => {
+    setLaunching(true)
+    try {
+      const r = await command('run')
+      onToast(r.msg || (r.ok ? 'Launcher started' : 'failed'), !r.ok)
+    } catch (e: unknown) {
+      onToast('request failed: ' + String(e), true)
+    } finally {
+      setLaunching(false)
+      onClose()
+    }
+  }
+
+  if (charterSuccess) {
+    return (
+      <div className="modal-bg" data-testid="ni-success-backdrop">
+        <div className="modal ni-modal" data-testid="ni-success-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="ni-head">
+            <h3>Чартер создан</h3>
+            <button className="btn ghost" onClick={onClose}>✕</button>
+          </div>
+          <div className="ni-success" data-testid="ni-success-msg">
+            <div className="ni-success-icon">✓</div>
+            <div className="ni-success-text">
+              Чартер <strong>#{charterSuccess.number}</strong> успешно создан
+            </div>
+          </div>
+          <div className="ni-run-warning" data-testid="ni-run-warning">
+            ⚠ Запуск лаунчера захватит все доступные задачи и запустит реальных агентов — это тратит средства из вашего пула ($).
+          </div>
+          <div className="m-actions">
+            <button className="btn" data-testid="ni-close-btn" onClick={onClose}>Закрыть</button>
+            <button className="btn pri" data-testid="ni-launch-btn" disabled={launching} onClick={handleLaunch}>
+              {launching ? 'Запуск…' : '▶ Запустить'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -630,11 +677,11 @@ function NewIssueModal({ state, onClose, onToast }: {
           <button className={'ni-tab' + (kind === 'charter' ? ' on' : '')} onClick={() => setKind('charter')}>Charter</button>
           <button className={'ni-tab' + (kind === 'task' ? ' on' : '')} onClick={() => setKind('task')}>Task</button>
         </div>
-        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" /></label>
+        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" data-testid="ni-title" /></label>
         {kind === 'charter' ? (
           <>
-            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} /></label>
-            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} /></label>
+            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} data-testid="ni-what" /></label>
+            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} data-testid="ni-why" /></label>
             <label className="fld">Scope<textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="In-scope / out-of-scope" rows={2} /></label>
             <label className="fld">Constraints<textarea value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="Technical, time, or budget constraints" rows={2} /></label>
             <label className="fld">Acceptance<textarea value={acceptance} onChange={(e) => setAcceptance(e.target.value)} placeholder="Acceptance criteria (checklist)" rows={3} /></label>
@@ -653,7 +700,7 @@ function NewIssueModal({ state, onClose, onToast }: {
         )}
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" disabled={!isValid || submitting} onClick={handleSubmit}>{submitting ? 'Creating…' : 'Create'}</button>
+          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={handleSubmit}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </div>
