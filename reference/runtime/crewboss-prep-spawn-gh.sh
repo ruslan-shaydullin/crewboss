@@ -19,13 +19,28 @@ $(bash "$BOARD" get "$ID" prompt)"
 else
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
-  PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
+  # Charter-aware: if the leaf belongs to a charter, the PR must target charter/C, not main.
+  CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
+  CB=""
+  [ -n "$CHARTER" ] && CB="charter/$CHARTER"
+  if [ -n "$CB" ]; then
+    PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+Hard rules for THIS run:
+- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
+
+---- TASK (issue #$ID) ----
+$(bash "$BOARD" get "$ID" prompt)"
+  else
+    PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
 - You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
 - When the work is done and the verification gate is green, push the current branch (\`git push -u origin HEAD\`) and open ONE pull request with \`gh pr create\`; the PR body MUST contain the line \`Closes #$ID\`. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
 ---- TASK (issue #$ID) ----
 $(bash "$BOARD" get "$ID" prompt)"
+  fi
 fi
 TS="${TS:-$(date +%s)}"
 # nsjail writes in-jail files as host-root (uid-map), so a prior run's node_modules is
@@ -58,7 +73,21 @@ git clone --local "$CACHE" "$WA/work" >/dev/null 2>&1 \
 [ -e "$WA/work/.git" ] || { echo "adapter-gh: work tree has no .git — empty clone" >&2; exit 2; }
 cd "$WA/work"
 git remote set-url --push origin "https://x-access-token:${GH_TOKEN}@github.com/$PR_REPO.git"
-git checkout -q -b "task/$ID-$TS"
+if [ -n "${CB:-}" ]; then
+  # Ensure charter/C exists on origin (create off origin/main once, serialised per charter).
+  mkdir -p "$RUN"
+  ( flock 9
+    if ! git ls-remote --exit-code --heads origin "$CB" >/dev/null 2>&1; then
+      main_sha=$(git rev-parse "origin/main" 2>/dev/null \
+                 || git rev-parse "origin/master" 2>/dev/null || true)
+      [ -n "$main_sha" ] && git push -q origin "$main_sha:refs/heads/$CB" 2>/dev/null || true
+    fi
+  ) 9>"$RUN/charter-${CHARTER}.lock"
+  git fetch -q origin "$CB" 2>/dev/null || true
+  git checkout -q -b "$BRANCH" "origin/$CB"
+else
+  git checkout -q -b "$BRANCH"
+fi
 echo ".task.prompt" >> "$WA/work/.git/info/exclude"
 # governed mode: inject the crewboss .claude (gate + role) into the work dir so the executor
 # runs role-gated (set CB_GOVERNED=1 to enable; the spawn then uses --agent <role>).
