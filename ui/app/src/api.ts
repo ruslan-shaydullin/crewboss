@@ -75,13 +75,44 @@ export async function fetchTask(n: number): Promise<TaskDetail | null> {
   } catch { return null }
 }
 
-export type CmdResult = { ok: boolean; msg: string }
-export async function command(action: string, number?: number): Promise<CmdResult> {
+export type IssuePayload =
+  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string }
+  | { kind: 'task'; title: string; description: string; charter: number; depends_on?: string }
+
+export type IssueResult = { ok: boolean; msg: string; number?: number }
+
+export async function createIssue(payload: IssuePayload): Promise<IssueResult> {
   try {
+    const r = await fetch(config.url + '/api/issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify(payload),
+    })
+    return (await r.json()) as IssueResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
+export type IssueComment = { author: string; created: string; body: string }
+export async function fetchComments(n: number): Promise<IssueComment[]> {
+  try {
+    const r = await fetch(config.url + '/api/comments/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
+    if (!r.ok) return []
+    const data = (await r.json()) as { ok: boolean; comments: IssueComment[] }
+    return data.ok ? data.comments : []
+  } catch { return [] }
+}
+
+export type CmdResult = { ok: boolean; msg: string }
+export async function command(action: string, number?: number, comment?: string): Promise<CmdResult> {
+  try {
+    const payload: Record<string, unknown> = { action, number }
+    if (comment !== undefined) payload.comment = comment
     const r = await fetch(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
-      body: JSON.stringify({ action, number }),
+      body: JSON.stringify(payload),
     })
     return (await r.json()) as CmdResult
   } catch (e) {

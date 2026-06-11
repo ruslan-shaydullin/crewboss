@@ -1,0 +1,10 @@
+
+> crewboss-ui@0.1.0 dev
+> vite --port 5500 --strictPort
+
+
+  VITE v6.4.3  ready in 88 ms
+
+  ➜  Local:   http://localhost:5500/
+  ➜  Network: http://192.168.31.161:5500/
+  ➜  Network: http://198.18.0.1:5500/
