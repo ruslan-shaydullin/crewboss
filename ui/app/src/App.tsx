@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { command, config, fetchTask, subscribe, type Agent, type State, type Task, type TaskDetail } from './api'
+import { command, config, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean }
@@ -269,13 +269,45 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   onAction: (a: string, n?: number) => void; ask: (t: string, b: string, ok: () => void) => void
 }) {
   const [d, setD] = useState<TaskDetail | null>(null)
+  const [comments, setComments] = useState<IssueComment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [sending, setSending] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
+  const tid = useRef(0)
+
+  // toast helper scoped to drawer (re-use App's pattern locally)
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const toast = useCallback((msg: string, err?: boolean) => {
+    const id = ++tid.current
+    setToasts((t) => [...t, { id, msg, err }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
+  }, [])
+
   useEffect(() => {
     let on = true
     const load = async () => { const x = await fetchTask(n); if (on) setD(x) }
     load(); const i = setInterval(load, 2500); return () => { on = false; clearInterval(i) }
   }, [n])
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [d?.log])
+
+  const loadComments = useCallback(async () => {
+    const cs = await fetchComments(n); setComments(cs)
+  }, [n])
+  useEffect(() => {
+    loadComments()
+    const i = setInterval(loadComments, 15000)
+    return () => clearInterval(i)
+  }, [loadComments])
+
+  const sendComment = async () => {
+    const text = commentText.trim()
+    if (!text) return
+    setSending(true)
+    const r = await command('comment', n, text)
+    setSending(false)
+    toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
+    if (r.ok) { setCommentText(''); loadComments() }
+  }
 
   const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
   const cost = d?.status.cost_usd
@@ -309,6 +341,37 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
         )}
 
         {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
+
+        <div className="drawer-section">Discussion</div>
+        <div className="discussion">
+          {comments.length === 0
+            ? <div className="disc-empty muted">no comments yet</div>
+            : comments.map((c, i) => (
+              <div className="disc-comment" key={i}>
+                <div className="disc-meta">
+                  <span className="disc-author">{c.author}</span>
+                  {c.created && <span className="disc-time muted">{elapsed(c.created)}</span>}
+                </div>
+                <div className="disc-body">{c.body}</div>
+              </div>
+            ))}
+          <div className="disc-compose">
+            <textarea
+              className="disc-input"
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="Leave a comment…"
+              rows={3}
+            />
+            <button
+              className="btn sm pri"
+              disabled={!commentText.trim() || sending}
+              onClick={sendComment}
+            >{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>
+        {toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}
+
         <div className="drawer-section">Agent log {d?.alive && <span className="muted">· live</span>}</div>
         <pre className="log" ref={logRef}>{d?.log?.trim() || (d?.alive ? 'agent working… (output appears when it streams/finishes)' : 'no log yet')}</pre>
       </div>
