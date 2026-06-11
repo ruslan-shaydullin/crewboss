@@ -92,7 +92,7 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [settings, setSettings] = useState(false)
   const [newIssue, setNewIssue] = useState(false)
-  const [view, setView] = useState<'board' | 'team'>('board')
+  const [view, setView] = useState<'board' | 'team' | 'human'>('board')
   const [open, setOpen] = useState<number | null>(null)
   const [, setTick] = useState(0)
   const tid = useRef(0)
@@ -131,6 +131,8 @@ export default function App() {
             <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
           </div>
         </>
+      ) : view === 'human' ? (
+        <HumanDecisionsPage state={state} onOpen={setOpen} />
       ) : <TeamPage />}
 
       <div className="toasts">
@@ -150,7 +152,7 @@ export default function App() {
 }
 
 function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew }: {
-  state: State | null; conn: boolean; view: 'board' | 'team'; setView: (v: 'board' | 'team') => void
+  state: State | null; conn: boolean; view: 'board' | 'team' | 'human'; setView: (v: 'board' | 'team' | 'human') => void
   onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void
 }) {
   const paused = state?.flags.paused, killed = state?.flags.killed
@@ -158,9 +160,10 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
     <header className="hdr">
       <div className="hdr-l">
         <span className="brand"><span className="logo">◆</span>crewboss</span>
-        <nav className="nav">
+        <nav className="nav" data-testid="main-nav">
           <button className={view === 'board' ? 'on' : ''} onClick={() => setView('board')}>Board</button>
           <button className={view === 'team' ? 'on' : ''} onClick={() => setView('team')}>Team</button>
+          <button className={view === 'human' ? 'on' : ''} onClick={() => setView('human')} data-testid="tab-human">Задачи на человека</button>
         </nav>
         <span className={'conn' + (conn ? ' live' : '')}>{conn ? 'live' : 'offline'}</span>
         <span className="repo">{state?.autonomy.repo || '—'}</span>
@@ -229,6 +232,92 @@ function Board({ state, conn, onAction, ask, onOpen }: {
       {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
       {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen} />}
     </section>
+  )
+}
+
+function HumanDecisionsPage({ state, onOpen }: {
+  state: State | null; onOpen: (n: number) => void
+}) {
+  if (!state) return (
+    <section className="board" data-testid="human-page">
+      <div className="empty">Загрузка…</div>
+    </section>
+  )
+  const charters = state.board.filter((x) => x.kind === 'charter')
+  const tasks = state.board.filter(
+    (x) => x.kind === 'leaf' && x.labels.includes('type:human-decision') && x.state !== 'done'
+  )
+  if (tasks.length === 0) return (
+    <section className="board" data-testid="human-page">
+      <div className="empty" data-testid="human-empty">
+        Нет открытых задач, требующих решения человека.<br />
+        <span style={{ fontSize: 13 }}>Когда появятся issues с меткой <code>type:human-decision</code>, они отобразятся здесь.</span>
+      </div>
+    </section>
+  )
+
+  const chartersWithTasks = charters.filter((c) => tasks.some((t) => t.charter === c.n))
+  const orphans = tasks.filter((t) => !t.charter || !charters.some((c) => c.n === t.charter))
+
+  return (
+    <section className="board" data-testid="human-page">
+      {chartersWithTasks.map((c) => (
+        <HumanCharterGroup
+          key={c.n}
+          charter={c}
+          tasks={tasks.filter((t) => t.charter === c.n)}
+          onOpen={onOpen}
+        />
+      ))}
+      {orphans.length > 0 && (
+        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} />
+      )}
+    </section>
+  )
+}
+
+function HumanCharterGroup({ charter, tasks, onOpen }: {
+  charter: Task | null; tasks: Task[]; onOpen: (n: number) => void
+}) {
+  return (
+    <div className="charter" data-testid="human-charter-group" data-charter={charter?.n ?? 'none'}>
+      <div className="charter-head">
+        <div className="charter-id">
+          {charter ? <span className="num">#{charter.n}</span> : <span className="num">∅</span>}
+        </div>
+        <div className="charter-title">
+          {charter ? `#${charter.n} ${charter.title}` : 'Без чартера'}
+        </div>
+        <div className="grow" />
+        <span className="muted" style={{ fontSize: 12 }}>{tasks.length} задач{tasks.length === 1 ? 'а' : tasks.length < 5 ? 'и' : ''}</span>
+      </div>
+      <div className="task-grid">
+        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} />)}
+      </div>
+    </div>
+  )
+}
+
+function HumanTaskCard({ t, onOpen }: { t: Task; onOpen: (n: number) => void }) {
+  return (
+    <div
+      className="task"
+      data-testid="human-task-card"
+      data-task-n={t.n}
+      onClick={() => onOpen(t.n)}
+    >
+      <div className="task-top">
+        <span className="num">#{t.n}</span>
+        <span className={'badge b-' + t.state}>{t.state}</span>
+        <span className="grow" />
+        {t.cost != null && String(t.cost) !== '' && <span className="cost">${Number(t.cost).toFixed(3)}</span>}
+      </div>
+      <div className="task-title">{t.title}</div>
+      <div className="task-foot">
+        <span className="badge" style={{ fontSize: 10, background: 'rgba(70,206,142,.1)', color: 'var(--done)', border: '1px solid rgba(70,206,142,.25)' }}>human-decision</span>
+        {t.pr ? <a className="pr" href={t.pr} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>view PR ↗</a> : <span className="muted xs-link">open ↗</span>}
+      </div>
+    </div>
   )
 }
 
