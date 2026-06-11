@@ -211,6 +211,24 @@ def do_command(body):
             try: os.remove(tmp_path)
             except Exception: pass
         return {"ok":True,"msg":f"commented #{n}"}
+    elif a=="request-changes":
+        comment = str(body.get("comment","")).strip()
+        if not n.isdigit() or not comment:
+            return {"ok":False,"msg":"comment required"}
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w",suffix=".txt",delete=False,encoding="utf-8") as f:
+                f.write(f"🔁 План возвращён на доработку:\n\n{comment}"); tmp = f.name
+            r = subprocess.run(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp],
+                               capture_output=True,text=True,timeout=30)
+            if r.returncode != 0:
+                return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "gh comment failed")}
+        finally:
+            if tmp:
+                try: os.unlink(tmp)
+                except Exception: pass
+        sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:needs-plan","--remove-label","status:plan-review"])
+        return {"ok":True,"msg":f"requested changes #{n}"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def save_team(body):

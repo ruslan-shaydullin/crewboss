@@ -88,10 +88,12 @@ export async function fetchComments(n: number): Promise<IssueComment[]> {
 export type CmdResult = { ok: boolean; msg: string }
 export async function command(action: string, number?: number, comment?: string): Promise<CmdResult> {
   try {
+    const payload: Record<string, unknown> = { action, number }
+    if (comment !== undefined) payload.comment = comment
     const r = await fetch(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
-      body: JSON.stringify({ action, number, comment }),
+      body: JSON.stringify(payload),
     })
     return (await r.json()) as CmdResult
   } catch (e) {
