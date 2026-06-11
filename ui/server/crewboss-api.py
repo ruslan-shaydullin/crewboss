@@ -112,7 +112,8 @@ def build_comments(n):
         data = json.loads(raw)
         comments = data.get("comments", [])
         comments = comments[-50:]
-        result = [{"author": c.get("author", {}).get("login", ""),
+        result = [{"id": c.get("id", ""),
+                   "author": c.get("author", {}).get("login", ""),
                    "created": c.get("createdAt", ""),
                    "body": c.get("body", "")} for c in comments]
         return {"ok": True, "comments": result}
@@ -231,6 +232,19 @@ def do_command(body):
                 except Exception: pass
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:needs-plan","--remove-label","status:plan-review"])
         return {"ok":True,"msg":f"requested changes #{n}"}
+    elif a=="delete-comment":
+        comment_id = str(body.get("comment_id","")).strip()
+        if not n.isdigit():
+            return {"ok":False,"msg":"number required"}
+        if not comment_id:
+            return {"ok":False,"msg":"comment_id required"}
+        r = subprocess.run(
+            ["gh","api","graphql","-f",
+             f'query=mutation {{ deleteIssueComment(input:{{id:"{comment_id}"}}) {{ clientMutationId }} }}'],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "delete failed")}
+        return {"ok":True,"msg":"comment deleted"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
