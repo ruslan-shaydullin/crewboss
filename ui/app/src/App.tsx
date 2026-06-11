@@ -39,11 +39,14 @@ type FlipPos = { left: number; top: number }
  * FLIP hook: measures children by data-flip-key before/after renders and
  * plays translate animations for moved items.
  *
- * Positions are stored **relative to the container** (not the viewport) so
- * that a global vertical shift of the page (e.g. the Hero section growing
- * due to an animated counter tick) does NOT register as card movement.
- * Animation is only triggered when a card's position within the container
- * genuinely changes — i.e. on real reorder / add / remove events.
+ * Positions are read from offsetLeft/offsetTop (the LAYOUT box, relative to
+ * offsetParent) — NOT getBoundingClientRect, which includes the element's
+ * current CSS transform. A transform-inclusive read makes the hook ingest its
+ * own in-flight .animate() output (and the `.task` `rise` entry animation),
+ * fabricating a phantom ~5px delta on every render → a self-sustaining jitter
+ * that fires on every idle re-render (e.g. the 1s setTick). offsetTop/offsetLeft
+ * are transform-free, so an idle render yields dy=0 and nothing animates; cards
+ * only FLIP on a genuine layout change (real reorder / add / remove).
  */
 function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
   const snapshot = useRef<Map<string, FlipPos>>(new Map())
@@ -54,35 +57,29 @@ function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
 
     const prev = snapshot.current
     const reduced = prefersReducedMotion()
-    const containerRect = el.getBoundingClientRect()
 
-    // INVERT + PLAY: animate children from old positions to new
+    // INVERT + PLAY: animate children from old layout positions to new
     Array.from(el.children).forEach((child) => {
-      const key = (child as HTMLElement).dataset.flipKey
+      const c = child as HTMLElement
+      const key = c.dataset.flipKey
       if (!key) return
       const oldPos = prev.get(key)
       if (!oldPos) return
-      const newRect = child.getBoundingClientRect()
-      // Positions relative to the container — immune to page-level shifts
-      const newLeft = newRect.left - containerRect.left
-      const newTop = newRect.top - containerRect.top
-      const dx = oldPos.left - newLeft
-      const dy = oldPos.top - newTop
+      const dx = oldPos.left - c.offsetLeft
+      const dy = oldPos.top - c.offsetTop
       if ((Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) || reduced) return
-      ;(child as HTMLElement).animate(
+      c.animate(
         [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }],
         { duration: 300, easing: 'cubic-bezier(.2,.7,.2,1)' }
       )
     })
 
-    // FIRST (for next render): snapshot current positions relative to container
+    // FIRST (for next render): snapshot current layout positions (transform-free)
     const next = new Map<string, FlipPos>()
     Array.from(el.children).forEach((child) => {
-      const key = (child as HTMLElement).dataset.flipKey
-      if (key) {
-        const rect = child.getBoundingClientRect()
-        next.set(key, { left: rect.left - containerRect.left, top: rect.top - containerRect.top })
-      }
+      const c = child as HTMLElement
+      const key = c.dataset.flipKey
+      if (key) next.set(key, { left: c.offsetLeft, top: c.offsetTop })
     })
     snapshot.current = next
   })

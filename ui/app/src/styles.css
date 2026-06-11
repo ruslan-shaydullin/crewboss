@@ -284,7 +284,6 @@ body {
 .disc-input::placeholder { color:var(--mut) }
 .disc-compose .btn { align-self:flex-end }
 
-<<<<<<< HEAD
 /* role modal form */
 .modal.role-modal { max-width:540px }
 .fld select,
@@ -307,7 +306,6 @@ body {
 .chip-edit-btn { background:none; border:none; color:var(--mut); cursor:pointer; padding:0 0 0 5px; font-size:11px; opacity:0; transition:opacity .12s; vertical-align:middle; line-height:1 }
 .chip:hover .chip-edit-btn { opacity:1 }
 .chip-edit-btn:hover { color:var(--ink) }
-=======
 /* ── prefers-reduced-motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -316,4 +314,3 @@ body {
     transition-duration: 0.001ms !important;
   }
 }
->>>>>>> pr/28
