@@ -66,6 +66,7 @@ export type TaskDetail = {
   started: string
   prompt: string
   log: string
+  body?: string
 }
 export async function fetchTask(n: number): Promise<TaskDetail | null> {
   try {
@@ -110,6 +111,19 @@ export async function deleteComment(n: number, commentId: string): Promise<CmdRe
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify({ action: 'delete-comment', number: n, comment_id: commentId }),
+    })
+    return (await r.json()) as CmdResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
+export async function setCheck(n: number, index: number, checked: boolean): Promise<CmdResult> {
+  try {
+    const r = await fetch(config.url + '/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ action: 'set-check', number: n, index, checked }),
     })
     return (await r.json()) as CmdResult
   } catch (e) {

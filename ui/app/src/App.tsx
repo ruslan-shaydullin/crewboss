@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, fetchComments, fetchTask, setCheck, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -513,6 +513,24 @@ function animateOverlayOut(
   setTimeout(done, dur + 10)
 }
 
+/** Parse checkbox lines from a markdown body string. Returns items in order. */
+function parseCheckboxes(body: string): { index: number; checked: boolean; text: string }[] {
+  if (!body) return []
+  const lines = body.split('\n')
+  const result: { index: number; checked: boolean; text: string }[] = []
+  let idx = 0
+  for (const line of lines) {
+    const m = line.match(/^\s*[-*]\s+\[([ xX])\]\s*(.*)$/)
+    if (m) {
+      result.push({ index: idx++, checked: m[1].toLowerCase() === 'x', text: m[2].trim() })
+    }
+  }
+  return result
+}
+
+/** History marker prefixes emitted by set-check */
+const HISTORY_MARKERS = ['✅ выполнено:', '↩️ снята отметка:']
+
 function TaskDrawer({ n, task, onClose, onAction, ask }: {
   n: number; task: Task | null; onClose: () => void
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -521,6 +539,7 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [comments, setComments] = useState<IssueComment[]>([])
   const [commentText, setCommentText] = useState('')
   const [sending, setSending] = useState(false)
+  const [pendingChecks, setPendingChecks] = useState<Set<number>>(new Set())
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -558,11 +577,29 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
     if (r.ok) { setCommentText(''); loadComments() }
   }
 
+  const handleCheckboxToggle = async (item: { index: number; checked: boolean }) => {
+    const newChecked = !item.checked
+    setPendingChecks((s) => new Set(s).add(item.index))
+    const r = await setCheck(n, item.index, newChecked)
+    if (!r.ok) {
+      toast(r.msg || 'update failed', true)
+    } else {
+      const [newTask] = await Promise.all([fetchTask(n), loadComments()])
+      if (newTask) setD(newTask)
+    }
+    setPendingChecks((s) => { const ns = new Set(s); ns.delete(item.index); return ns })
+  }
+
   const close = () => animateOverlayOut(bgRef, panelRef, onClose, 'right')
 
   const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
   const cost = d?.status.cost_usd
   const pr = d?.status.pr || task?.pr
+
+  const checkboxItems = parseCheckboxes(d?.body ?? '')
+  const historyComments = comments.filter((c) => HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
+  const discussionComments = comments.filter((c) => !HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
+
   return (
     <div ref={bgRef} className="drawer-bg" onClick={close}>
       <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -599,11 +636,49 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
 
         {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
 
+        {checkboxItems.length > 0 && (
+          <>
+            <div className="drawer-section" data-testid="checklist-section">Checklist</div>
+            <div className="checklist">
+              {checkboxItems.map((item) => (
+                <label
+                  key={item.index}
+                  className={'checklist-item' + (pendingChecks.has(item.index) ? ' pending' : '')}
+                  data-testid="checklist-item"
+                  data-index={item.index}
+                >
+                  <input
+                    type="checkbox"
+                    checked={item.checked}
+                    disabled={pendingChecks.has(item.index)}
+                    onChange={() => handleCheckboxToggle(item)}
+                  />
+                  <span className={item.checked ? 'checked' : ''}>{item.text}</span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+
+        {historyComments.length > 0 && (
+          <>
+            <div className="drawer-section" data-testid="history-section">История</div>
+            <div className="history">
+              {historyComments.map((c, i) => (
+                <div key={c.id || i} className="history-entry" data-testid="history-entry">
+                  <span className="history-body">{c.body}</span>
+                  <span className="history-meta muted">{c.author}{c.created ? ' · ' + elapsed(c.created) : ''}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         <div className="drawer-section">Discussion</div>
         <div className="discussion">
-          {comments.length === 0
+          {discussionComments.length === 0
             ? <div className="disc-empty muted">no comments yet</div>
-            : comments.map((c, i) => (
+            : discussionComments.map((c, i) => (
               <div className="disc-comment" key={c.id || i} data-testid="disc-comment">
                 <div className="disc-meta">
                   <span className="disc-author">{c.author}</span>
