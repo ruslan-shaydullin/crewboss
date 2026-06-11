@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# LEGACY — Arch-2 reference launcher (worktree+foreground; kill-file .crewboss-launcher.stop).
+# Decision (tech-lead 2026-06-11, reversible): CANONICAL launcher = crewboss-launcher-gh.sh
+# (GitHub-board, background-parallel, kill_switch at run/kill_switch).
+# This file is kept because reference/tests/launcher-*.test.sh still run against it.
+# DO NOT DELETE until launcher tests are migrated to crewboss-launcher-gh.sh.
+# See reference/runtime-manifest.tsv (two-launchers decision) and reference/README.md.
+#
 # crewboss-launcher.sh — Arch-2 launcher (REFERENCE). Polls the board and launches one
 # executor per launchable leaf as a SEPARATE process (no in-session spawn). The launcher
 # is NOT crewboss-gated itself — its safety is its OWN code (kill-switch, budget cap).
@@ -28,10 +35,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHABLE="$HERE/launchable.sh"
 
 ONCE=0; DRY=0; BOARD_FILE=""
+# CREWBOSS_CHARTER can be set via env or --charter N; scopes the run to leaves of charter N only.
+CHARTER_SCOPE="${CREWBOSS_CHARTER:-}"
 while [ $# -gt 0 ]; do case "$1" in
   --once) ONCE=1 ;; --dry-run) DRY=1 ;; --board-file) BOARD_FILE="$2"; shift ;;
+  --charter) CHARTER_SCOPE="$2"; shift ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac; shift; done
+export CREWBOSS_CHARTER="$CHARTER_SCOPE"
 
 launched_total=0
 log(){ echo "[launcher $LAUNCHER_ID] $*"; }

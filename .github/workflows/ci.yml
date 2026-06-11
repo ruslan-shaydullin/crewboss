@@ -33,5 +33,10 @@ jobs:
           cache: npm
           cache-dependency-path: ui/app/package-lock.json
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npx tsc --noEmit
       - run: npm run build
+      - name: smoke (page load + all tabs + 0 console errors)
+        run: node scripts/smoke.mjs
+      - name: repro-jitter (no spurious FLIP translate on idle ticks)
+        run: node scripts/repro-jitter.mjs
