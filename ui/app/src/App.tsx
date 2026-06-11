@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, fetchComments, fetchTask, setCheck, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -539,7 +539,6 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [comments, setComments] = useState<IssueComment[]>([])
   const [commentText, setCommentText] = useState('')
   const [sending, setSending] = useState(false)
-  const [pendingChecks, setPendingChecks] = useState<Set<number>>(new Set())
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -575,19 +574,6 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
     setSending(false)
     toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
     if (r.ok) { setCommentText(''); loadComments() }
-  }
-
-  const handleCheckboxToggle = async (item: { index: number; checked: boolean }) => {
-    const newChecked = !item.checked
-    setPendingChecks((s) => new Set(s).add(item.index))
-    const r = await setCheck(n, item.index, newChecked)
-    if (!r.ok) {
-      toast(r.msg || 'update failed', true)
-    } else {
-      const [newTask] = await Promise.all([fetchTask(n), loadComments()])
-      if (newTask) setD(newTask)
-    }
-    setPendingChecks((s) => { const ns = new Set(s); ns.delete(item.index); return ns })
   }
 
   const close = () => animateOverlayOut(bgRef, panelRef, onClose, 'right')
@@ -641,20 +627,17 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
             <div className="drawer-section" data-testid="checklist-section">Checklist</div>
             <div className="checklist">
               {checkboxItems.map((item) => (
-                <label
+                <div
                   key={item.index}
-                  className={'checklist-item' + (pendingChecks.has(item.index) ? ' pending' : '')}
+                  className="checklist-item"
                   data-testid="checklist-item"
                   data-index={item.index}
                 >
-                  <input
-                    type="checkbox"
-                    checked={item.checked}
-                    disabled={pendingChecks.has(item.index)}
-                    onChange={() => handleCheckboxToggle(item)}
-                  />
+                  <span className={'checklist-box' + (item.checked ? ' checklist-box-checked' : '')} aria-hidden="true">
+                    {item.checked ? '✓' : ''}
+                  </span>
                   <span className={item.checked ? 'checked' : ''}>{item.text}</span>
-                </label>
+                </div>
               ))}
             </div>
           </>
