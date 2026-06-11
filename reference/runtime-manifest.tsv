@@ -30,7 +30,7 @@
 # repo_path	sha256	status	purpose
 proto/r6/board-gh.sh	480f5335086f44d3c95d104871d488918cbc47c51c8ddd4d2c6b77a41b9e0629	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6
 proto/net/bridge.py	36b9cb3c62092fa20debe6e94e1929a06f661beab79cf8e487990ff6f5ecc551	canonical	In-jail CONNECT proxy bridge (proxy.sock → localhost:3128)
-proto/provision/build-provision.sh	e218b2cf013c4311f9ddddf9293ce5f4b388b506e849ca0ebe41c7182a5ffbab	canonical	Assembles self-contained provision.sh by embedding runtime files as base64 tarball
+proto/provision/build-provision.sh	77856db9decefcb7b288d2007e5da4aa5f35c128e52840b30e92df96b7144de2	canonical	Assembles self-contained provision.sh by embedding runtime files as base64 tarball; CB_SRC=reference/runtime/ (#66)
 reference/runtime/charter-leaf-prep.sh	6e604a87a5a9860307bcc940aa673d2ca44e97fd3db83306841763b19a86c02d	canonical	Charter-aware leaf dispatch: clones, creates charter/C branch, sets leaf/$ID-$TS; box-only → reference/runtime/ via #65
 reference/runtime/claude.kafel	c0856fcda3775bd12af8930925a1e927df2eaf15045e17156defa52f7f7076e0	canonical	Seccomp allowlist (kafel); box version adds getxattr/io_uring_enter/io_uring_setup/pkey_alloc/pkey_free vs proto/seccomp (drift); → #65
 ui/server/crewboss-api.py	1fef579f2b3fdecf77310b2ff979c26e530f244176925b7b2e5c3699f0540098	canonical	REST/SSE daemon API (board state, commands, kill_switch, run/kill_switch, team org-chart)
@@ -48,7 +48,7 @@ proto/net/jail-test.sh	98d17935222badb953303faeb7705424cb64db05169dc1b418cab2bf8
 reference/launcher/labels-setup.sh	525670fba6c8c49c4247f89ae4816a5ea89c0a990feae2c6e77a60978be535d2	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit)
 reference/launcher/launchable.sh	66857f10b303bd66e2915b83a3dda3c02168c5bab6a71bc683474b50910e7bfe	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed
 proto/provision/provision-template.sh	5432b0b89bc4fe4027cf1872eeb3555e89b68e324a756942b6c91ed701543cfb	canonical	Provision script template (__RUNTIME_PLACEHOLDER__ injected by build-provision.sh)
-proto/provision/provision.sh	865800cbb72766968f6481b299205660f5da578058ad006ec4a1f5a1b64321b5	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)
+proto/provision/provision.sh	e62fdfe40477f02a95d581ded3cf4397300515d34f8ee2206b4e842bc5d34369	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)
 reference/runtime/proxy.py	104726c15c0a0ee09a6908bae7c3e84119dbcff4b7bba78380dc44867b72611a	canonical	Egress HTTP/CONNECT proxy; box version adds npm allowlist (registry.npmjs.org) vs proto/net (drift finding: marker-grep-без-css); → #65
 proto/r5/redact.pl	c67e6f8fe6f9350e98194dfc85244000763323645adfc2531bbe740d1f10f184	canonical	Secret redaction filter (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, etc.) applied to spawn output
 reference/runtime/rework-prep.sh	bbfe9cc53e87fb6a1735ec776a46348eb242d807e9a7b3d77cd2dfcc4682b290	canonical	Rework dispatch: integrate or fresh-fix a leaf issue onto charter/C; box-only → reference/runtime/ via #65
