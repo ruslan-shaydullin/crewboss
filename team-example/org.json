@@ -1,0 +1,20 @@
+{
+  "policy": {
+    "span_max": 5,
+    "analysis_roles": ["solution-analyst"],
+    "approval_role": "cto",
+    "human_approval_above_usd": 1.00
+  },
+  "departments": [
+    { "id": "backend", "head": "backend-head" }
+  ],
+  "nodes": [
+    { "role": "cto",             "reports_to": null },
+    { "role": "solution-analyst","reports_to": "cto" },
+    { "role": "backend-head",    "reports_to": "cto" },
+    { "role": "qa-engineer",     "reports_to": "cto" },
+    { "role": "go-lead",         "reports_to": "backend-head" },
+    { "role": "go-backend-dev",  "reports_to": "go-lead" },
+    { "role": "go-algo-dev",     "reports_to": "go-lead" }
+  ]
+}

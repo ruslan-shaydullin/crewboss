@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>crewboss</title>
+<style>
+  :root{
+    --bg:#0e0f13; --panel:#15171e; --card:#1b1e27; --line:#262a36; --ink:#e7e9ee;
+    --mut:#8b90a0; --accent:#6366f1; --accent2:#818cf8;
+    --open:#8b90a0; --plan:#fbbf24; --approved:#34d399; --prog:#60a5fa;
+    --review:#a78bfa; --done:#34d399; --blocked:#f87171; --held:#fb923c;
+    --radius:14px; --shadow:0 6px 24px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:18px}
+  /* top bar */
+  .top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .brand{font-weight:700;font-size:18px;letter-spacing:.2px;display:flex;align-items:center;gap:9px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#555;transition:background .3s}
+  .dot.live{background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+  .repo{color:var(--mut)}
+  .spacer{flex:1}
+  .budget{min-width:200px}
+  .budget .bar{height:8px;background:#21242f;border-radius:6px;overflow:hidden;margin-top:4px}
+  .budget .fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .5s ease}
+  .budget .lbl{font-size:12px;color:var(--mut);display:flex;justify-content:space-between}
+  /* buttons */
+  .btn{border:1px solid var(--line);background:#20242f;color:var(--ink);padding:7px 13px;border-radius:10px;
+       cursor:pointer;font-weight:600;font-size:13px;transition:transform .08s,background .15s,border-color .15s}
+  .btn:hover{background:#272c3a;border-color:#36405a}
+  .btn:active{transform:translateY(1px)}
+  .btn.pri{background:var(--accent);border-color:var(--accent)} .btn.pri:hover{background:var(--accent2)}
+  .btn.warn{background:#3a1d22;border-color:#5b2a31;color:#fca5a5} .btn.warn:hover{background:#4a242b}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn.sm{padding:4px 9px;font-size:12px;border-radius:8px}
+  .flag{font-size:12px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
+  .flag.on{color:#fca5a5;border-color:#5b2a31;background:#2a161a}
+  /* board */
+  .charter{margin:16px 0 8px;display:flex;align-items:center;gap:9px}
+  .charter .ttl{font-weight:700}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;
+        box-shadow:var(--shadow);animation:rise .35s ease}
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .card .row1{display:flex;align-items:center;gap:8px}
+  .card .num{color:var(--mut);font-variant-numeric:tabular-nums}
+  .card .title{font-weight:600;margin:6px 0 9px}
+  .badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.4px}
+  .b-open{background:#23262f;color:var(--open)} .b-plan-review{background:#3a2f12;color:var(--plan)}
+  .b-needs-plan{background:#23262f;color:var(--mut)} .b-approved{background:#0f2e22;color:var(--approved)}
+  .b-in-progress{background:#11243a;color:var(--prog)} .b-review{background:#241a3a;color:var(--review)}
+  .b-done{background:#0f2e22;color:var(--done)} .b-blocked{background:#3a1417;color:var(--blocked)}
+  .b-held{background:#3a2412;color:var(--held)}
+  .meta{display:flex;gap:12px;color:var(--mut);font-size:12px;margin-bottom:9px;flex-wrap:wrap}
+  .meta a{color:var(--accent2);text-decoration:none} .meta a:hover{text-decoration:underline}
+  .actions{display:flex;gap:7px;flex-wrap:wrap}
+  /* toast + modal */
+  #toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
+  .toast{background:#1d2230;border:1px solid var(--line);padding:10px 14px;border-radius:10px;box-shadow:var(--shadow);
+         animation:rise .25s ease;max-width:340px}
+  .toast.err{border-color:#5b2a31;color:#fca5a5}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:60}
+  .modal-bg.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;max-width:420px;box-shadow:var(--shadow);animation:rise .2s ease}
+  .modal h3{margin:0 0 8px} .modal p{color:var(--mut);margin:0 0 16px}
+  .modal .m-actions{display:flex;gap:10px;justify-content:flex-end}
+  .empty{color:var(--mut);text-align:center;padding:50px}
+  input.cfg{background:#0c0d11;border:1px solid var(--line);color:var(--ink);padding:7px 10px;border-radius:9px;width:230px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand"><span class="dot" id="dot"></span>crewboss</div>
+    <span class="repo" id="repo">—</span>
+    <span class="flag" id="fl-pause">pause off</span>
+    <span class="flag" id="fl-kill">kill off</span>
+    <div class="spacer"></div>
+    <div class="budget">
+      <div class="lbl"><span>pool</span><span id="bud-lbl">$0 / $0</span></div>
+      <div class="bar"><div class="fill" id="bud-fill"></div></div>
+    </div>
+    <button class="btn pri" id="b-run" title="Start the launcher: it claims launchable tasks and runs real agents (spends from the pool).">▶ Run</button>
+    <button class="btn" id="b-pause" title="Pause/resume claiming new work. In-flight agents keep running.">⏸ Pause</button>
+    <button class="btn warn" id="b-kill" title="Kill-switch: stop the launcher loop at the next tick.">⛔ Kill</button>
+    <button class="btn sm" id="b-cfg" title="Set API URL + token">⚙</button>
+  </div>
+  <div id="board"><div class="empty">connecting…</div></div>
+</div>
+<div id="toasts"></div>
+<div class="modal-bg" id="modal-bg"><div class="modal">
+  <h3 id="m-title"></h3><p id="m-body"></p>
+  <div class="m-actions"><button class="btn" id="m-cancel">Cancel</button><button class="btn pri" id="m-ok">Confirm</button></div>
+</div></div>
+
+<script>
+const LS = {get:k=>localStorage.getItem(k)||"", set:(k,v)=>localStorage.setItem(k,v)};
+let API = LS.get("cb_api") || "http://127.0.0.1:8787";
+let TOKEN = LS.get("cb_token") || "";
+const $ = id => document.getElementById(id);
+
+function toast(msg, err){ const t=document.createElement("div"); t.className="toast"+(err?" err":""); t.textContent=msg;
+  $("toasts").appendChild(t); setTimeout(()=>{t.style.opacity="0";t.style.transition="opacity .4s";setTimeout(()=>t.remove(),400)},3200); }
+
+function confirmAction(title, body, onok){ $("m-title").textContent=title; $("m-body").textContent=body;
+  $("modal-bg").classList.add("show");
+  $("m-ok").onclick=()=>{ $("modal-bg").classList.remove("show"); onok(); };
+  $("m-cancel").onclick=()=>$("modal-bg").classList.remove("show"); }
+
+async function command(action, number){
+  try{ const r=await fetch(API+"/api/command",{method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+TOKEN},
+        body:JSON.stringify({action,number})});
+    const j=await r.json(); toast(j.msg||(j.ok?"ok":"failed"), !j.ok);
+  }catch(e){ toast("command failed: "+e, true); } }
+
+function badge(state){ return `<span class="badge b-${state}">${state}</span>`; }
+
+function render(s){
+  $("repo").textContent = s.autonomy?.repo || "";
+  const b=s.budget||{spent:0,cap:0};
+  $("bud-lbl").textContent = `$${(+b.spent).toFixed(3)} / $${(+b.cap).toFixed(2)}`;
+  $("bud-fill").style.width = b.cap>0 ? Math.min(100, 100*b.spent/b.cap)+"%" : "0%";
+  $("fl-pause").className="flag"+(s.flags?.paused?" on":""); $("fl-pause").textContent="pause "+(s.flags?.paused?"ON":"off");
+  $("fl-kill").className="flag"+(s.flags?.killed?" on":""); $("fl-kill").textContent="kill "+(s.flags?.killed?"ON":"off");
+  $("b-pause").textContent = s.flags?.paused ? "▶ Resume" : "⏸ Pause";
+  $("b-kill").textContent  = s.flags?.killed ? "✓ Un-kill" : "⛔ Kill";
+
+  const board=s.board||[]; const charters=board.filter(x=>x.kind==="charter");
+  let html="";
+  const leaves=board.filter(x=>x.kind==="leaf");
+  if(!board.length){ html=`<div class="empty">no issues on the board yet</div>`; }
+  else{
+    if(charters.length){ html+=`<div class="charter"><span class="ttl">Charters</span></div><div class="grid">`;
+      for(const c of charters) html+=cardHtml(c); html+=`</div>`; }
+    if(leaves.length){ html+=`<div class="charter"><span class="ttl">Tasks</span></div><div class="grid">`;
+      for(const c of leaves) html+=cardHtml(c); html+=`</div>`; }
+  }
+  $("board").innerHTML=html; wireCards();
+}
+function cardHtml(c){
+  const cost = (c.cost!=null && c.cost!=="") ? `$${(+c.cost).toFixed(3)}` : "";
+  const pr = c.pr ? `<a href="${c.pr}" target="_blank">PR ↗</a>` : "";
+  let acts="";
+  if(c.kind==="charter" && (c.state==="plan-review")) acts+=`<button class="btn sm pri" data-act="approve" data-n="${c.n}">Approve plan</button>`;
+  if(c.state==="held") acts+=`<button class="btn sm" data-act="unhold" data-n="${c.n}">Un-hold</button>`;
+  else if(c.state!=="done") acts+=`<button class="btn sm" data-act="hold" data-n="${c.n}">Hold</button>`;
+  return `<div class="card"><div class="row1"><span class="num">#${c.n}</span>${badge(c.state)}</div>
+    <div class="title">${escape(c.title)}</div>
+    <div class="meta">${cost?`<span>${cost}</span>`:""}${pr}</div>
+    <div class="actions">${acts}</div></div>`;
+}
+function escape(s){ return (s||"").replace(/[&<>]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m])); }
+function wireCards(){ document.querySelectorAll("[data-act]").forEach(b=>{
+  b.onclick=()=>{ const a=b.dataset.act, n=b.dataset.n;
+    if(a==="approve") confirmAction("Approve plan #"+n, "Releases this charter's leaves to be launched (executors will run, spending from the pool).", ()=>command("approve",n));
+    else command(a,n); }; }); }
+
+// global action buttons (predictability: confirm the spendy/irreversible)
+$("b-run").onclick=()=>confirmAction("Run launcher","Starts the launcher: it claims every launchable task and runs REAL agents — this spends from your pool ($). Continue?",()=>command("run"));
+$("b-kill").onclick=()=>{ const killed=$("fl-kill").classList.contains("on");
+  if(killed) command("unkill"); else confirmAction("Kill-switch","Stops the launcher loop at the next tick. In-flight agents finish on their own.",()=>command("kill")); };
+$("b-pause").onclick=()=>{ const paused=$("fl-pause").classList.contains("on"); command(paused?"resume":"pause"); };
+$("b-cfg").onclick=()=>{ const u=prompt("API URL:",API); if(u!==null){API=u.trim();LS.set("cb_api",API);}
+  const t=prompt("API token:",TOKEN); if(t!==null){TOKEN=t.trim();LS.set("cb_token",TOKEN);} connect(); };
+
+// realtime: SSE primary (token in query — EventSource can't set headers), slow authed poll as safety net.
+let es=null;
+function connect(){
+  if(es){ try{es.close()}catch(e){} }
+  $("dot").classList.remove("live");
+  try{
+    es=new EventSource(API+"/api/events?token="+encodeURIComponent(TOKEN));
+    es.addEventListener("state",e=>{ $("dot").classList.add("live"); render(JSON.parse(e.data)); });
+    es.onerror=()=>{ $("dot").classList.remove("live"); };  // browser auto-reconnects
+  }catch(e){}
+}
+async function poll(){
+  try{ const r=await fetch(API+"/api/state",{headers:{"Authorization":"Bearer "+TOKEN}});
+    if(r.ok){ $("dot").classList.add("live"); render(await r.json()); }
+  }catch(e){}
+  setTimeout(poll, 8000);
+}
+connect(); poll();
+</script>
+</body>
+</html>

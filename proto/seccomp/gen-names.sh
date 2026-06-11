@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+ESS="exit exit_group rt_sigtimedwait rt_sigpending rt_sigqueueinfo rt_tgsigqueueinfo waitid pipe2 dup3 accept epoll_create signalfd signalfd4 memfd_create eventfd faccessat faccessat2 lstat fstatfs getdents mremap gettimeofday clock_getres time umask utimensat utime fchmod fchmodat renameat renameat2 copy_file_range sendfile splice tee getrlimit getrusage capget pwrite64 pwritev writev readv preadv fadvise64 sched_getparam sched_get_priority_max sched_get_priority_min sched_getscheduler getpriority setpriority flock fallocate truncate sync_file_range fchdir getsid getpgid setpgid get_robust_list membarrier sched_getattr sched_setattr pause"
+{ cat /tmp/cbnet/sc-union.list; echo "$ESS" | tr ' ' '\n'; } | grep -E '^[a-z][a-z0-9_]+$' | grep -vxE 'clock_settime|settimeofday' | sort -u > /tmp/cbnet/policy-names.txt
+wc -l < /tmp/cbnet/policy-names.txt

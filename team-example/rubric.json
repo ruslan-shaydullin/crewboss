@@ -1,0 +1,11 @@
+{
+  "_comment": "Objective complexity triggers -> required roles/approval. The mandatory analysis stage applies these as a FLOOR (fact, not vibe), then adds judgement on top. No 'looks simple' bypass.",
+  "triggers": [
+    { "id": "multi-module",  "when": "files_touched > 1",        "require_roles": ["solution-analyst"] },
+    { "id": "needs-tests",   "when": "changes_runtime_behavior", "require_roles": ["qa-engineer"] },
+    { "id": "security",      "when": "touches_auth_or_secrets",  "require_roles": ["security-reviewer"], "require_human_approval": true },
+    { "id": "cross-language","when": "languages > 1",            "require": "one executor per language" },
+    { "id": "irreversible",  "when": "migration_or_delete_or_release", "require_human_approval": true },
+    { "id": "infra",         "when": "touches_ci_or_deploy",     "require_roles": ["infra-engineer"] }
+  ]
+}

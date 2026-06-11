@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# crewboss — one friendly CLI over the reliability-gating reference (config, hook, launcher,
+# board). Thin and native: the bare `claude --agent <role>` + scripts still work without it.
+#
+#   crewboss init                 set up .claude config (hook + permissions.allow) + labels in this repo
+#   crewboss doctor               pre-flight: deps, auth, config, labels, branch protection — what to fix
+#   crewboss status [--board-file F]   board dashboard (charters / launchable / in-progress / review / blocked)
+#   crewboss approve <N>          approve a charter's plan (status:plan-review -> status:approved)
+#   crewboss run [--once|--dry-run|...]   run the launcher (passes flags through)
+#   crewboss boss|tech-lead|executor|analyst|task-helper [...]   launch that role (claude --agent)
+#   crewboss try [name [dir]]     create a live sandbox repo to try the whole loop
+#   crewboss teardown             remove crewboss from this repo
+#   crewboss help
+set -uo pipefail
+
+SELF="${BASH_SOURCE[0]:-$0}"                                  # resolve through symlinks (e.g. ~/.local/bin/crewboss)
+while [ -L "$SELF" ]; do d="$(cd -P "$(dirname "$SELF")" && pwd)"; SELF="$(readlink "$SELF")"; case "$SELF" in /*) ;; *) SELF="$d/$SELF" ;; esac; done
+REF="$(cd -P "$(dirname "$SELF")/.." && pwd)"                 # …/reference
+HOOK_CMD='$CLAUDE_PROJECT_DIR/.claude/hooks/crewboss-gate.sh'
+LABELS_TYPE="type:charter type:agent type:human-decision"
+LABELS_STATUS="status:needs-plan status:plan-review status:approved status:in-progress status:review status:blocked status:hold"
+
+if [ -t 1 ]; then
+  c_grn(){ printf '\033[32m%s\033[0m' "$1"; }; c_red(){ printf '\033[31m%s\033[0m' "$1"; }
+  c_ylw(){ printf '\033[33m%s\033[0m' "$1"; }; c_dim(){ printf '\033[2m%s\033[0m' "$1"; }
+else
+  c_grn(){ printf '%s' "$1"; }; c_red(){ printf '%s' "$1"; }; c_ylw(){ printf '%s' "$1"; }; c_dim(){ printf '%s' "$1"; }
+fi
+ok(){   printf '  %s %s\n' "$(c_grn ✓)" "$1"; }
+bad(){  printf '  %s %s\n' "$(c_red ✗)" "$1"; FAILS=$((FAILS+1)); }
+warn(){ printf '  %s %s\n' "$(c_ylw ⚠)" "$1"; }
+die(){ printf '%s %s\n' "$(c_red crewboss:)" "$1" >&2; exit 1; }
+
+repo_root(){ git rev-parse --show-toplevel 2>/dev/null; }
+have(){ command -v "$1" >/dev/null 2>&1; }
+gh_ok(){ have gh && gh auth status >/dev/null 2>&1; }
+
+# ── init ──────────────────────────────────────────────────────────────────────────────────
+cmd_init(){
+  local root; root="$(repo_root)" || die "run inside a git repo"
+  have jq || die "needs jq (brew install jq)"
+  mkdir -p "$root/.claude/agents" "$root/.claude/hooks"
+  cp "$REF"/.claude/agents/*.md "$root/.claude/agents/"
+  cp "$REF"/.claude/hooks/crewboss-gate.sh "$root/.claude/hooks/"
+  chmod +x "$root/.claude/hooks/crewboss-gate.sh"
+
+  # settings.json (TRACKED so launched worktrees inherit it): merge permissions.allow + the hook
+  local s="$root/.claude/settings.json" base; [ -f "$s" ] && base="$(cat "$s")" || base='{}'
+  printf '%s' "$base" | jq --arg cmd "$HOOK_CMD" '
+    .permissions.allow = (((.permissions.allow // []) + ["Bash","Edit","Write","Read"]) | unique)
+    | .hooks.PreToolUse = (.hooks.PreToolUse // [])
+    | if any(.hooks.PreToolUse[]?.hooks[]?.command; . == $cmd) then .
+      else .hooks.PreToolUse += [{matcher:"Bash",hooks:[{type:"command",command:$cmd}]}] end
+  ' > "$s.tmp" && mv "$s.tmp" "$s"
+  ok "config written: .claude/ (agents + hook + settings.json with permissions.allow)"
+
+  if gh_ok; then
+    local l; for l in $LABELS_TYPE $LABELS_STATUS; do gh label create "$l" --force >/dev/null 2>&1 || true; done
+    ok "labels ensured ($(echo $LABELS_TYPE $LABELS_STATUS | wc -w | tr -d ' '))"
+  else warn "gh not authed — skipped labels (run: gh auth login, then crewboss init again)"; fi
+
+  printf '\n%s\n' "$(c_grn '✓ crewboss installed in this repo.')"
+  cat <<EOF
+  next:
+    crewboss doctor          # verify the setup
+    claude --agent boss      # set a goal -> charter   (or: crewboss boss)
+    crewboss run --dry-run   # see what the launcher would do
+  Commit .claude/ so launched worktrees inherit the hook. For merge-gate teeth, turn on
+  GitHub branch protection (require approvals + checks).
+EOF
+}
+
+# ── doctor ────────────────────────────────────────────────────────────────────────────────
+cmd_doctor(){
+  FAILS=0; local root; root="$(repo_root)"
+  printf '%s\n' "crewboss doctor"
+  have jq && ok "jq present" || bad "jq missing — brew install jq"
+  have gh && ok "gh present" || bad "gh missing — https://cli.github.com"
+  if have gh; then
+    if gh auth status >/dev/null 2>&1; then ok "gh authenticated"
+      local sc; sc="$(gh auth status 2>&1 | grep -oiE "scopes:.*" | head -1)"
+      echo "$sc" | grep -q "'repo'"        || warn "gh token missing 'repo' scope (need it to create issues/PRs)"
+      echo "$sc" | grep -q "delete_repo"   || warn "gh token missing 'delete_repo' (only needed for: crewboss teardown of a sandbox)"
+    else bad "gh not authenticated — gh auth login"; fi
+  fi
+  have claude && ok "claude CLI present ($(claude --version 2>/dev/null | head -1))" || warn "claude CLI not on PATH (roles/launcher need it)"
+  [ -n "$root" ] && ok "in a git repo ($root)" || bad "not in a git repo"
+  if [ -n "$root" ]; then
+    local hook="$root/.claude/hooks/crewboss-gate.sh" s="$root/.claude/settings.json"
+    [ -f "$hook" ] && ok "hook present" || bad "hook missing — run: crewboss init"
+    [ -x "$hook" ] && ok "hook executable" || { [ -f "$hook" ] && bad "hook not executable — chmod +x $hook"; }
+    if [ -f "$s" ] && have jq; then
+      jq -e --arg c "$HOOK_CMD" 'any(.hooks.PreToolUse[]?.hooks[]?.command; . == $c)' "$s" >/dev/null 2>&1 \
+        && ok "PreToolUse hook wired in settings.json" || bad "hook not wired in settings.json — crewboss init"
+      jq -e '(.permissions.allow // []) | index("Bash")' "$s" >/dev/null 2>&1 \
+        && ok "permissions.allow set (unattended runs won't stall)" \
+        || warn "permissions.allow missing 'Bash' — unattended 'claude -p' will stall on approval; crewboss init fixes this"
+    else bad "settings.json missing — crewboss init"; fi
+  fi
+  if gh_ok; then
+    local def; def="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)"
+    if [ -n "$def" ]; then
+      if gh api "repos/{owner}/{repo}/branches/$def/protection" >/dev/null 2>&1; then ok "branch protection on '$def' (server-side merge anchor)"
+      else warn "no branch protection on '$def' — the hook still gates merge, but the server-side anchor is off (private free-plan can't set it)"; fi
+    fi
+    local have_labels; have_labels="$(gh label list --json name --jq '[.[].name]' 2>/dev/null)"
+    echo "$have_labels" | grep -q "type:charter" && ok "state-machine labels exist" || warn "labels missing — crewboss init"
+  fi
+  printf '\n'
+  [ "$FAILS" -eq 0 ] && { printf '%s\n' "$(c_grn 'ready ✓')"; return 0; } || { printf '%s\n' "$(c_red "$FAILS blocker(s) — fix above")"; return 1; }
+}
+
+# ── status / board ────────────────────────────────────────────────────────────────────────
+cmd_status(){
+  local bf=""; [ "${1:-}" = "--board-file" ] && bf="${2:-}"
+  local board
+  if [ -n "$bf" ]; then board="$(cat "$bf")"
+  else gh_ok || die "need gh auth (or pass --board-file F)"; board="$(gh issue list --state all --limit 200 --json number,state,labels,body,title)"; fi
+  local launchable; launchable="$(printf '%s' "$board" | bash "$REF/launcher/launchable.sh" 2>/dev/null | tr '\n' ' ')"
+
+  printf '%s\n' "crewboss board"
+  printf '\n  %s\n' "$(c_dim Charters)"
+  printf '%s' "$board" | jq -r '.[] | select(any(.labels[]?.name; .=="type:charter"))
+    | "    #\(.number) \(.title // .body[0:40]) — " + (([.labels[].name] | map(select(startswith("status:"))) | .[0]) // "no-status")' 2>/dev/null
+  [ -z "$(printf '%s' "$board" | jq -r '.[] | select(any(.labels[]?.name;.=="type:charter")) | .number' 2>/dev/null)" ] && printf '    %s\n' "$(c_dim '(none)')"
+
+  printf '\n  %s\n' "$(c_grn 'Launchable now')"
+  if [ -n "${launchable// }" ]; then for n in $launchable; do
+      printf '    #%s %s\n' "$n" "$(printf '%s' "$board" | jq -r --argjson n "$n" '.[]|select(.number==$n)|(.title // .body[0:40])' 2>/dev/null)"
+    done
+  else printf '    %s\n' "$(c_dim '(none — need an approved charter with open, dep-clear leaves)')"; fi
+
+  _grp(){ # label, heading-color-fn
+    printf '\n  %s\n' "$2"
+    local rows; rows="$(printf '%s' "$board" | jq -r --arg L "$1" '.[]|select(any(.labels[]?.name;.==$L))|"    #\(.number) \(.title // .body[0:40])"' 2>/dev/null)"
+    [ -n "$rows" ] && printf '%s\n' "$rows" || printf '    %s\n' "$(c_dim '(none)')"
+  }
+  _grp status:in-progress "In progress"
+  _grp status:review      "$(c_ylw 'In review (awaiting approval)')"
+  _grp status:blocked     "$(c_red Blocked)"
+  printf '\n'
+}
+
+# ── approve ───────────────────────────────────────────────────────────────────────────────
+cmd_approve(){
+  local n="${1:-}"; [ -n "$n" ] || die "usage: crewboss approve <charter-issue-number>"
+  gh_ok || die "need gh auth"
+  gh issue edit "$n" --add-label status:approved --remove-label status:plan-review >/dev/null \
+    && printf '%s\n' "$(c_grn "✓ charter #$n approved")" "  its open, dep-clear leaves are now launchable — crewboss run" \
+    || die "could not edit #$n (is it a charter in plan-review?)"
+}
+
+usage(){ sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  init)      cmd_init "$@" ;;
+  doctor)    cmd_doctor "$@" ;;
+  status|board) cmd_status "$@" ;;
+  approve)   cmd_approve "$@" ;;
+  run)       exec bash "$REF/launcher/crewboss-launcher.sh" "$@" ;;
+  boss|tech-lead|executor|analyst|task-helper) exec claude --agent "$cmd" "$@" ;;
+  try)       exec bash "$REF/live/setup-live.sh" "$@" ;;
+  teardown)  exec bash "$REF/uninstall.sh" "$@" ;;
+  help|-h|--help) usage ;;
+  *) printf 'unknown command: %s\n\n' "$cmd" >&2; usage; exit 2 ;;
+esac
