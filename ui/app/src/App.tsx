@@ -32,13 +32,21 @@ function useCountUp(value: number, ms = 600): number {
   return n
 }
 
+/** Relative position of an element within its FLIP container. */
+type FlipPos = { left: number; top: number }
+
 /**
  * FLIP hook: measures children by data-flip-key before/after renders and
- * plays translate animations for moved items. No deps — runs every render
- * so the snapshot is always fresh.
+ * plays translate animations for moved items.
+ *
+ * Positions are stored **relative to the container** (not the viewport) so
+ * that a global vertical shift of the page (e.g. the Hero section growing
+ * due to an animated counter tick) does NOT register as card movement.
+ * Animation is only triggered when a card's position within the container
+ * genuinely changes — i.e. on real reorder / add / remove events.
  */
 function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
-  const snapshot = useRef<Map<string, DOMRect>>(new Map())
+  const snapshot = useRef<Map<string, FlipPos>>(new Map())
 
   useLayoutEffect(() => {
     const el = containerRef.current
@@ -46,16 +54,20 @@ function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
 
     const prev = snapshot.current
     const reduced = prefersReducedMotion()
+    const containerRect = el.getBoundingClientRect()
 
     // INVERT + PLAY: animate children from old positions to new
     Array.from(el.children).forEach((child) => {
       const key = (child as HTMLElement).dataset.flipKey
       if (!key) return
-      const oldRect = prev.get(key)
-      if (!oldRect) return
+      const oldPos = prev.get(key)
+      if (!oldPos) return
       const newRect = child.getBoundingClientRect()
-      const dx = oldRect.left - newRect.left
-      const dy = oldRect.top - newRect.top
+      // Positions relative to the container — immune to page-level shifts
+      const newLeft = newRect.left - containerRect.left
+      const newTop = newRect.top - containerRect.top
+      const dx = oldPos.left - newLeft
+      const dy = oldPos.top - newTop
       if ((Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) || reduced) return
       ;(child as HTMLElement).animate(
         [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }],
@@ -63,11 +75,14 @@ function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
       )
     })
 
-    // FIRST (for next render): snapshot current positions
-    const next = new Map<string, DOMRect>()
+    // FIRST (for next render): snapshot current positions relative to container
+    const next = new Map<string, FlipPos>()
     Array.from(el.children).forEach((child) => {
       const key = (child as HTMLElement).dataset.flipKey
-      if (key) next.set(key, child.getBoundingClientRect())
+      if (key) {
+        const rect = child.getBoundingClientRect()
+        next.set(key, { left: rect.left - containerRect.left, top: rect.top - containerRect.top })
+      }
     })
     snapshot.current = next
   })
