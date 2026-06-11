@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -515,10 +515,24 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
           {comments.length === 0
             ? <div className="disc-empty muted">no comments yet</div>
             : comments.map((c, i) => (
-              <div className="disc-comment" key={i}>
+              <div className="disc-comment" key={c.id || i} data-testid="disc-comment">
                 <div className="disc-meta">
                   <span className="disc-author">{c.author}</span>
                   {c.created && <span className="disc-time muted">{elapsed(c.created)}</span>}
+                  <button
+                    className="btn ghost disc-del"
+                    data-testid="delete-comment-btn"
+                    title="Delete comment"
+                    onClick={() => ask(
+                      'Delete comment',
+                      'Are you sure you want to delete this comment? This cannot be undone.',
+                      async () => {
+                        const r = await deleteComment(n, c.id)
+                        if (!r.ok) toast(r.msg || 'delete failed', true)
+                        else loadComments()
+                      }
+                    )}
+                  >✕</button>
                 </div>
                 <div className="disc-body">{c.body}</div>
               </div>
