@@ -349,6 +349,13 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
             (reason) => onAction('request-changes', c.n, reason),
             true)}>Request changes</button>
         </>}
+        {c && (c.state === 'approved' || c.state === 'active') && (
+          <button className="btn sm pri" data-testid="charter-run-btn" onClick={() => ask(
+            'Run launcher',
+            'Claims every launchable task and runs REAL agents — this spends from your pool ($).',
+            () => onAction('run')
+          )}>▶ Запустить</button>
+        )}
       </div>
       {total > 0 && (
         <div className="task-grid" ref={gridRef}>
