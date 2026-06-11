@@ -152,7 +152,7 @@ body {
 .toast { background:var(--raise); border:1px solid var(--line2); padding:11px 15px; border-radius:11px; animation:rise .25s ease; max-width:340px; font-size:13px; box-shadow:var(--shadow) }
 .toast.err { border-color:rgba(240,103,106,.5); color:#f0676a }
 .toast.exiting { animation:toast-out .28s ease-in forwards }
-.modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:60; animation:fade-in .18s ease }
+.modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:80; animation:fade-in .18s ease }
 .modal { background:linear-gradient(180deg,var(--panel),#0a0a0d); border:1px solid var(--line2); border-radius:var(--r); padding:24px; max-width:440px; width:calc(100% - 40px); box-shadow:0 30px 80px -20px rgba(0,0,0,.9); animation:scale-in .18s cubic-bezier(.2,.7,.2,1) }
 .modal h3 { margin:0 0 9px; font-weight:640; letter-spacing:-0.02em } .modal p { color:var(--mut2); margin:0 0 20px; line-height:1.55 }
 .m-actions { display:flex; gap:10px; justify-content:flex-end }
@@ -170,6 +170,18 @@ body {
 .ni-tab { flex:1; background:transparent; border:0; color:var(--mut); padding:6px 12px; border-radius:7px; cursor:pointer; font:inherit; font-weight:560; font-size:13px; transition:.15s }
 .ni-tab:hover { color:var(--ink) }
 .ni-tab.on { background:var(--card); color:var(--ink); box-shadow:0 1px 0 var(--hi) inset }
+.ni-success { display:flex; align-items:center; gap:14px; padding:20px 16px; background:rgba(70,206,142,.07); border:1px solid rgba(70,206,142,.2); border-radius:12px; margin-bottom:16px }
+.ni-success-icon { font-size:22px; color:var(--done); line-height:1 }
+.ni-success-text { font-size:14px; line-height:1.5 }
+.ni-run-warning { font-size:12px; color:var(--mut2); background:rgba(240,167,74,.06); border:1px solid rgba(240,167,74,.18); border-radius:9px; padding:10px 14px; margin-bottom:16px; line-height:1.5 }
+/* summary step */
+.ni-summary { background:var(--raise); border:1px solid var(--line2); border-radius:12px; padding:16px; margin-bottom:16px; overflow-y:auto; max-height:60vh }
+.ni-summary-kind { font-size:11px; text-transform:uppercase; letter-spacing:.09em; font-weight:650; color:var(--mut); margin-bottom:6px }
+.ni-summary-title { font-size:17px; font-weight:660; letter-spacing:-0.02em; margin-bottom:14px; line-height:1.3 }
+.ni-summary-sections { display:flex; flex-direction:column; gap:10px }
+.ni-summary-section { display:flex; flex-direction:column; gap:3px }
+.ni-summary-label { font-size:11px; text-transform:uppercase; letter-spacing:.07em; font-weight:640; color:var(--mut) }
+.ni-summary-value { font-size:13px; line-height:1.55; color:var(--ink); white-space:pre-wrap; word-break:break-word }
 
 /* task card foot extras */
 .working-tag { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--prog); font-weight:650 }
@@ -267,6 +279,21 @@ body {
 .node-role { font-weight:640; font-size:13.5px; letter-spacing:-0.01em }
 .node-meta { display:flex; gap:9px; margin-top:5px; color:var(--mut); font-size:11px }
 .node-span { color:var(--mut2) }
+
+/* checklist (read-only — agent sets via set-check API) */
+.checklist { display:flex; flex-direction:column; gap:6px; margin-bottom:6px }
+.checklist-item { display:flex; align-items:baseline; gap:9px; font-size:13px; line-height:1.5; color:var(--mut2) }
+.checklist-box { flex:none; width:16px; height:16px; border:1px solid var(--line2); border-radius:4px;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700; color:var(--done); background:var(--bg); margin-top:1px }
+.checklist-box.checklist-box-checked { background:rgba(70,206,142,.12); border-color:rgba(70,206,142,.45) }
+.checklist-item .checked { color:var(--ink); text-decoration:line-through; text-decoration-color:var(--mut) }
+
+/* history section in drawer */
+.history { display:flex; flex-direction:column; gap:6px; margin-bottom:6px }
+.history-entry { display:flex; flex-direction:column; gap:3px; background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:8px 12px }
+.history-body { font-size:13px; color:var(--mut2); line-height:1.5 }
+.history-meta { font-size:11px }
 
 /* discussion section in drawer */
 .discussion { display:flex; flex-direction:column; gap:10px }

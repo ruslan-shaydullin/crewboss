@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, fetchComments, fetchTask, subscribe, type Agent, type IssueComment, type IssuePayload, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
@@ -92,7 +92,7 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [settings, setSettings] = useState(false)
   const [newIssue, setNewIssue] = useState(false)
-  const [view, setView] = useState<'board' | 'team'>('board')
+  const [view, setView] = useState<'board' | 'team' | 'human'>('board')
   const [open, setOpen] = useState<number | null>(null)
   const [, setTick] = useState(0)
   const tid = useRef(0)
@@ -113,6 +113,9 @@ export default function App() {
     const r = await command(action, number, comment); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
   }, [toast])
   const ask = useCallback((title: string, body: string, onOk: (reason?: string) => void, withInput?: boolean) => setConfirm({ title, body, onOk, withInput }), [])
+  const resolveAsk = useCallback((n: number) => {
+    ask(`Решить задачу #${n}`, 'Опишите решение (опционально):', (text) => run('resolve-decision', n, text ?? ''), true)
+  }, [ask, run])
 
   return (
     <div className="app">
@@ -131,6 +134,8 @@ export default function App() {
             <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
           </div>
         </>
+      ) : view === 'human' ? (
+        <HumanDecisionsPage state={state} onOpen={setOpen} onResolve={resolveAsk} />
       ) : <TeamPage />}
 
       <div className="toasts">
@@ -150,7 +155,7 @@ export default function App() {
 }
 
 function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew }: {
-  state: State | null; conn: boolean; view: 'board' | 'team'; setView: (v: 'board' | 'team') => void
+  state: State | null; conn: boolean; view: 'board' | 'team' | 'human'; setView: (v: 'board' | 'team' | 'human') => void
   onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void
 }) {
   const paused = state?.flags.paused, killed = state?.flags.killed
@@ -158,9 +163,10 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
     <header className="hdr">
       <div className="hdr-l">
         <span className="brand"><span className="logo">◆</span>crewboss</span>
-        <nav className="nav">
+        <nav className="nav" data-testid="main-nav">
           <button className={view === 'board' ? 'on' : ''} onClick={() => setView('board')}>Board</button>
           <button className={view === 'team' ? 'on' : ''} onClick={() => setView('team')}>Team</button>
+          <button className={view === 'human' ? 'on' : ''} onClick={() => setView('human')} data-testid="tab-human">Задачи на человека</button>
         </nav>
         <span className={'conn' + (conn ? ' live' : '')}>{conn ? 'live' : 'offline'}</span>
         <span className="repo">{state?.autonomy.repo || '—'}</span>
@@ -229,6 +235,98 @@ function Board({ state, conn, onAction, ask, onOpen }: {
       {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
       {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen} />}
     </section>
+  )
+}
+
+function HumanDecisionsPage({ state, onOpen, onResolve }: {
+  state: State | null; onOpen: (n: number) => void; onResolve: (n: number) => void
+}) {
+  if (!state) return (
+    <section className="board" data-testid="human-page">
+      <div className="empty">Загрузка…</div>
+    </section>
+  )
+  const charters = state.board.filter((x) => x.kind === 'charter')
+  const tasks = state.board.filter(
+    (x) => x.kind === 'leaf' && x.labels.includes('type:human-decision') && x.state !== 'done'
+  )
+  if (tasks.length === 0) return (
+    <section className="board" data-testid="human-page">
+      <div className="empty" data-testid="human-empty">
+        Нет открытых задач, требующих решения человека.<br />
+        <span style={{ fontSize: 13 }}>Когда появятся issues с меткой <code>type:human-decision</code>, они отобразятся здесь.</span>
+      </div>
+    </section>
+  )
+
+  const chartersWithTasks = charters.filter((c) => tasks.some((t) => t.charter === c.n))
+  const orphans = tasks.filter((t) => !t.charter || !charters.some((c) => c.n === t.charter))
+
+  return (
+    <section className="board" data-testid="human-page">
+      {chartersWithTasks.map((c) => (
+        <HumanCharterGroup
+          key={c.n}
+          charter={c}
+          tasks={tasks.filter((t) => t.charter === c.n)}
+          onOpen={onOpen}
+          onResolve={onResolve}
+        />
+      ))}
+      {orphans.length > 0 && (
+        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} onResolve={onResolve} />
+      )}
+    </section>
+  )
+}
+
+function HumanCharterGroup({ charter, tasks, onOpen, onResolve }: {
+  charter: Task | null; tasks: Task[]; onOpen: (n: number) => void; onResolve: (n: number) => void
+}) {
+  return (
+    <div className="charter" data-testid="human-charter-group" data-charter={charter?.n ?? 'none'}>
+      <div className="charter-head">
+        <div className="charter-id">
+          {charter ? <span className="num">#{charter.n}</span> : <span className="num">∅</span>}
+        </div>
+        <div className="charter-title">
+          {charter ? `#${charter.n} ${charter.title}` : 'Без чартера'}
+        </div>
+        <div className="grow" />
+        <span className="muted" style={{ fontSize: 12 }}>{tasks.length} задач{tasks.length === 1 ? 'а' : tasks.length < 5 ? 'и' : ''}</span>
+      </div>
+      <div className="task-grid">
+        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} onResolve={onResolve} />)}
+      </div>
+    </div>
+  )
+}
+
+function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) => void; onResolve: (n: number) => void }) {
+  return (
+    <div
+      className="task"
+      data-testid="human-task-card"
+      data-task-n={t.n}
+      onClick={() => onOpen(t.n)}
+    >
+      <div className="task-top">
+        <span className="num">#{t.n}</span>
+        <span className={'badge b-' + t.state}>{t.state}</span>
+        <span className="grow" />
+        {t.cost != null && String(t.cost) !== '' && <span className="cost">${Number(t.cost).toFixed(3)}</span>}
+      </div>
+      <div className="task-title">{t.title}</div>
+      <div className="task-foot">
+        <span className="badge" style={{ fontSize: 10, background: 'rgba(70,206,142,.1)', color: 'var(--done)', border: '1px solid rgba(70,206,142,.25)' }}>human-decision</span>
+        {t.pr ? <a className="pr" href={t.pr} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>view PR ↗</a> : <span className="muted xs-link">open ↗</span>}
+        <button
+          className="btn sm pri"
+          data-testid="resolve-btn"
+          onClick={(e) => { e.stopPropagation(); onResolve(t.n) }}
+        >Решить</button>
+      </div>
+    </div>
   )
 }
 
@@ -424,6 +522,24 @@ function animateOverlayOut(
   setTimeout(done, dur + 10)
 }
 
+/** Parse checkbox lines from a markdown body string. Returns items in order. */
+function parseCheckboxes(body: string): { index: number; checked: boolean; text: string }[] {
+  if (!body) return []
+  const lines = body.split('\n')
+  const result: { index: number; checked: boolean; text: string }[] = []
+  let idx = 0
+  for (const line of lines) {
+    const m = line.match(/^\s*[-*]\s+\[([ xX])\]\s*(.*)$/)
+    if (m) {
+      result.push({ index: idx++, checked: m[1].toLowerCase() === 'x', text: m[2].trim() })
+    }
+  }
+  return result
+}
+
+/** History marker prefixes emitted by set-check */
+const HISTORY_MARKERS = ['✅ выполнено:', '↩️ снята отметка:']
+
 function TaskDrawer({ n, task, onClose, onAction, ask }: {
   n: number; task: Task | null; onClose: () => void
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -432,6 +548,8 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [comments, setComments] = useState<IssueComment[]>([])
   const [commentText, setCommentText] = useState('')
   const [sending, setSending] = useState(false)
+  const [resolveText, setResolveText] = useState('')
+  const [resolving, setResolving] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -474,6 +592,11 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
   const cost = d?.status.cost_usd
   const pr = d?.status.pr || task?.pr
+
+  const checkboxItems = parseCheckboxes(d?.body ?? '')
+  const historyComments = comments.filter((c) => HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
+  const discussionComments = comments.filter((c) => !HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
+
   return (
     <div ref={bgRef} className="drawer-bg" onClick={close}>
       <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -508,17 +631,94 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
           </div>
         )}
 
+        {task && task.labels.includes('type:human-decision') && task.state !== 'done' && (
+          <>
+            <div className="drawer-section">Решить задачу</div>
+            <div className="disc-compose">
+              <textarea
+                className="disc-input"
+                value={resolveText}
+                onChange={(e) => setResolveText(e.target.value)}
+                placeholder="Текст решения (опционально)…"
+                rows={3}
+                data-testid="resolve-text"
+              />
+              <button
+                className="btn sm pri"
+                data-testid="resolve-submit-btn"
+                disabled={resolving}
+                onClick={async () => {
+                  setResolving(true)
+                  const r = await resolveDecision(n, resolveText)
+                  setResolving(false)
+                  toast(r.msg || (r.ok ? 'resolved' : 'failed'), !r.ok)
+                  if (r.ok) close()
+                }}
+              >{resolving ? 'Решение…' : 'Решить'}</button>
+            </div>
+          </>
+        )}
+
         {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
+
+        {checkboxItems.length > 0 && (
+          <>
+            <div className="drawer-section" data-testid="checklist-section">Checklist</div>
+            <div className="checklist">
+              {checkboxItems.map((item) => (
+                <div
+                  key={item.index}
+                  className="checklist-item"
+                  data-testid="checklist-item"
+                  data-index={item.index}
+                >
+                  <span className={'checklist-box' + (item.checked ? ' checklist-box-checked' : '')} aria-hidden="true">
+                    {item.checked ? '✓' : ''}
+                  </span>
+                  <span className={item.checked ? 'checked' : ''}>{item.text}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {historyComments.length > 0 && (
+          <>
+            <div className="drawer-section" data-testid="history-section">История</div>
+            <div className="history">
+              {historyComments.map((c, i) => (
+                <div key={c.id || i} className="history-entry" data-testid="history-entry">
+                  <span className="history-body">{c.body}</span>
+                  <span className="history-meta muted">{c.author}{c.created ? ' · ' + elapsed(c.created) : ''}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="drawer-section">Discussion</div>
         <div className="discussion">
-          {comments.length === 0
+          {discussionComments.length === 0
             ? <div className="disc-empty muted">no comments yet</div>
-            : comments.map((c, i) => (
-              <div className="disc-comment" key={i}>
+            : discussionComments.map((c, i) => (
+              <div className="disc-comment" key={c.id || i} data-testid="disc-comment">
                 <div className="disc-meta">
                   <span className="disc-author">{c.author}</span>
                   {c.created && <span className="disc-time muted">{elapsed(c.created)}</span>}
+                  <button
+                    className="btn ghost disc-del"
+                    data-testid="delete-comment-btn"
+                    title="Delete comment"
+                    onClick={() => ask(
+                      'Delete comment',
+                      'Are you sure you want to delete this comment? This cannot be undone.',
+                      async () => {
+                        const r = await deleteComment(n, c.id)
+                        if (!r.ok) toast(r.msg || 'delete failed', true)
+                        else loadComments()
+                      }
+                    )}
+                  >✕</button>
                 </div>
                 <div className="disc-body">{c.body}</div>
               </div>
@@ -595,8 +795,12 @@ function NewIssueModal({ state, onClose, onToast }: {
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [step, setStep] = useState<'form' | 'summary'>('form')
+  const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
+  const [launching, setLaunching] = useState(false)
 
   const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
+  const charterLabel = charters.find((c) => String(c.n) === charterN)
 
   const isValid = kind === 'charter'
     ? !!(title.trim() && what.trim() && why.trim())
@@ -610,13 +814,132 @@ function NewIssueModal({ state, onClose, onToast }: {
     setSubmitting(true)
     try {
       const r = await createIssue(p)
-      onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
-      if (r.ok) onClose()
+      if (r.ok && kind === 'charter') {
+        setCharterSuccess(r)
+      } else {
+        onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
+        if (r.ok) onClose()
+      }
     } catch (e: unknown) {
       onToast('request failed: ' + String(e), true)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const handleLaunch = async () => {
+    setLaunching(true)
+    try {
+      const r = await command('run')
+      onToast(r.msg || (r.ok ? 'Launcher started' : 'failed'), !r.ok)
+    } catch (e: unknown) {
+      onToast('request failed: ' + String(e), true)
+    } finally {
+      setLaunching(false)
+      onClose()
+    }
+  }
+
+  if (charterSuccess) {
+    return (
+      <div className="modal-bg" data-testid="ni-success-backdrop">
+        <div className="modal ni-modal" data-testid="ni-success-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="ni-head">
+            <h3>Чартер создан</h3>
+            <button className="btn ghost" onClick={onClose}>✕</button>
+          </div>
+          <div className="ni-success" data-testid="ni-success-msg">
+            <div className="ni-success-icon">✓</div>
+            <div className="ni-success-text">
+              Чартер <strong>#{charterSuccess.number}</strong> успешно создан
+            </div>
+          </div>
+          <div className="ni-run-warning" data-testid="ni-run-warning">
+            ⚠ Запуск лаунчера захватит все доступные задачи и запустит реальных агентов — это тратит средства из вашего пула ($).
+          </div>
+          <div className="m-actions">
+            <button className="btn" data-testid="ni-close-btn" onClick={onClose}>Закрыть</button>
+            <button className="btn pri" data-testid="ni-launch-btn" disabled={launching} onClick={handleLaunch}>
+              {launching ? 'Запуск…' : '▶ Запустить'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (step === 'summary') {
+    return (
+      <div className="modal-bg" data-testid="ni-summary-backdrop" onClick={onClose}>
+        <div className="modal ni-modal ni-summary-modal" data-testid="ni-summary-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="ni-head">
+            <h3>Подтвердить создание</h3>
+            <button className="btn ghost" onClick={onClose}>✕</button>
+          </div>
+          <div className="ni-summary" data-testid="ni-summary-body">
+            <div className="ni-summary-kind" data-testid="ni-summary-kind">
+              {kind === 'charter' ? 'Charter' : 'Task'}
+            </div>
+            <div className="ni-summary-title" data-testid="ni-summary-title">{title}</div>
+            {kind === 'charter' ? (
+              <div className="ni-summary-sections">
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">WHAT</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-what">{what}</div>
+                </div>
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">WHY</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-why">{why}</div>
+                </div>
+                {scope.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Скоуп</div>
+                    <div className="ni-summary-value">{scope}</div>
+                  </div>
+                )}
+                {constraints.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Констрейнты</div>
+                    <div className="ni-summary-value">{constraints}</div>
+                  </div>
+                )}
+                {acceptance.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Acceptance</div>
+                    <div className="ni-summary-value">{acceptance}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="ni-summary-sections">
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">Description</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-description">{description}</div>
+                </div>
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">Charter</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-charter">
+                    #{charterN}{charterLabel ? ` ${charterLabel.title}` : ''}
+                  </div>
+                </div>
+                {dependsOn.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Depends-on</div>
+                    <div className="ni-summary-value" data-testid="ni-summary-depends">#{dependsOn.trim()}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="m-actions">
+            <button className="btn" data-testid="ni-edit-btn" onClick={() => setStep('form')}>Редактировать</button>
+            <button className="btn pri" data-testid="ni-confirm-btn" disabled={submitting} onClick={handleSubmit}>
+              {submitting ? 'Creating…' : 'Подтвердить'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -630,11 +953,11 @@ function NewIssueModal({ state, onClose, onToast }: {
           <button className={'ni-tab' + (kind === 'charter' ? ' on' : '')} onClick={() => setKind('charter')}>Charter</button>
           <button className={'ni-tab' + (kind === 'task' ? ' on' : '')} onClick={() => setKind('task')}>Task</button>
         </div>
-        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" /></label>
+        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" data-testid="ni-title" /></label>
         {kind === 'charter' ? (
           <>
-            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} /></label>
-            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} /></label>
+            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} data-testid="ni-what" /></label>
+            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} data-testid="ni-why" /></label>
             <label className="fld">Scope<textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="In-scope / out-of-scope" rows={2} /></label>
             <label className="fld">Constraints<textarea value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="Technical, time, or budget constraints" rows={2} /></label>
             <label className="fld">Acceptance<textarea value={acceptance} onChange={(e) => setAcceptance(e.target.value)} placeholder="Acceptance criteria (checklist)" rows={3} /></label>
@@ -653,7 +976,7 @@ function NewIssueModal({ state, onClose, onToast }: {
         )}
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" disabled={!isValid || submitting} onClick={handleSubmit}>{submitting ? 'Creating…' : 'Create'}</button>
+          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('summary') }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </div>

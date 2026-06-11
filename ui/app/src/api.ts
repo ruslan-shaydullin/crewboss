@@ -66,6 +66,7 @@ export type TaskDetail = {
   started: string
   prompt: string
   log: string
+  body?: string
 }
 export async function fetchTask(n: number): Promise<TaskDetail | null> {
   try {
@@ -94,7 +95,7 @@ export async function createIssue(payload: IssuePayload): Promise<IssueResult> {
   }
 }
 
-export type IssueComment = { author: string; created: string; body: string }
+export type IssueComment = { id: string; author: string; created: string; body: string }
 export async function fetchComments(n: number): Promise<IssueComment[]> {
   try {
     const r = await fetch(config.url + '/api/comments/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
@@ -102,6 +103,45 @@ export async function fetchComments(n: number): Promise<IssueComment[]> {
     const data = (await r.json()) as { ok: boolean; comments: IssueComment[] }
     return data.ok ? data.comments : []
   } catch { return [] }
+}
+
+export async function deleteComment(n: number, commentId: string): Promise<CmdResult> {
+  try {
+    const r = await fetch(config.url + '/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ action: 'delete-comment', number: n, comment_id: commentId }),
+    })
+    return (await r.json()) as CmdResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
+export async function resolveDecision(n: number, decisionText: string): Promise<CmdResult> {
+  try {
+    const r = await fetch(config.url + '/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ action: 'resolve-decision', number: n, decision_text: decisionText }),
+    })
+    return (await r.json()) as CmdResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
+}
+
+export async function setCheck(n: number, index: number, checked: boolean): Promise<CmdResult> {
+  try {
+    const r = await fetch(config.url + '/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ action: 'set-check', number: n, index, checked }),
+    })
+    return (await r.json()) as CmdResult
+  } catch (e) {
+    return { ok: false, msg: 'request failed: ' + e }
+  }
 }
 
 export type CmdResult = { ok: boolean; msg: string }

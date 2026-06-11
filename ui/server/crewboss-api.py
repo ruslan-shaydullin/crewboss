@@ -112,7 +112,8 @@ def build_comments(n):
         data = json.loads(raw)
         comments = data.get("comments", [])
         comments = comments[-50:]
-        result = [{"author": c.get("author", {}).get("login", ""),
+        result = [{"id": c.get("id", ""),
+                   "author": c.get("author", {}).get("login", ""),
                    "created": c.get("createdAt", ""),
                    "body": c.get("body", "")} for c in comments]
         return {"ok": True, "comments": result}
@@ -133,9 +134,18 @@ def build_task(n):
     try: os.kill(int(open(pidf).read().strip()), 0); alive = True
     except Exception: alive = False
     started = rd(os.path.join(RUN, "state", str(n), "starttime")).strip()
+    body = ""
+    if REPO:
+        try:
+            raw = sh(["gh", "issue", "view", str(n), "-R", REPO, "--json", "body"]) or ""
+            if raw.strip():
+                body = json.loads(raw).get("body", "") or ""
+        except Exception:
+            body = ""
     return dict(n=n, status=st, alive=alive, started=started,
                 prompt=rd(os.path.join(w, "task.prompt"), 4000).strip(),
-                log=rd(os.path.join(w, "run.log"), 16000))  # run.log is written already-redacted
+                log=rd(os.path.join(w, "run.log"), 16000),  # run.log is written already-redacted
+                body=body)
 
 CB_TEAM = os.environ.get("CB_TEAM", os.path.join(CB_HOME, "team"))
 def _frontmatter(path):
@@ -231,6 +241,95 @@ def do_command(body):
                 except Exception: pass
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:needs-plan","--remove-label","status:plan-review"])
         return {"ok":True,"msg":f"requested changes #{n}"}
+    elif a=="delete-comment":
+        comment_id = str(body.get("comment_id","")).strip()
+        if not n.isdigit():
+            return {"ok":False,"msg":"number required"}
+        if not comment_id:
+            return {"ok":False,"msg":"comment_id required"}
+        r = subprocess.run(
+            ["gh","api","graphql","-f",
+             f'query=mutation {{ deleteIssueComment(input:{{id:"{comment_id}"}}) {{ clientMutationId }} }}'],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "delete failed")}
+        return {"ok":True,"msg":"comment deleted"}
+    elif a=="resolve-decision" and n.isdigit():
+        decision_text = str(body.get("decision_text") or body.get("comment") or "").strip()
+        comment_body = f"✅ Решение:\n\n{decision_text}" if decision_text else "✅ Задача решена."
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                f.write(comment_body); tmp = f.name
+            rc = subprocess.run(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp],
+                                capture_output=True, text=True, timeout=30)
+            if rc.returncode != 0:
+                return {"ok":False,"msg":(rc.stderr.strip() or rc.stdout.strip() or "comment failed")}
+        finally:
+            if tmp:
+                try: os.unlink(tmp)
+                except Exception: pass
+        rc2 = subprocess.run(["gh","issue","close",n,"-R",REPO],
+                             capture_output=True, text=True, timeout=30)
+        if rc2.returncode != 0:
+            return {"ok":False,"msg":(rc2.stderr.strip() or rc2.stdout.strip() or "close failed")}
+        return {"ok":True,"msg":f"resolved #{n}"}
+    elif a=="set-check":
+        index = body.get("index")
+        checked = body.get("checked")
+        if not n.isdigit() or index is None:
+            return {"ok":False,"msg":"number and index required"}
+        try: index = int(index)
+        except Exception: return {"ok":False,"msg":"index must be integer"}
+        # Fetch current issue body
+        raw = sh(["gh","issue","view",n,"-R",REPO,"--json","body"]) or ""
+        if not raw.strip():
+            return {"ok":False,"msg":"could not fetch issue body"}
+        try: issue_body = json.loads(raw).get("body","") or ""
+        except Exception: return {"ok":False,"msg":"could not parse issue body"}
+        # Find checkbox lines (supports - and * markers, indentation, [ ] and [x]/[X])
+        CHECKBOX_LINE_RE = re.compile(r'^\s*[-*]\s+\[[ xX]\]')
+        lines = issue_body.split("\n")
+        checkbox_indices = [i for i, ln in enumerate(lines) if CHECKBOX_LINE_RE.match(ln)]
+        if index < 0 or index >= len(checkbox_indices):
+            return {"ok":False,"msg":f"checkbox index {index} out of range (found {len(checkbox_indices)})"}
+        line_idx = checkbox_indices[index]
+        original_line = lines[line_idx]
+        # Extract item text for history comment
+        m = re.match(r'^\s*[-*]\s+\[[ xX]\]\s*(.*)', original_line)
+        item_text = m.group(1).strip() if m else original_line.strip()
+        # Toggle checkbox marker
+        if checked:
+            new_line = re.sub(r'\[ \]', '[x]', original_line, count=1)
+        else:
+            new_line = re.sub(r'\[[xX]\]', '[ ]', original_line, count=1)
+        lines[line_idx] = new_line
+        new_body = "\n".join(lines)
+        # Write updated body back to GitHub
+        tmp_body = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+                f.write(new_body); tmp_body = f.name
+            r = subprocess.run(["gh","issue","edit",n,"-R",REPO,"--body-file",tmp_body],
+                                capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return {"ok":False,"msg":(r.stderr.strip() or r.stdout.strip() or "gh edit failed")}
+        finally:
+            if tmp_body:
+                try: os.unlink(tmp_body)
+                except Exception: pass
+        # Post history comment
+        history_text = f"✅ выполнено: {item_text}" if checked else f"↩️ снята отметка: {item_text}"
+        tmp_comment = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                f.write(history_text); tmp_comment = f.name
+            sh(["gh","issue","comment",n,"-R",REPO,"--body-file",tmp_comment])
+        finally:
+            if tmp_comment:
+                try: os.unlink(tmp_comment)
+                except Exception: pass
+        return {"ok":True,"msg":f"checkbox {index} updated"}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
