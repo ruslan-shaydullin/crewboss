@@ -85,6 +85,8 @@ proto/r4/sc-edit.list	8d9474809b999f325580b893ae62d4488f5a0371d1a024923373d85319
 proto/seccomp/sc-git.list	e44664b46dec3c0d410db5e32df82ee65d41d5dbc241b45545500bf20d25e541	canonical	Syscall surface capture: git operations (R3c strace output)
 proto/r4/sc-r4union.list	dd67c2fa891056b5d00a3e54db4d63649a118e84add9fcb7d68dfe77de8192be	canonical	R4 syscall union (edit+git+claude surfaces combined)
 proto/seccomp/sc-union.list	3dcd5bc0826a08056148391f157e1ed6994797f6742fbd36eeb6da156f0f6384	canonical	Full syscall union (all surfaces: claude+git+edit+R4 combined)
+reference/runtime/crewboss-doctor.sh	fe9042446e9745f3ca740d5bca706efd1d1d398170f483939e793a60baff80d0	canonical	Box-side drift detection: sha256-checks every deployed file against release manifest; MISSING/MISMATCH/EXTRA → exit 1 + names; #69
+reference/runtime/deploy-runtime.sh	e920615c9d900560711303415ed22fc185b1411a05f3d5af5bde7175922f2fdf	canonical	Deploy full manifest to box via scp + ssh API restart; replaces ad-hoc per-file scp; #69
 reference/runtime/start-api.sh	c192241a5d21860ed1b9bd92277107b0eb9089eee6d5ee26882b299d0b250e23	canonical	API test starter (CB_REPO=crewboss-proto, CB_API_TOKEN=secret123, stub spawn); box-only → reference/runtime/ via #65
 reference/runtime/start-stack.sh	37fc748dae9e0dc33282463ec9283a58ce9e1a0500d4d94ebf4169c9bb0d7c75	canonical	Production stack starter (API daemon + optional launcher loop via 'with-loop' arg); box-only → reference/runtime/ via #65
 proto/r9/stub-spawn-bg.sh	8d81584e175a7f44096a00010307b28faf0f4e6e2a05a4f728d7cea76d6265d8	canonical	Background test stub (simulates spawn with delay; routes via status.json; R9 parallel tests)
