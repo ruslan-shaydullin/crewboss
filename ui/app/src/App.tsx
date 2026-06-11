@@ -684,10 +684,12 @@ function NewIssueModal({ state, onClose, onToast }: {
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [step, setStep] = useState<'form' | 'summary'>('form')
   const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
   const [launching, setLaunching] = useState(false)
 
   const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
+  const charterLabel = charters.find((c) => String(c.n) === charterN)
 
   const isValid = kind === 'charter'
     ? !!(title.trim() && what.trim() && why.trim())
@@ -755,6 +757,80 @@ function NewIssueModal({ state, onClose, onToast }: {
     )
   }
 
+  if (step === 'summary') {
+    return (
+      <div className="modal-bg" data-testid="ni-summary-backdrop" onClick={onClose}>
+        <div className="modal ni-modal ni-summary-modal" data-testid="ni-summary-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="ni-head">
+            <h3>Подтвердить создание</h3>
+            <button className="btn ghost" onClick={onClose}>✕</button>
+          </div>
+          <div className="ni-summary" data-testid="ni-summary-body">
+            <div className="ni-summary-kind" data-testid="ni-summary-kind">
+              {kind === 'charter' ? 'Charter' : 'Task'}
+            </div>
+            <div className="ni-summary-title" data-testid="ni-summary-title">{title}</div>
+            {kind === 'charter' ? (
+              <div className="ni-summary-sections">
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">WHAT</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-what">{what}</div>
+                </div>
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">WHY</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-why">{why}</div>
+                </div>
+                {scope.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Скоуп</div>
+                    <div className="ni-summary-value">{scope}</div>
+                  </div>
+                )}
+                {constraints.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Констрейнты</div>
+                    <div className="ni-summary-value">{constraints}</div>
+                  </div>
+                )}
+                {acceptance.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Acceptance</div>
+                    <div className="ni-summary-value">{acceptance}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="ni-summary-sections">
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">Description</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-description">{description}</div>
+                </div>
+                <div className="ni-summary-section">
+                  <div className="ni-summary-label">Charter</div>
+                  <div className="ni-summary-value" data-testid="ni-summary-charter">
+                    #{charterN}{charterLabel ? ` ${charterLabel.title}` : ''}
+                  </div>
+                </div>
+                {dependsOn.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Depends-on</div>
+                    <div className="ni-summary-value" data-testid="ni-summary-depends">#{dependsOn.trim()}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="m-actions">
+            <button className="btn" data-testid="ni-edit-btn" onClick={() => setStep('form')}>Редактировать</button>
+            <button className="btn pri" data-testid="ni-confirm-btn" disabled={submitting} onClick={handleSubmit}>
+              {submitting ? 'Creating…' : 'Подтвердить'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal ni-modal" onClick={(e) => e.stopPropagation()}>
@@ -789,7 +865,7 @@ function NewIssueModal({ state, onClose, onToast }: {
         )}
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={handleSubmit}>{submitting ? 'Creating…' : 'Create'}</button>
+          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('summary') }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </div>
