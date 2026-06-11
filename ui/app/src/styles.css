@@ -280,6 +280,21 @@ body {
 .node-meta { display:flex; gap:9px; margin-top:5px; color:var(--mut); font-size:11px }
 .node-span { color:var(--mut2) }
 
+/* checklist (read-only — agent sets via set-check API) */
+.checklist { display:flex; flex-direction:column; gap:6px; margin-bottom:6px }
+.checklist-item { display:flex; align-items:baseline; gap:9px; font-size:13px; line-height:1.5; color:var(--mut2) }
+.checklist-box { flex:none; width:16px; height:16px; border:1px solid var(--line2); border-radius:4px;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700; color:var(--done); background:var(--bg); margin-top:1px }
+.checklist-box.checklist-box-checked { background:rgba(70,206,142,.12); border-color:rgba(70,206,142,.45) }
+.checklist-item .checked { color:var(--ink); text-decoration:line-through; text-decoration-color:var(--mut) }
+
+/* history section in drawer */
+.history { display:flex; flex-direction:column; gap:6px; margin-bottom:6px }
+.history-entry { display:flex; flex-direction:column; gap:3px; background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:8px 12px }
+.history-body { font-size:13px; color:var(--mut2); line-height:1.5 }
+.history-meta { font-size:11px }
+
 /* discussion section in drawer */
 .discussion { display:flex; flex-direction:column; gap:10px }
 .disc-empty { font-size:13px; font-style:italic; padding:6px 0 }
