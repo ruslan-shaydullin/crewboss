@@ -60,6 +60,16 @@ body {
 .budget-stat .bar { height:4px; background:#202026; border-radius:4px; overflow:hidden; margin-top:11px }
 .budget-stat .fill { height:100%; background:linear-gradient(90deg,#5b9cf0,#b39bff); border-radius:4px; transition:width .6s ease }
 
+/* loop mode badge */
+.loop-badge { display:inline-flex; align-items:center; gap:7px; font-size:12px; color:var(--mut);
+  background:linear-gradient(180deg,var(--panel),#0a0a0d); border:1px solid var(--line);
+  border-radius:var(--r2); padding:8px 14px; box-shadow:var(--shadow); flex-shrink:0 }
+.loop-integrate { font-weight:660; letter-spacing:.03em }
+.loop-integrate.on  { color:var(--done) }
+.loop-integrate.off { color:var(--blocked) }
+.loop-sep { color:var(--mut); opacity:.5 }
+.loop-running { color:var(--prog); font-weight:600 }
+
 /* layout */
 .layout { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:22px; align-items:start }
 @media (max-width:860px){ .layout { grid-template-columns:1fr } }
