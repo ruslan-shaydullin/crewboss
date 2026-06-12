@@ -17,12 +17,19 @@ export type Agent = {
   title: string
   started: string
 }
+export type LoopInfo = {
+  integrate: boolean
+  max_ticks: number
+  max_parallel: number
+  running: boolean
+}
 export type State = {
   board: Task[]
   agents: Agent[]
   budget: { spent: number; cap: number; runs: unknown[] }
   flags: { paused: boolean; killed: boolean }
   autonomy: { repo: string }
+  loop?: LoopInfo
 }
 
 const KURL = 'cb_api'
