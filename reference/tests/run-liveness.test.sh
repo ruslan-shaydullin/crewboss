@@ -147,6 +147,8 @@ case "$obj $verb" in
       n="$(basename "$pf")"
       case "$n" in *[!0-9]*) continue ;; esac
       [ "$state_filter" = "open" ] && [ -f "$PRDIR/merged-$n" ] && continue
+      # --state merged returns ONLY actually-merged PRs (models real gh; needed by #111 reconcile)
+      [ "$state_filter" = "merged" ] && [ ! -f "$PRDIR/merged-$n" ] && continue
       # PR-list lag: skip this PR for the first N calls (RED-b simulation)
       lagfile="$PRDIR/prlist-lag-$n"
       if [ -f "$lagfile" ]; then
