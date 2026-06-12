@@ -91,6 +91,10 @@ printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
 ssh $CB_SSH_OPTS "$CB_HOST" "
   CB_HOME='$CB_REMOTE_HOME'
+  # Source operator secrets from ~/.crewboss.env so CB_REPO and CB_API_TOKEN reach the
+  # daemon (without this, api.py starts with empty TOKEN → auth=OFF — issue #148).
+  [ -f \"\$HOME/.crewboss.env\" ] && . \"\$HOME/.crewboss.env\"
+  export CB_HOME CB_REPO CB_API_TOKEN
   API_PID=\"\$CB_HOME/run/api.pid\"
   mkdir -p \"\$CB_HOME/run\"
   if [ -f \"\$API_PID\" ]; then
@@ -98,10 +102,11 @@ ssh $CB_SSH_OPTS "$CB_HOST" "
     rm -f \"\$API_PID\"
     sleep 0.3
   fi
-  nohup python3 \"\$CB_HOME/crewboss-api.py\" --port 8787 \
+  nohup env CB_HOME=\"\$CB_HOME\" CB_REPO=\"\$CB_REPO\" CB_API_TOKEN=\"\$CB_API_TOKEN\" \
+    python3 \"\$CB_HOME/crewboss-api.py\" --port 8787 \
     > \"\$CB_HOME/run/api.out\" 2>&1 &
   echo \$! > \"\$API_PID\"
-  echo 'API restarted'
+  echo \"API restarted, auth=\${CB_API_TOKEN:+on}\"
 "
 
 # ── Verify: post-deploy drift check — deploy is only complete when box matches ─
