@@ -11,9 +11,10 @@ mklabel "status:needs-plan"  "ededed" "charter: awaiting tech-lead decomposition
 mklabel "status:plan-review" "fbca04" "charter: plan awaiting boss approval"
 mklabel "status:approved"    "0e8a16" "charter: plan approved — leaves launchable"
 # leaf lifecycle
-mklabel "status:in-progress" "1d76db" "leaf: claimed / executor running"
-mklabel "status:review"      "5319e7" "leaf: PR open, awaiting approval+merge"
-mklabel "status:blocked"     "b60205" "leaf: failed past retry-cap — needs tech-lead triage"
-mklabel "hold"               "d93f0b" "veto: never launch (manual hold)"
+mklabel "status:in-progress"  "1d76db" "leaf: claimed / executor running"
+mklabel "status:review"       "5319e7" "leaf: PR open, awaiting approval+merge"
+mklabel "status:blocked"      "b60205" "leaf: failed past retry-cap — needs tech-lead triage"
+mklabel "status:needs-rework" "e4e669" "leaf: merge conflict — rebase needed before re-integration"
+mklabel "hold"                "d93f0b" "veto: never launch (manual hold)"
 
 echo "✓ crewboss board labels ready"

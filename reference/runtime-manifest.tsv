@@ -28,14 +28,14 @@
 #   #70 extends the gate to *.css scenarios.
 #
 # repo_path	sha256	status	purpose
-proto/r6/board-gh.sh	480f5335086f44d3c95d104871d488918cbc47c51c8ddd4d2c6b77a41b9e0629	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6
+proto/r6/board-gh.sh	cea344a07f8232a43c7e87671dd412f3821e7e62825a4e93b4dc24e601c688af	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6; #87 adds route needs-rework, claim strips needs-rework, get state priority review>needs-rework
 proto/net/bridge.py	36b9cb3c62092fa20debe6e94e1929a06f661beab79cf8e487990ff6f5ecc551	canonical	In-jail CONNECT proxy bridge (proxy.sock → localhost:3128)
 proto/provision/build-provision.sh	77856db9decefcb7b288d2007e5da4aa5f35c128e52840b30e92df96b7144de2	canonical	Assembles self-contained provision.sh by embedding runtime files as base64 tarball; CB_SRC=reference/runtime/ (#66)
 reference/runtime/charter-leaf-prep.sh	6e604a87a5a9860307bcc940aa673d2ca44e97fd3db83306841763b19a86c02d	canonical	Charter-aware leaf dispatch: clones, creates charter/C branch, sets leaf/$ID-$TS; box-only → reference/runtime/ via #65
 reference/runtime/claude.kafel	c0856fcda3775bd12af8930925a1e927df2eaf15045e17156defa52f7f7076e0	canonical	Seccomp allowlist (kafel); box version adds getxattr/io_uring_enter/io_uring_setup/pkey_alloc/pkey_free vs proto/seccomp (drift); → #65
 ui/server/crewboss-api.py	fa8ea6d72663ea1202f3052bce5aaf00645a8416183480a659119000da93dfc6	canonical	REST/SSE daemon API (board state, commands, kill_switch, run/kill_switch, team org-chart); #68 kill-switch pre-check for run action
 proto/provision/crewboss-doctor.sh	db1907f0ee3a76b14afb131a49fcf0bfa339c8b32931d0ddd17c0c25d1f4f3d5	canonical	Preflight health check; hard-fails on blockers with remediation hints; FAIL on missing invariants
-reference/runtime/crewboss-launcher-gh.sh	ecb4e269a35106d4363e825c22d5e499b9ec79b81c7abe398fd7b1051939d161	canonical	CANONICAL launcher (GitHub-board, background-parallel, kill_switch run/kill_switch, R9 per-task proxy); → reference/runtime/ via #65; #68 kill-switch exit 42 (machine-readable)
+reference/runtime/crewboss-launcher-gh.sh	0d7be07df883e64ded93592c6f04c2b97c005eee6109697d5ef79db2a405ca32	canonical	CANONICAL launcher (GitHub-board, background-parallel, kill_switch run/kill_switch, R9 per-task proxy); → reference/runtime/ via #65; #68 kill-switch exit 42 (machine-readable); #87 CB_REWORK_SPAWN path selection for needs-rework leaves
 proto/r5/crewboss-launcher.sh	eef78a95695afefa1404f0a39a16f631ae658282a14a43dcc12eca5ac56f82d8	canonical	R5 local-board launcher (historical epoch; reference/launcher/ has the Arch-2 variant — LEGACY)
 reference/runtime/crewboss-prep-spawn-gh.sh	97471b9fdc7eece326d334cfa1d6d4ca483c89b964e3ae163eaf54c2a9d71fb4	canonical	Spawn adapter (gh board): mirror-cache clone, charter-aware branch (charter/C, flock, idempotent), sudo-cleanup, CB_GOVERNED injection; box adds cache+sudo vs proto/r6; → #65 #67
 proto/r5/crewboss-prep-spawn.sh	a6283f0d6ae42f6ba36ab2b67bbdcb15ef16903ef41b2c3726fb416b343f675e	canonical	Spawn adapter (local board); R5 version
@@ -46,7 +46,7 @@ proto/seccomp/gen-names.sh	6c008e53393bab22882baca9ab8c75dc085b2795ef488cb0d668c
 proto/seccomp/gen-policy.sh	75e4674a619db75ea035829fb7fad521362973707b2165fd3c66926e42524db3	canonical	Builds kafel allowlist from union list + benign essentials (ausyscall auto-map for unknowns)
 proto/net/jail-test.sh	98d17935222badb953303faeb7705424cb64db05169dc1b418cab2bf8f33299e	canonical	Inside-jail R3b network test payload (brings up bridge, runs curl tests)
 reference/launcher/labels-setup.sh	525670fba6c8c49c4247f89ae4816a5ea89c0a990feae2c6e77a60978be535d2	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit)
-reference/launcher/launchable.sh	91d638370cdb2633bc7fce73bacbf6a39af616af65dda3bd0181462f2abeed3d	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed; --charter N scope filter (#70)
+reference/launcher/launchable.sh	c697d8addd4906c16437424830b599b5e3b08660dddc741db78c3e5bafa233a6	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed; --charter N scope filter (#70); #87 documents needs-rework intentionally launchable (re-dispatch contract)
 proto/provision/provision-template.sh	5432b0b89bc4fe4027cf1872eeb3555e89b68e324a756942b6c91ed701543cfb	canonical	Provision script template (__RUNTIME_PLACEHOLDER__ injected by build-provision.sh)
 proto/provision/provision.sh	e62fdfe40477f02a95d581ded3cf4397300515d34f8ee2206b4e842bc5d34369	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)
 reference/runtime/proxy.py	104726c15c0a0ee09a6908bae7c3e84119dbcff4b7bba78380dc44867b72611a	canonical	Egress HTTP/CONNECT proxy; box version adds npm allowlist (registry.npmjs.org) vs proto/net (drift finding: marker-grep-без-css); → #65

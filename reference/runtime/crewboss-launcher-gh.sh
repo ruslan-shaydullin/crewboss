@@ -5,8 +5,8 @@
 # SPAWN is overridable ($CB_SPAWN) so the loop is testable with a stub against synthetic
 # gh issues — no jail, no spend.
 #
-# Subcommands: reconcile | once     Env: CB_REPO (req), CB_HOME, CB_SPAWN, CB_RETRY_CAP,
-#                                        CB_MAX_PARALLEL, CB_LAUNCHER_ID
+# Subcommands: reconcile | once     Env: CB_REPO (req), CB_HOME, CB_SPAWN, CB_REWORK_SPAWN,
+#                                        CB_RETRY_CAP, CB_MAX_PARALLEL, CB_LAUNCHER_ID
 set -uo pipefail
 : "${CB_REPO:?set CB_REPO=owner/repo}"; export CB_REPO
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
@@ -15,6 +15,10 @@ RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
 SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
+# CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
+# (needs-rework state). Defaults to rework-prep.sh next to the launcher.
+HERE_LAUNCHER="$(cd "$(dirname "$0")" && pwd)"
+REWORK_SPAWN="${CB_REWORK_SPAWN:-$HERE_LAUNCHER/rework-prep.sh}"
 mkdir -p "$STATE"
 now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
@@ -52,12 +56,19 @@ route(){ # id, spawn-exit
 }
 
 claim_and_spawn(){ # id
-  local id="$1" role
+  local id="$1" role spawn_cmd
   role=$(board get "$id" role)
-  board claim "$id" "$LID" >/dev/null
+  # Choose spawn path before claiming: needs-rework -> rework script, otherwise normal.
+  if [ "$(board get "$id" state)" = "needs-rework" ]; then
+    spawn_cmd="$REWORK_SPAWN"
+    log "claim #$id state=needs-rework -> rework path"
+  else
+    spawn_cmd="$SPAWN"
+  fi
+  board claim "$id" "$LID" >/dev/null   # also strips status:needs-rework (lifecycle)
   sset "$id" pid "$$"; sset "$id" starttime "$(now)"
   log "claim #$id role=$role (pid $$)"
-  "$SPAWN" "$id" "$role"; local ex=$?
+  "$spawn_cmd" "$id" "$role"; local ex=$?
   route "$id" "$ex"
 }
 
@@ -141,8 +152,11 @@ cmd_run(){
           # (laggy) gh list still reports it launchable.
           [ -n "$(sget "$id" pid)" ] && continue
           [ -n "$(sget "$id" term)" ] && continue
+          # Choose spawn path before claiming (needs-rework -> rework script)
+          _bg_spawn="$SPAWN"
+          [ "$(board get "$id" state)" = "needs-rework" ] && _bg_spawn="$REWORK_SPAWN"
           board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
-          ( "$SPAWN" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
+          ( "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
         done
       fi
