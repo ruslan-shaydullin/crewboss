@@ -414,11 +414,19 @@ _charter_finale_cycle(){
     # ── LOCAL GATE — runs BEFORE PR creation (anti-deadlock invariant) ────────
     local harness_args=()
     [ -n "${CB_HARNESS:-}" ] && harness_args=(--harness "$CB_HARNESS")
-    local gate_repo_dir="${CB_GATE_REPO_DIR:-.}"
+    # Location: --repo-dir is an explicit test/debug override; production uses
+    # --remote so gate-charter clones the real charter branch tree and avoids
+    # false-RED from CWD self-matches.
+    local gate_loc_args=()
+    if [ -n "${CB_GATE_REPO_DIR:-}" ]; then
+      gate_loc_args=(--repo-dir "$CB_GATE_REPO_DIR")
+    elif [ -n "$GIT_REMOTE" ]; then
+      gate_loc_args=(--remote "$GIT_REMOTE")
+    fi
     local gate_out gate_rc=0
     gate_out=$(bash "$INTEGRATOR_SCRIPT" gate-charter "$cid" \
                     "${harness_args[@]+"${harness_args[@]}"}" \
-                    --repo-dir "$gate_repo_dir" 2>&1) || gate_rc=$?
+                    "${gate_loc_args[@]+"${gate_loc_args[@]}"}" 2>&1) || gate_rc=$?
 
     if [ "$gate_rc" -ne 0 ]; then
       log "charter-finale: #$cid local gate RED — PR not created"
