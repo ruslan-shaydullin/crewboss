@@ -144,10 +144,10 @@ run_launcher(){
 SCOPE_BOARD='[
   {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 5"},
   {"number":6,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 6"},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf A\nCharter: #5"},
-  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf B\nCharter: #5"},
-  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf C\nCharter: #6"},
-  {"number":21,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf D\nCharter: #6"},
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf A\nCharter: #5\n## Acceptance (machine)\n- check: true"},
+  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf B\nCharter: #5\n## Acceptance (machine)\n- check: true"},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf C\nCharter: #6\n## Acceptance (machine)\n- check: true"},
+  {"number":21,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf D\nCharter: #6\n## Acceptance (machine)\n- check: true"},
   {"number":99,"state":"OPEN","labels":[],"body":"cruft — no charter ref"}
 ]'
 
@@ -155,8 +155,8 @@ SCOPE_BOARD='[
 PLANNABLE_BOARD='[
   {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 5"},
   {"number":6,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"}],"body":"charter 6"},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf A\nCharter: #5"},
-  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf B\nCharter: #5"}
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf A\nCharter: #5\n## Acceptance (machine)\n- check: true"},
+  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf B\nCharter: #5\n## Acceptance (machine)\n- check: true"}
 ]'
 
 # ── RED-a: CREWBOSS_CHARTER=5 → only charter-5 leaves touched ───────────────
