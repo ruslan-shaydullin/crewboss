@@ -15,12 +15,21 @@ RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
 SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
+CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 mkdir -p "$STATE"
 now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
 sget(){ cat "$STATE/$1/$2" 2>/dev/null || echo ""; }
 sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
 board(){ bash "$BOARD" "$@"; }
+# plannable_scoped: when CREWBOSS_CHARTER is set, restrict plannable output to that charter only.
+plannable_scoped(){
+  if [ "${CHARTER_SCOPE:-0}" = "0" ]; then
+    board plannable
+  else
+    board plannable | grep "^${CHARTER_SCOPE}$" || true
+  fi
+}
 
 reconcile(){
   local d id pid
@@ -126,7 +135,7 @@ cmd_run(){
       elif [ -z "$stop" ]; then
         # plan charters first: a needs-plan charter -> spawn a tech-lead to decompose it
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
-        for cid in $(board plannable); do
+        for cid in $(plannable_scoped); do
           [ "$running" -ge "$MAXP" ] && break
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
@@ -149,7 +158,7 @@ cmd_run(){
       # idle? nothing running AND (stopped OR no FRESH launchable). "fresh" excludes ids the
       # laggy gh list may still report but we've already handled (pid set / term).
       local fresh=0 fid
-      for fid in $(board launchable) $(board plannable); do { [ -n "$(sget "$fid" pid)" ] || [ -n "$(sget "$fid" term)" ]; } || fresh=$((fresh+1)); done
+      for fid in $(board launchable) $(plannable_scoped); do { [ -n "$(sget "$fid" pid)" ] || [ -n "$(sget "$fid" term)" ]; } || fresh=$((fresh+1)); done
       if [ "$running" -eq 0 ] && [ -n "$stop" ]; then log "stopped"; break; fi
       # idle-exit is DEBOUNCED: require CB_IDLE_CONFIRM consecutive empty ticks, so a transient
       # empty `board launchable` (gh read-after-write lag) doesn't end the run with work pending.
