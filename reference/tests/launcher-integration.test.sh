@@ -91,7 +91,7 @@ branch_file(){ git -C "$REPO" show "$1:$2" 2>/dev/null; }   # branch_file task/1
 # A launchable leaf: OPEN, body "Charter: #5", under an approved charter #5.
 LEAF_BOARD='[
   {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"do it\nCharter: #5","comments":[]}
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"do it\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]'
 
 echo "== predicate sanity: #10 is launchable =="

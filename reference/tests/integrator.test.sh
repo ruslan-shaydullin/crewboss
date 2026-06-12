@@ -114,8 +114,8 @@ launch(){ ( cd "$ROOT/repo" && PATH="$BIN:$PATH" \
 echo "== (a): close-leaf unblocks dependent =="
 TWO_LEAF_BOARD='[
   {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task A\nCharter: #5","comments":[]},
-  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task B\nCharter: #5\nDepends-on: #10","comments":[]}
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task A\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]},
+  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task B\nCharter: #5\nDepends-on: #10\n## Acceptance (machine)\n- check: true","comments":[]}
 ]'
 reset <<< "$TWO_LEAF_BOARD"
 
@@ -150,10 +150,10 @@ echo "== (b): CREWBOSS_CHARTER=5 scopes launcher to charter #5 only =="
 MULTI_BOARD='[
   {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 5","comments":[]},
   {"number":6,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 6","comments":[]},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 5\nCharter: #5","comments":[]},
-  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 5b\nCharter: #5","comments":[]},
-  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 6\nCharter: #6","comments":[]},
-  {"number":21,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 6b\nCharter: #6","comments":[]},
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 5\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]},
+  {"number":11,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 5b\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 6\nCharter: #6\n## Acceptance (machine)\n- check: true","comments":[]},
+  {"number":21,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of 6b\nCharter: #6\n## Acceptance (machine)\n- check: true","comments":[]},
   {"number":99,"state":"OPEN","labels":[],"body":"cruft — no Charter","comments":[]}
 ]'
 reset <<< "$MULTI_BOARD"

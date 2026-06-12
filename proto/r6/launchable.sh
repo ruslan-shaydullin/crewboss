@@ -20,6 +20,20 @@ jq -r '
   def numsAfter($body; $kw):
     [ ($body // "") | split("\n")[] | select(test("(?i)^[\\s*_>#-]*" + $kw + "\\s*:")) ] | join(" ")
     | [ scan("\\d+") | tonumber ];
+  def has_acceptance_block:
+    (. // "") | split("\n") |
+    reduce .[] as $line (
+      {in_block: false, done: false, valid: false};
+      if .done then .
+      elif (.in_block | not) then
+        if ($line | test("^## Acceptance \\(machine\\)")) then .in_block = true else . end
+      else
+        if ($line | test("^## ")) then .done = true
+        elif ($line | test("^- (test|check): .+")) then .valid = true
+        else .
+        end
+      end
+    ) | .valid;
   (map({key:(.number|tostring), value:.}) | from_entries) as $by
   | .[]
   | select(.state == "OPEN")
@@ -30,5 +44,6 @@ jq -r '
   | ($by[$cN|tostring]) as $c
   | select($c != null and $c.state == "OPEN" and ([$c.labels[].name] | any(. == "status:approved")) and ([$c.labels[].name] | any(. == "type:charter")))
   | select( numsAfter(.body; "Depends-on") | all( ($by[(.|tostring)]) | (. != null and .state == "CLOSED") ) )
+  | select( .body | has_acceptance_block )
   | .number
 '
