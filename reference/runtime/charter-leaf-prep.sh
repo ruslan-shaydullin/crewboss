@@ -10,7 +10,17 @@ CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
 CB_REPO="${CB_REPO:-stratch1989/crewboss}"
 ID="$1"; ROLE="${2:-executor}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
-URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"
+# Token-free URL: CB_GIT_REMOTE from run-env.sh if set; else build from CB_REPO.
+# Credential helper (GIT_CONFIG_*) provides GH_TOKEN at git call time — no token in URL.
+URL="${CB_GIT_REMOTE:-https://github.com/${CB_REPO}.git}"
+# Register inline credential helper if not already done by a parent (e.g. run-env.sh).
+# Inline function: no file path → valid in both host and jail namespaces.
+# nsjail keep_env (-e, crewboss-spawn.sh:82) + --env GH_TOKEN (spawn.sh:62) carry both
+# this registration and the token into the jail on every spawn.
+# shellcheck disable=SC2016
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"
 C="$(printf '%s' "$BODY" | grep -oiE 'charter:[[:space:]]*#?[0-9]+' | head -1 | grep -oE '[0-9]+')"
 [ -n "$C" ] || { echo "leaf #$ID: no 'Charter: #N' in body" >&2; exit 2; }
@@ -21,6 +31,7 @@ rm -rf "$WA" 2>/dev/null || sudo rm -rf "$WA" 2>/dev/null || true
 mkdir -p "$WA"
 git clone -q "$URL" "$WA/work" || { echo "leaf #$ID: clone failed" >&2; exit 2; }
 cd "$WA/work"
+# Push URL also token-free; credential helper provides GH_TOKEN at push time.
 git remote set-url --push origin "$URL"
 
 # ensure charter/C exists on origin (create off origin/main if absent), serialized per charter
