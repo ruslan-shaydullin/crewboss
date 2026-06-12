@@ -65,7 +65,19 @@ canon() {
   esac
   printf '%s' "$s"
 }
-cmdc="$(canon "$cmdn")"     # canonical form: all verb matching / number extraction runs on this
+# strip_payload(): Remove the VALUES of string-valued flags (--body/-b, --title/-t, --comment/-c)
+# BEFORE canon() strips quotes. Without this, canon()'s tr-d-quote step merges body/title text
+# into the canonical command string, causing GATED-verb matches on cited content (false-deny,
+# P1.5 "gate false-deny quoted-payload"). Applied to cmdn (after \t/\n->space) so multiline
+# bodies are already flattened to one line. Only double- and single-quoted values are stripped;
+# bare single-word values are benign (they do not contain gated verb phrases).
+strip_payload() {
+  local s="$1"
+  s="$(printf '%s' "$s" | sed -E 's/(--body|-b|--title|-t|--comment|-c)[[:space:]]+"[^"]*"/\1/g')"
+  s="$(printf '%s' "$s" | sed -E "s/(--body|-b|--title|-t|--comment|-c)[[:space:]]+'[^']*'/\\1/g")"
+  printf '%s' "$s"
+}
+cmdc="$(canon "$(strip_payload "$cmdn")")"     # canonical form: all verb matching / number extraction runs on this
 
 deny() { echo "crewboss BLOCK [$role]: $1" >&2; exit 2; }
 has()  { printf '%s' "$cmdc" | grep -Eq "$1"; }
