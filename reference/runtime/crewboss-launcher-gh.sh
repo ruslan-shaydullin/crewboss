@@ -100,11 +100,16 @@ _integrator_cycle(){
   review_ids=$(board review-leaves 2>/dev/null || true)
   [ -n "$review_ids" ] || return 0
 
-  local open_prs rid pr_head pr_num pr_base ci_json ci_status conflict_files try_ok merge_sha file_list
+  local open_prs="" merged_prs="" rid pr_head pr_num pr_base ci_json ci_status conflict_files try_ok
+  local merge_sha="" file_list="" merge_rc=0 close_rc=0 pr_state="" rec_num="" rec_sha_r="" rec_rc=0
 
-  # Snapshot all open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>-
+  # Snapshot open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>-
   open_prs=$(gh pr list -R "$CB_REPO" --state open \
              --json number,headRefName,baseRefName 2>/dev/null || true)
+  # Snapshot merged PRs once per cycle — needed for reconcile after a mid-run restart
+  # (leaf stays in status:review but PR is already merged; no open PR exists).
+  merged_prs=$(gh pr list -R "$CB_REPO" --state merged \
+               --json number,headRefName,baseRefName 2>/dev/null || true)
 
   for rid in $review_ids; do
     # Skip leaves already merged this run (prevents double-merge)
@@ -125,6 +130,28 @@ _integrator_cycle(){
            | .baseRefName' 2>/dev/null | head -1 || true)
 
     if [ -z "$pr_num" ]; then
+      # No open PR — check if already MERGED (reconcile: leaf survived a launcher restart
+      # mid-run, or close-leaf failed on a previous tick after a successful merge).
+      rec_num=$(printf '%s' "$merged_prs" | jq -r --arg rid "$rid" \
+        '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
+             | select(.baseRefName | startswith("charter/"))
+             | .number' 2>/dev/null | head -1 || true)
+      if [ -n "$rec_num" ]; then
+        log "integrator: #$rid in review with already-MERGED PR #$rec_num — reconcile close-leaf"
+        rec_sha_r=$(gh pr view "$rec_num" -R "$CB_REPO" --json mergeCommit \
+                   2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null) || rec_sha_r=""
+        rec_rc=0
+        bash "$INTEGRATOR_SCRIPT" close-leaf "$rid" \
+             ${rec_sha_r:+--merge-sha "$rec_sha_r"} \
+             --repo "$CB_REPO" 2>/dev/null || rec_rc=$?
+        if [ "$rec_rc" -eq 0 ]; then
+          sset "$rid" int_done "merged"
+          log "integrator: #$rid reconcile-closed (sha: ${rec_sha_r:-n/a})"
+        else
+          log "integrator: #$rid reconcile close-leaf FAILED (rc=$rec_rc) — retry next tick"
+        fi
+        continue
+      fi
       log "integrator: #$rid in review but no open PR — skip"
       continue
     fi
@@ -158,16 +185,32 @@ _integrator_cycle(){
     fi
 
     if [ "$try_ok" = "true" ]; then
-      # Clean: merge PR → close leaf (dependents unblock on next tick)
+      # Clean: merge PR → verify MERGED → close leaf → set int_done (all-or-nothing).
+      # Any failure aborts the sequence; next tick retries from the appropriate step.
       log "integrator: #$rid PR #$pr_num CI=green try-merge=clean — merging"
-      gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null || true
+      merge_rc=0
+      gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null || merge_rc=$?
+      # Verify the PR is actually MERGED (guards against silent server-side rejections).
+      pr_state=$(gh pr view "$pr_num" -R "$CB_REPO" --json state 2>/dev/null \
+                 | jq -r '.state // empty' 2>/dev/null) || pr_state=""
+      if [ "$merge_rc" -ne 0 ] || [ "$pr_state" != "MERGED" ]; then
+        log "integrator: #$rid PR #$pr_num merge FAILED (rc=$merge_rc state=${pr_state:-?}) — not closing leaf; retry next tick"
+        continue
+      fi
       merge_sha=$(gh pr view "$pr_num" -R "$CB_REPO" --json mergeCommit \
                  2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null) || merge_sha=""
+      close_rc=0
       bash "$INTEGRATOR_SCRIPT" close-leaf "$rid" \
            ${merge_sha:+--merge-sha "$merge_sha"} \
-           --repo "$CB_REPO" 2>/dev/null || true
-      sset "$rid" int_done "merged"
-      log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
+           --repo "$CB_REPO" 2>/dev/null || close_rc=$?
+      if [ "$close_rc" -eq 0 ]; then
+        sset "$rid" int_done "merged"
+        log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
+      else
+        # Merge is done but close failed: next tick will find PR in merged_prs and
+        # retry close-leaf via the reconcile path (idempotent; no double-merge risk).
+        log "integrator: #$rid close-leaf FAILED (rc=$close_rc) — int_done NOT set; retry next tick"
+      fi
     else
       # Conflict: route needs-rework so rework-spawn can rebase
       file_list=$(printf '%s' "$conflict_files" | head -5 | tr '\n' ' ' | sed 's/ *$//')
