@@ -1,0 +1,2 @@
+file	status	description
+runtime/composition-parse.sh	canonical	parse ## Composition (machine) block; validate doctor invariants Ф1 (span<=span_max, roles in manifest)
