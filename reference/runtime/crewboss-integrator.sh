@@ -115,16 +115,16 @@ cmd_try_merge() {
   local tmpdir; tmpdir="$(mktemp -d)"
 
   git clone -q "$remote" "$tmpdir" 2>/dev/null || {
-    log "try-merge: clone failed ($remote)"; rm -rf "$tmpdir"; exit 1
+    log "try-merge: clone failed ($remote)"; rm -rf "$tmpdir"; exit 2
   }
   git -C "$tmpdir" config user.email "integrator@crewboss" 2>/dev/null
   git -C "$tmpdir" config user.name  "crewboss-integrator"  2>/dev/null
 
   git -C "$tmpdir" fetch -q origin "$target" "$branch" 2>/dev/null || {
-    log "try-merge: fetch of $target / $branch failed"; rm -rf "$tmpdir"; exit 1
+    log "try-merge: fetch of $target / $branch failed"; rm -rf "$tmpdir"; exit 2
   }
   git -C "$tmpdir" checkout -q -b "_integrator_try" "origin/$target" 2>/dev/null || {
-    log "try-merge: checkout of $target failed"; rm -rf "$tmpdir"; exit 1
+    log "try-merge: checkout of $target failed"; rm -rf "$tmpdir"; exit 2
   }
 
   local rc=0

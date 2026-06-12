@@ -121,6 +121,36 @@ claim_and_spawn(){ # id
   route "$id" "$ex"
 }
 
+# ── CI classifier ────────────────────────────────────────────────────────────
+# _classify_ci <rollup_json_array>
+# Normalises both CheckRun (.status/.conclusion) and StatusContext (.state) nodes.
+# Returns: "success" | "failure" | "pending"
+# SUCCESS of either type = success; FAILURE/ERROR = failure; everything else = pending.
+_classify_ci(){
+  local arr="$1"
+  printf '%s' "$arr" | jq -r '
+    [ .[] |
+      if .state != null then
+        # StatusContext node: use .state (SUCCESS / FAILURE / ERROR / PENDING / …)
+        if   .state == "SUCCESS"                               then "success"
+        elif (.state == "FAILURE" or .state == "ERROR")       then "failure"
+        else "pending" end
+      else
+        # CheckRun node: use .status / .conclusion
+        if .status == "COMPLETED" then
+          if   (.conclusion == "SUCCESS" or .conclusion == "SKIPPED") then "success"
+          elif (.conclusion == "FAILURE" or .conclusion == "ERROR"
+               or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT") then "failure"
+          else "pending" end
+        else "pending" end
+      end
+    ] |
+    if   (map(select(. == "failure")) | length) > 0 then "failure"
+    elif (map(select(. == "pending")) | length) > 0 then "pending"
+    else "success" end
+  ' 2>/dev/null || echo "pending"
+}
+
 # ── integrator cycle: merge review-state leaf PRs into charter/C ─────────────
 # Called every tick of cmd_run after finished-spawn routing.
 # GREEN-BEFORE-MERGE: CI (statusCheckRollup) must be success before any merge.
@@ -137,15 +167,16 @@ _integrator_cycle(){
   review_ids=$(board review-leaves 2>/dev/null || true)
   [ -n "$review_ids" ] || return 0
 
-  local open_prs rid pr_head pr_num pr_base ci_json ci_status conflict_files try_ok merge_sha file_list
+  local open_prs rid pr_head pr_num pr_base ci_raw ci_rc rollup_arr ci_status conflict_files try_exit merge_sha file_list
 
   # Snapshot all open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>-
   open_prs=$(gh pr list -R "$CB_REPO" --state open \
              --json number,headRefName,baseRefName 2>/dev/null || true)
 
   for rid in $review_ids; do
-    # Skip leaves already merged this run (prevents double-merge)
-    [ "$(sget "$rid" int_done)" = "merged" ] && continue
+    # Skip leaves already handled this run (merged or blocked for no-CI)
+    local done; done=$(sget "$rid" int_done)
+    [ -n "$done" ] && continue
 
     # Find the open PR: headRefName must start with leaf/$rid- AND base must be charter/*
     pr_head=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
@@ -198,14 +229,42 @@ _integrator_cycle(){
     esac
 
     # ── GREEN-BEFORE-MERGE: CI must be success ────────────────────────────────
-    ci_json=$(gh pr view "$pr_num" -R "$CB_REPO" --json statusCheckRollup \
-              2>/dev/null || echo '{"statusCheckRollup":[]}')
-    ci_status=$(printf '%s' "$ci_json" | jq -r '
-      if (.statusCheckRollup | length) == 0 then "pending"
-      elif (.statusCheckRollup | all(.conclusion == "SUCCESS" or .conclusion == "SKIPPED")) then "success"
-      elif (.statusCheckRollup | any(.status == "IN_PROGRESS" or .status == "QUEUED")) then "pending"
-      elif (.statusCheckRollup | any(.conclusion == null or .conclusion == "")) then "pending"
-      else "failure" end' 2>/dev/null) || ci_status="failure"
+    # (a) Distinguish infra error from real empty rollup.
+    # (b) Normalise both CheckRun and StatusContext nodes via _classify_ci.
+    # (c) Empty rollup: apply no-CI policy with per-leaf tick counter.
+    ci_rc=0
+    ci_raw=$(gh pr view "$pr_num" -R "$CB_REPO" --json statusCheckRollup 2>/dev/null) || ci_rc=$?
+
+    if [ "$ci_rc" -ne 0 ]; then
+      # Infra error reading rollup — log and retry next tick; do NOT count as empty rollup.
+      log "integrator: #$rid PR #$pr_num gh error reading CI rollup (exit $ci_rc) — retry next tick"
+      continue
+    fi
+
+    rollup_arr=$(printf '%s' "$ci_raw" | jq -c '.statusCheckRollup // []' 2>/dev/null) || rollup_arr="[]"
+
+    if [ "$rollup_arr" = "[]" ]; then
+      # Empty rollup: apply no-CI policy (human decision required, per spec §p.2).
+      # Counter is per-leaf in $STATE so it persists across ticks within a run.
+      local empty_limit="${CB_CI_EMPTY_TICKS:-30}"
+      local prev_empty; prev_empty=$(sget "$rid" ci_empty_ticks); prev_empty=${prev_empty:-0}
+      local new_empty; new_empty=$((prev_empty + 1))
+      sset "$rid" ci_empty_ticks "$new_empty"
+      if [ "$new_empty" -ge "$empty_limit" ]; then
+        log "integrator: #$rid PR #$pr_num empty CI rollup ${new_empty} ticks (≥${empty_limit}) — blocking, needs human"
+        board route "$rid" blocked \
+          "нет CI — на человека: PR #$pr_num имеет пустой CI rollup после ${new_empty} тиков. Добавьте CI или снимите метку blocked вручную." \
+          >/dev/null || true
+        sset "$rid" int_done "no-ci-blocked"
+      else
+        log "integrator: #$rid PR #$pr_num CI rollup пустой (тик ${new_empty}/${empty_limit}) — ожидание"
+      fi
+      continue
+    fi
+
+    # Real nodes present: reset empty counter and classify.
+    sset "$rid" ci_empty_ticks "0"
+    ci_status=$(_classify_ci "$rollup_arr")
 
     case "$ci_status" in
       pending)  log "integrator: #$rid PR #$pr_num CI pending — wait next tick"; continue ;;
@@ -215,13 +274,18 @@ _integrator_cycle(){
     esac
 
     # ── try-merge dry-run ─────────────────────────────────────────────────────
-    try_ok=true
-    if ! conflict_files=$(bash "$INTEGRATOR_SCRIPT" try-merge "$pr_head" "$pr_base" \
-                          --remote "$GIT_REMOTE" 2>/dev/null); then
-      try_ok=false
-    fi
+    # Exit codes from crewboss-integrator.sh try-merge:
+    #   0 = clean (safe to merge)
+    #   1 = merge conflict (conflicting file paths on stdout)
+    #   2 = infra error (clone/fetch/checkout failed — not a real conflict)
+    try_exit=0
+    conflict_files=$(bash "$INTEGRATOR_SCRIPT" try-merge "$pr_head" "$pr_base" \
+                    --remote "$GIT_REMOTE" 2>/dev/null) || try_exit=$?
 
-    if [ "$try_ok" = "true" ]; then
+    if [ "$try_exit" -eq 2 ]; then
+      # Infra error: keep leaf in review and retry next tick (no needs-rework).
+      log "integrator: #$rid PR #$pr_num try-merge infra error (exit 2) — keeping in review, retry next tick"
+    elif [ "$try_exit" -eq 0 ]; then
       # Clean: merge PR → close leaf (dependents unblock on next tick)
       log "integrator: #$rid PR #$pr_num CI=green try-merge=clean — merging"
       gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null || true
@@ -233,7 +297,7 @@ _integrator_cycle(){
       sset "$rid" int_done "merged"
       log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
     else
-      # Conflict: route needs-rework so rework-spawn can rebase
+      # Conflict (exit 1): route needs-rework so rework-spawn can rebase
       file_list=$(printf '%s' "$conflict_files" | head -5 | tr '\n' ' ' | sed 's/ *$//')
       [ -z "$file_list" ] && file_list="(unknown)"
       log "integrator: #$rid PR #$pr_num merge conflict: $file_list — needs-rework"
