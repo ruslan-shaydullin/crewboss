@@ -44,6 +44,7 @@ case "$cmd" in
                 if .state=="CLOSED" then "done"
                 elif ([.labels[].name]|any(.=="status:blocked")) then "blocked"
                 elif ([.labels[].name]|any(.=="status:review")) then "review"
+                elif ([.labels[].name]|any(.=="status:needs-rework")) then "needs-rework"
                 elif ([.labels[].name]|any(.=="status:in-progress")) then "in-progress"
                 elif ([.labels[].name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[].name]|any(.=="status:plan-review")) then "plan-review"
@@ -56,6 +57,9 @@ case "$cmd" in
     id="$1"; lid="${2:-cb}"
     ensure_label "claimed-by:$lid" "bfdadc"
     gh issue edit "$id" -R "$REPO" --add-label status:in-progress --add-label "claimed-by:$lid" >/dev/null
+    # Lifecycle: transitioning out of needs-rework — strip the label so the leaf never
+    # carries needs-rework simultaneously with in-progress (spec §5 lifecycle).
+    gh issue edit "$id" -R "$REPO" --remove-label status:needs-rework 2>/dev/null || true
     echo "claimed #$id by $lid" ;;
 
   route)
@@ -70,6 +74,15 @@ case "$cmd" in
                labs=$(iview "$id" | jq -r '.labels[].name | select(startswith("claimed-by:") or .=="status:in-progress")')
                for l in $labs; do gh issue edit "$id" -R "$REPO" --remove-label "$l" >/dev/null; done
                echo "#$id -> open (requeued)" ;;
+      needs-rework)
+               # Integrator detected a merge conflict: drop in-progress/review/claimed-by:*,
+               # add status:needs-rework so the launcher re-dispatches via rework path.
+               ensure_label "status:needs-rework" "e4e669"
+               nrlabs=$(iview "$id" | jq -r '.labels[].name | select(startswith("claimed-by:") or .=="status:in-progress" or .=="status:review")')
+               for nrl in $nrlabs; do gh issue edit "$id" -R "$REPO" --remove-label "$nrl" >/dev/null; done
+               gh issue edit "$id" -R "$REPO" --add-label status:needs-rework >/dev/null
+               [ -n "$comment" ] && gh issue comment "$id" -R "$REPO" -b "$comment" >/dev/null
+               echo "#$id -> needs-rework" ;;
       *) echo "unknown outcome: $outcome" >&2; exit 64 ;;
     esac ;;
 

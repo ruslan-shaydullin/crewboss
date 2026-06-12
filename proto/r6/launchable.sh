@@ -18,6 +18,10 @@
 #   AND leaf is NOT labeled status:in-progress|status:review|status:blocked|hold
 #   AND (if --charter N / CREWBOSS_CHARTER=N) charter #N matches the scope
 #
+# NOTE: status:needs-rework is intentionally NOT in the exclusion list — a needs-rework leaf
+#   remains launchable so the launcher re-dispatches it via the rework path (rebase cycle).
+#   Contrast with status:blocked (hard stop, needs tech-lead triage) and status:hold (veto).
+#
 # Pure function — NO network. The real launcher pipes `gh issue list ... --json ...`
 # into this; the test harness pipes a synthetic board. See ../board-orchestration.md.
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-}"
