@@ -7,7 +7,11 @@
 #
 # Subcommands: reconcile | once | run
 # Env: CB_REPO (req), CB_HOME, CB_SPAWN, CB_REWORK_SPAWN, CB_RETRY_CAP, CB_MAX_PARALLEL,
-#      CB_LAUNCHER_ID, CB_GIT_REMOTE, CB_INTEGRATOR
+#      CB_LAUNCHER_ID, CB_GIT_REMOTE, CB_INTEGRATOR,
+#      CB_HARNESS (optional local cmd for gate-charter; default = marker-grep only),
+#      CB_GATE_REPO_DIR (repo dir for marker-grep; default = .),
+#      CB_FINALE_CHECKS_TIMEOUT (seconds to wait for draft-PR CI; default 300),
+#      CB_FINALE_CHECKS_POLL (seconds between gh pr checks polls; default 15)
 set -uo pipefail
 : "${CB_REPO:?set CB_REPO=owner/repo}"; export CB_REPO
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
@@ -163,6 +167,147 @@ _integrator_cycle(){
   done
 }
 
+# ── charter finale: wait for CI checks on an existing draft PR and promote if green ──
+# Called by _charter_finale_cycle after a draft PR is created (or already exists).
+# Exit 0 = CI green (PR promoted); exit 1 = CI failed; exit 2 = timeout.
+_finale_check_ci(){
+  local cid="$1" pr_num="$2"
+  local timeout="${CB_FINALE_CHECKS_TIMEOUT:-300}"
+  local poll="${CB_FINALE_CHECKS_POLL:-15}"
+  local deadline
+  deadline=$(( $(date +%s) + timeout ))
+
+  while :; do
+    local checks_out checks_rc=0
+    checks_out=$(gh pr checks "$pr_num" -R "$CB_REPO" 2>&1) || checks_rc=$?
+
+    if [ "$checks_rc" -eq 0 ]; then
+      log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
+      gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+      gh issue comment "$cid" -R "$CB_REPO" \
+        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
+        2>/dev/null || true
+      return 0
+    fi
+
+    # Definitive failure (output doesn't suggest still-pending)
+    if ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
+      log "charter-finale: #$cid PR #$pr_num CI failed — stays draft"
+      gh issue comment "$cid" -R "$CB_REPO" \
+        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI failed — stays draft" \
+        2>/dev/null || true
+      return 1
+    fi
+
+    # Still pending — respect timeout
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      log "charter-finale: #$cid PR #$pr_num CI check timeout (${timeout}s) — stays draft"
+      gh issue comment "$cid" -R "$CB_REPO" \
+        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
+        2>/dev/null || true
+      return 2
+    fi
+
+    sleep "$poll"
+  done
+}
+
+# ── charter finale cycle ──────────────────────────────────────────────────────
+# Called every tick of cmd_run after _integrator_cycle.
+# For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
+# charter/C exists ahead of main:
+#   1. Run LOCAL gate BEFORE creating PR (marker-grep mandatory; CB_HARNESS optional).
+#      MUST NOT read CI checks at this stage (PR doesn't exist yet — anti-deadlock).
+#   2. Gate green → open draft PR charter/C → main.
+#   3. Wait for CI checks on draft PR (gh pr checks with timeout).
+#   4. CI green → promote (gh pr ready) + comment; CI red/timeout → stays draft + comment.
+# Idempotent: existing open PR is re-checked, not duplicated.
+# Charter stays OPEN — only a human (tech-lead) merges and closes it.
+_charter_finale_cycle(){
+  [ -n "$GIT_REMOTE" ] || return 0
+  [ -x "$INTEGRATOR_SCRIPT" ] || { log "charter-finale: integrator not found: $INTEGRATOR_SCRIPT"; return 0; }
+
+  # Snapshot the board (single gh call)
+  local all_issues
+  all_issues=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+               --json number,state,labels,body 2>/dev/null) || all_issues="[]"
+
+  # Iterate over OPEN charters
+  local cid
+  for cid in $(printf '%s' "$all_issues" | jq -r '
+    .[] | select(.state == "OPEN")
+       | select([.labels[].name] | index("type:charter") != null)
+       | .number' 2>/dev/null); do
+    [ -n "$cid" ] || continue
+
+    # Condition: ALL leaves (non-charter issues mentioning Charter: #C) are CLOSED
+    local open_leaf_count
+    open_leaf_count=$(printf '%s' "$all_issues" | jq -r --argjson c "$cid" '
+      [ .[] | select(.state == "OPEN")
+             | select(([.labels[].name] | any(. == "type:charter")) | not)
+             | select((.body // "") | test("(?i)Charter:\\s*#?" + ($c|tostring)))
+      ] | length' 2>/dev/null) || open_leaf_count=1
+    [ "$open_leaf_count" = "0" ] || continue
+
+    # Condition: charter/C branch exists on the remote and is ahead of main
+    local branch="charter/$cid"
+    git ls-remote --exit-code --heads "$GIT_REMOTE" "$branch" >/dev/null 2>&1 || continue
+    local b_sha m_sha
+    b_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/$branch" 2>/dev/null | awk '{print $1}' | head -1)
+    m_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/main"    2>/dev/null | awk '{print $1}' | head -1)
+    [ -n "$b_sha" ] && [ "$b_sha" != "$m_sha" ] || continue
+
+    # Idempotent: check for an existing open PR charter/C → main
+    local existing_pr
+    existing_pr=$(gh pr list -R "$CB_REPO" --head "$branch" --base main --state open \
+                  --json number 2>/dev/null | jq -r '.[0].number // empty' 2>/dev/null) || existing_pr=""
+
+    if [ -n "$existing_pr" ]; then
+      log "charter-finale: #$cid existing PR #$existing_pr — re-checking CI"
+      _finale_check_ci "$cid" "$existing_pr" || true
+      continue
+    fi
+
+    # ── LOCAL GATE — runs BEFORE PR creation (anti-deadlock invariant) ────────
+    local harness_args=()
+    [ -n "${CB_HARNESS:-}" ] && harness_args=(--harness "$CB_HARNESS")
+    local gate_repo_dir="${CB_GATE_REPO_DIR:-.}"
+    local gate_out gate_rc=0
+    gate_out=$(bash "$INTEGRATOR_SCRIPT" gate-charter "$cid" \
+                    "${harness_args[@]+"${harness_args[@]}"}" \
+                    --repo-dir "$gate_repo_dir" 2>&1) || gate_rc=$?
+
+    if [ "$gate_rc" -ne 0 ]; then
+      log "charter-finale: #$cid local gate RED — PR not created"
+      gh issue comment "$cid" -R "$CB_REPO" \
+        --body "charter-finale gate RED (charter/$cid → main not created): $gate_out" \
+        2>/dev/null || true
+      continue
+    fi
+
+    log "charter-finale: #$cid gate green — creating draft PR $branch → main"
+
+    # Create draft PR
+    gh pr create -R "$CB_REPO" --draft --base main --head "$branch" \
+      --title "Charter #$cid → main" \
+      --body "Automated charter finale. Gate passed. Awaiting human review and merge." \
+      2>/dev/null || true
+
+    # Look up the newly created PR number
+    local pr_num
+    pr_num=$(gh pr list -R "$CB_REPO" --head "$branch" --base main --state open \
+             --json number 2>/dev/null | jq -r '.[0].number // empty' 2>/dev/null) || pr_num=""
+
+    if [ -z "$pr_num" ]; then
+      log "charter-finale: #$cid PR create failed or not found"
+      continue
+    fi
+
+    log "charter-finale: #$cid draft PR #$pr_num created — awaiting CI checks"
+    _finale_check_ci "$cid" "$pr_num" || true
+  done
+}
+
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
@@ -222,6 +367,8 @@ cmd_run(){
       done
       # integrator step: merge review-state leaves into charter/C (every tick, non-fatal)
       _integrator_cycle || log "integrator-cycle: error (continuing)"
+      # charter finale step: for charters with all leaves closed, run local gate + draft PR
+      _charter_finale_cycle || log "charter-finale-cycle: error (continuing)"
       running=$(running_count)
       # pause: keep managing in-flight spawns but claim NO new work until the flag is removed.
       if [ -f "$RUN/pause" ]; then
