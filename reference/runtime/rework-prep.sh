@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # rework-prep: spawn a jailed executor to rework issue $ID onto charter/C.
-# Usage: rework-prep.sh <id> [old-task-branch]
-#   old-branch given  -> integrate mode (merge prior work onto charter/C, resolve conflicts)
-#   no old-branch      -> fresh-fix mode (implement the issue on charter/C)
+# Usage: rework-prep.sh <id> <role>
+#   CB_OLD_BRANCH set  -> integrate mode (merge prior work onto charter/C, resolve conflicts)
+#   CB_OLD_BRANCH empty -> fresh-fix mode (implement the issue on charter/C)
 set -uo pipefail
 CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
 CB_REPO="${CB_REPO:-stratch1989/crewboss}"
-ID="$1"; OLD="${2:-}"
+ID="$1"; OLD="${CB_OLD_BRANCH:-}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
 URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"
 BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"

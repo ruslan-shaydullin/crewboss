@@ -105,19 +105,20 @@ route(){ # id, spawn-exit
 }
 
 claim_and_spawn(){ # id
-  local id="$1" role spawn_cmd
+  local id="$1" role spawn_cmd old_branch=""
   role=$(board get "$id" role)
   # Choose spawn path before claiming: needs-rework -> rework script, otherwise normal.
   if [ "$(board get "$id" state)" = "needs-rework" ]; then
     spawn_cmd="$REWORK_SPAWN"
-    log "claim #$id state=needs-rework -> rework path"
+    old_branch="$(sget "$id" pr_head)"
+    log "claim #$id state=needs-rework -> rework path (old=${old_branch:-none})"
   else
     spawn_cmd="$SPAWN"
   fi
   board claim "$id" "$LID" >/dev/null   # also strips status:needs-rework (lifecycle)
   sset "$id" pid "$$"; sset "$id" starttime "$(now)"
   log "claim #$id role=$role (pid $$)"
-  "$spawn_cmd" "$id" "$role"; local ex=$?
+  CB_OLD_BRANCH="$old_branch" "$spawn_cmd" "$id" "$role"; local ex=$?
   route "$id" "$ex"
 }
 
@@ -167,10 +168,10 @@ _integrator_cycle(){
   review_ids=$(board review-leaves 2>/dev/null || true)
   [ -n "$review_ids" ] || return 0
 
-  local open_prs="" merged_prs="" rid pr_head pr_num pr_base ci_raw ci_rc rollup_arr ci_status conflict_files try_exit
+  local open_prs="" merged_prs="" rid pr_entry pr_head pr_num pr_base ci_raw ci_rc rollup_arr ci_status conflict_files try_exit
   local merge_sha="" file_list="" merge_rc=0 close_rc=0 pr_state="" rec_num="" rec_sha_r="" rec_rc=0
 
-  # Snapshot open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>-
+  # Snapshot open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>- OR rework/<rid>-
   open_prs=$(gh pr list -R "$CB_REPO" --state open \
              --json number,headRefName,baseRefName 2>/dev/null || true)
   # Snapshot merged PRs once per cycle — needed for reconcile after a mid-run restart
@@ -183,19 +184,18 @@ _integrator_cycle(){
     local done; done=$(sget "$rid" int_done)
     [ -n "$done" ] && continue
 
-    # Find the open PR: headRefName must start with leaf/$rid- AND base must be charter/*
-    pr_head=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
-      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
-           | select(.baseRefName | startswith("charter/"))
-           | .headRefName' 2>/dev/null | head -1 || true)
-    pr_num=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
-      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
-           | select(.baseRefName | startswith("charter/"))
-           | .number' 2>/dev/null | head -1 || true)
-    pr_base=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
-      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
-           | select(.baseRefName | startswith("charter/"))
-           | .baseRefName' 2>/dev/null | head -1 || true)
+    # Find the open PR: headRefName must start with leaf/$rid- OR rework/$rid-
+    # AND base must be charter/*; when multiple matches, take the highest PR number (newest).
+    pr_entry=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" '
+      [.[] | select((.headRefName | startswith("leaf/\($rid)-")) or
+                   (.headRefName | startswith("rework/\($rid)-")))
+           | select(.baseRefName | startswith("charter/"))]
+      | sort_by(.number) | last
+      | if . then [(.number|tostring), .headRefName, .baseRefName] | join("\t") else "" end
+      ' 2>/dev/null || true)
+    pr_num=$(printf '%s' "$pr_entry" | cut -f1)
+    pr_head=$(printf '%s' "$pr_entry" | cut -f2)
+    pr_base=$(printf '%s' "$pr_entry" | cut -f3)
 
     if [ -z "$pr_num" ]; then
       # No open PR — first reconcile: maybe already MERGED (leaf survived a launcher restart
@@ -331,9 +331,20 @@ _integrator_cycle(){
       if [ "$close_rc" -eq 0 ]; then
         sset "$rid" int_done "merged"
         log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
+        # Close any other open PRs for this leaf superseded by the rework we just merged [F7 #115]
+        local _sp_num
+        for _sp_num in $(printf '%s' "$open_prs" | jq -r --arg rid "$rid" --arg merged "$pr_num" '
+          .[] | select((.headRefName | startswith("leaf/\($rid)-")) or
+                      (.headRefName | startswith("rework/\($rid)-")))
+               | select(.baseRefName | startswith("charter/"))
+               | select(.number | tostring != $merged)
+               | .number' 2>/dev/null || true); do
+          log "integrator: closing superseded PR #$_sp_num for leaf #$rid"
+          gh pr comment "$_sp_num" -R "$CB_REPO" --body "superseded by rework" 2>/dev/null || true
+          gh pr close "$_sp_num" -R "$CB_REPO" 2>/dev/null || true
+        done
       else
-        # Merge is done but close failed: next tick will find PR in merged_prs and
-        # retry close-leaf via the reconcile path (idempotent; no double-merge risk).
+        # Merge done but close failed: next tick finds PR in merged_prs and retries via reconcile. [F5 #111]
         log "integrator: #$rid close-leaf FAILED (rc=$close_rc) — int_done NOT set; retry next tick"
       fi
     else
@@ -341,6 +352,8 @@ _integrator_cycle(){
       file_list=$(printf '%s' "$conflict_files" | head -5 | tr '\n' ' ' | sed 's/ *$//')
       [ -z "$file_list" ] && file_list="(unknown)"
       log "integrator: #$rid PR #$pr_num merge conflict: $file_list — needs-rework"
+      # Persist the conflicting PR head so rework-spawn can pass it as CB_OLD_BRANCH
+      sset "$rid" pr_head "$pr_head"
       board route "$rid" needs-rework "Merge conflict in: $file_list" >/dev/null || true
       # Clear terminal flag so rework-spawn can re-claim this leaf
       sset "$rid" term ""
@@ -585,9 +598,13 @@ cmd_run(){
           [ -n "$(sget "$id" term)" ] && continue
           # Choose spawn path before claiming (needs-rework -> rework script)
           _bg_spawn="$SPAWN"
-          [ "$(board get "$id" state)" = "needs-rework" ] && _bg_spawn="$REWORK_SPAWN"
+          _bg_old_branch=""
+          if [ "$(board get "$id" state)" = "needs-rework" ]; then
+            _bg_spawn="$REWORK_SPAWN"
+            _bg_old_branch="$(sget "$id" pr_head)"
+          fi
           board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
-          ( "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
+          ( CB_OLD_BRANCH="$_bg_old_branch" "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
         done
       fi
