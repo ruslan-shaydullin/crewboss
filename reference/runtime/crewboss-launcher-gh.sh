@@ -316,6 +316,8 @@ _charter_finale_cycle(){
        | select([.labels[].name] | index("type:charter") != null)
        | .number' 2>/dev/null); do
     [ -n "$cid" ] || continue
+    # scope: skip charters not matching CREWBOSS_CHARTER (scope=0 means no filter)
+    [ "$CHARTER_SCOPE" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
 
     # Condition: ALL leaves (non-charter issues mentioning Charter: #C) are CLOSED
     local open_leaf_count

@@ -32,9 +32,17 @@ case "$cmd" in
       | .number' ;;
 
   review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
-    gh issue list -R "$REPO" --state open -L 200 --json number,state,labels | jq -r '
+    # body is fetched to parse Charter: line; CREWBOSS_CHARTER scopes to one charter if set.
+    gh issue list -R "$REPO" --state open -L 200 --json number,state,labels,body | jq -r \
+        --argjson cs "${CREWBOSS_CHARTER:-0}" '
       .[] | select(.state == "OPEN")
            | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))
+           | . as $i
+           | ( [ ($i.body // "") | split("\n")[]
+                  | select(test("(?i)^[\\s*_>#-]*Charter\\s*:"))
+                ] | join(" ") | ( scan("\\d+") | tonumber ) // 0
+             ) as $cN
+           | select($cs == 0 or $cN == $cs)
            | .number' ;;
 
   get)
