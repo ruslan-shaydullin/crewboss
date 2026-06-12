@@ -20,6 +20,9 @@ RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
 SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
+# CB_PLAN_SPAWN: separate spawn for planning/tech-lead (default: same as CB_SPAWN so existing
+# setups that only set CB_SPAWN keep working; run-charter.sh sets both explicitly).
+PLAN_SPAWN="${CB_PLAN_SPAWN:-$SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -93,7 +96,11 @@ claim_and_spawn(){ # id
 # GREEN-BEFORE-MERGE: CI (statusCheckRollup) must be success before any merge.
 # Idempotent: merged/closed leaves not re-processed.  All errors logged, non-fatal.
 _integrator_cycle(){
-  [ -n "$GIT_REMOTE" ]        || return 0
+  if [ -z "$GIT_REMOTE" ]; then
+    [ -n "${_REMOTE_DISABLED_LOGGED:-}" ] || log "integrator+finale DISABLED: CB_GIT_REMOTE not set"
+    export _REMOTE_DISABLED_LOGGED=1
+    return 0
+  fi
   [ -x "$INTEGRATOR_SCRIPT" ] || { log "integrator: script not found: $INTEGRATOR_SCRIPT"; return 0; }
 
   local review_ids
@@ -237,7 +244,7 @@ _finale_check_ci(){
 # Idempotent: existing open PR is re-checked, not duplicated.
 # Charter stays OPEN — only a human (tech-lead) merges and closes it.
 _charter_finale_cycle(){
-  [ -n "$GIT_REMOTE" ] || return 0
+  [ -n "$GIT_REMOTE" ] || return 0   # silence: already logged by _integrator_cycle
   [ -x "$INTEGRATOR_SCRIPT" ] || { log "charter-finale: integrator not found: $INTEGRATOR_SCRIPT"; return 0; }
 
   # Snapshot the board (single gh call)
@@ -395,7 +402,7 @@ cmd_run(){
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
           sset "$cid" kind charter; sset "$cid" starttime "$(now)"
-          ( "$SPAWN" "$cid" tech-lead >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+          ( "$PLAN_SPAWN" "$cid" tech-lead >/dev/null 2>&1 ) & sset "$cid" pid "$!"
           running=$((running+1)); log "bg-spawn tech-lead for charter #$cid (running=$running/$MAXP)"
         done
         for id in $(board launchable); do
