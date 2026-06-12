@@ -77,8 +77,29 @@ export async function fetchTask(n: number): Promise<TaskDetail | null> {
 }
 
 export type IssuePayload =
-  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string }
-  | { kind: 'task'; title: string; description: string; charter: number; depends_on?: string }
+  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string; acceptance_block?: string }
+  | { kind: 'task'; title: string; description: string; charter: number; depends_on?: string; acceptance_block?: string }
+
+export type FacilitateMessage = { role: 'user' | 'facilitator'; content: string }
+export type FacilitateResult = { ok: boolean; message: string; acceptance_block?: string }
+export async function facilitateMessage(
+  kind: 'charter' | 'task',
+  draft: Record<string, unknown>,
+  message: string,
+  history: FacilitateMessage[]
+): Promise<FacilitateResult> {
+  try {
+    const r = await fetch(config.url + '/api/facilitate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ kind, draft, message, history }),
+    })
+    if (!r.ok) return { ok: false, message: 'Facilitator backend error: ' + r.status }
+    return (await r.json()) as FacilitateResult
+  } catch (e) {
+    return { ok: false, message: 'Facilitator unavailable: ' + String(e) }
+  }
+}
 
 export type IssueResult = { ok: boolean; msg: string; number?: number }
 
