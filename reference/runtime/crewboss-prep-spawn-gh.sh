@@ -10,6 +10,13 @@ ID="$1"; ROLE="$2"
 PR_REPO=$(bash "$BOARD" get "$ID" pr_repo)
 [ -n "$PR_REPO" ] || { echo "adapter-gh: #$ID has no pr_repo" >&2; exit 2; }
 GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
+# Inline git credential helper (issue #149 — token hygiene).
+# Registered via GIT_CONFIG_* (highest git precedence). Inline function → no file path →
+# valid in both host and jail namespaces. nsjail keep_env (-e) + --env GH_TOKEN carry both.
+# shellcheck disable=SC2016
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
 if [ "$ROLE" = "tech-lead" ]; then
@@ -66,7 +73,7 @@ CACHE="$CACHE_DIR/$(printf '%s' "$PR_REPO" | tr '/' '_').git"
   flock 9
   if [ ! -d "$CACHE" ]; then
     mc=0
-    until git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/$PR_REPO.git" "$CACHE.tmp" >/dev/null 2>&1; do
+    until git clone --mirror "https://github.com/$PR_REPO.git" "$CACHE.tmp" >/dev/null 2>&1; do
       mc=$((mc+1)); [ "$mc" -ge 3 ] && { echo "adapter-gh: cache mirror clone failed for $PR_REPO" >&2; exit 2; }
       rm -rf "$CACHE.tmp"; sleep $((mc*3))
     done
@@ -80,7 +87,8 @@ CACHE="$CACHE_DIR/$(printf '%s' "$PR_REPO" | tr '/' '_').git"
 ) 9>"$CACHE_DIR/.lock" || exit 2
 [ -e "$WA/work/.git" ] || { echo "adapter-gh: work tree has no .git — empty clone" >&2; exit 2; }
 cd "$WA/work"
-git remote set-url --push origin "https://x-access-token:${GH_TOKEN}@github.com/$PR_REPO.git"
+# Push URL token-free; credential helper provides GH_TOKEN at push time.
+git remote set-url --push origin "https://github.com/$PR_REPO.git"
 if [ -n "${CB:-}" ]; then
   # Ensure charter/C exists on origin (create off origin/main once, serialised per charter).
   mkdir -p "$RUN"

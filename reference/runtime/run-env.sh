@@ -4,6 +4,7 @@
 #
 # D1 (почва): токен живёт в ~/.crewboss.env (0600).
 # D2: интеграция ВКЛ по умолчанию; отключается явным CB_NO_INTEGRATE=1.
+# D1/token: GH_TOKEN НЕ вшивается в URL — используется git credential-helper (inline).
 
 # Load operator secrets / overrides from ~/.crewboss.env if present
 # shellcheck source=/dev/null
@@ -24,11 +25,22 @@ GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null)}"
 export GH_TOKEN
 
 # D2: интеграция ВКЛ по умолчанию; CB_NO_INTEGRATE=1 → пусто → лаунчер громко дизейблит
+# Token-free URL: GH_TOKEN lives only in env; credential-helper provides it at git call time.
 if [ "${CB_NO_INTEGRATE:-}" = "1" ]; then
   export CB_GIT_REMOTE=""
 else
-  export CB_GIT_REMOTE="${CB_GIT_REMOTE:-https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git}"
+  export CB_GIT_REMOTE="${CB_GIT_REMOTE:-https://github.com/${CB_REPO}.git}"
 fi
+
+# ── Inline git credential helper (issue #149 — token hygiene) ────────────────
+# Registered via GIT_CONFIG_* (highest git precedence; overrides .gitconfig).
+# Inline function — no file path — valid in both host and jail namespaces.
+# nsjail keep_env (-e, crewboss-spawn.sh:82) + --env GH_TOKEN (spawn.sh:62) carry
+# both this registration and the token into the jail on every spawn.
+# shellcheck disable=SC2016
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 
 export CB_PLAN_SPAWN="${CB_PLAN_SPAWN:-$HOME/cbnet/crewboss-prep-spawn-gh.sh}"
 export CB_HARNESS="${CB_HARNESS:-}"
