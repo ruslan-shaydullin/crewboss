@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
+
+/** Check whether a text contains a valid ## Acceptance (machine) block.
+ *  Requires: the header line + at least one "- test: …" or "- check: …" entry. */
+function hasValidAcceptanceBlock(text: string): boolean {
+  if (!text.trim()) return false
+  const lines = text.split('\n')
+  let inBlock = false
+  for (const line of lines) {
+    if (/^## Acceptance \(machine\)/.test(line)) { inBlock = true; continue }
+    if (inBlock && /^## /.test(line)) break
+    if (inBlock && /^\s*- (test|check): .+/.test(line)) return true
+  }
+  return false
+}
 
 type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
 type Confirm = { title: string; body: string; onOk: (reason?: string) => void; withInput?: boolean } | null
@@ -795,9 +809,16 @@ function NewIssueModal({ state, onClose, onToast }: {
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [step, setStep] = useState<'form' | 'summary'>('form')
+  const [step, setStep] = useState<'form' | 'discuss' | 'summary'>('form')
   const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
   const [launching, setLaunching] = useState(false)
+
+  // Facilitator discussion state
+  const [chatMessages, setChatMessages] = useState<FacilitateMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [facilitating, setFacilitating] = useState(false)
+  const [acceptanceBlock, setAcceptanceBlock] = useState('')
+  const [facilitatorError, setFacilitatorError] = useState<string | null>(null)
 
   const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
   const charterLabel = charters.find((c) => String(c.n) === charterN)
@@ -806,11 +827,39 @@ function NewIssueModal({ state, onClose, onToast }: {
     ? !!(title.trim() && what.trim() && why.trim())
     : !!(title.trim() && description.trim() && charterN)
 
+  const isBlockValid = hasValidAcceptanceBlock(acceptanceBlock)
+
+  const handleFacilitate = async () => {
+    const msg = chatInput.trim()
+    if (!msg) return
+    setChatInput('')
+    const newHistory: FacilitateMessage[] = [...chatMessages, { role: 'user', content: msg }]
+    setChatMessages(newHistory)
+    setFacilitating(true)
+    setFacilitatorError(null)
+    try {
+      const draft: Record<string, unknown> = kind === 'charter'
+        ? { title, what, why, scope, constraints }
+        : { title, description, charter: charterN, depends_on: dependsOn }
+      const r = await facilitateMessage(kind, draft, msg, chatMessages)
+      if (r.ok) {
+        setChatMessages([...newHistory, { role: 'facilitator', content: r.message }])
+        if (r.acceptance_block) {
+          setAcceptanceBlock(r.acceptance_block)
+        }
+      } else {
+        setFacilitatorError(r.message)
+      }
+    } finally {
+      setFacilitating(false)
+    }
+  }
+
   const handleSubmit = async () => {
     if (!isValid || submitting) return
     const p: IssuePayload = kind === 'charter'
-      ? { kind: 'charter', title, what, why, scope, constraints, acceptance }
-      : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined }
+      ? { kind: 'charter', title, what, why, scope, constraints, acceptance, acceptance_block: acceptanceBlock.trim() || undefined }
+      : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined, acceptance_block: acceptanceBlock.trim() || undefined }
     setSubmitting(true)
     try {
       const r = await createIssue(p)
@@ -868,6 +917,95 @@ function NewIssueModal({ state, onClose, onToast }: {
     )
   }
 
+  if (step === 'discuss') {
+    return (
+      <div className="modal-bg" data-testid="ni-discuss-backdrop" onClick={onClose}>
+        <div className="modal ni-modal ni-discuss-modal" data-testid="ni-discuss-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="ni-head">
+            <h3>Обсуждение с фасилитатором</h3>
+            <button className="btn ghost" onClick={onClose}>✕</button>
+          </div>
+
+          {/* Chat section */}
+          <div className="ni-chat" data-testid="ni-facilitator-chat">
+            {chatMessages.length === 0 && !facilitatorError && (
+              <div className="ni-chat-hint muted">
+                Опишите что нужно — фасилитатор задаст уточняющие вопросы и предложит блок Acceptance (machine). Или заполните блок ниже вручную.
+              </div>
+            )}
+            {facilitatorError && (
+              <div className="ni-facilitator-error" data-testid="ni-facilitator-error">
+                {facilitatorError}
+              </div>
+            )}
+            {chatMessages.map((m, i) => (
+              <div
+                key={i}
+                className={'ni-chat-msg ni-chat-' + m.role}
+                data-testid="ni-chat-message"
+                data-role={m.role}
+              >
+                <span className="ni-chat-role">{m.role === 'user' ? 'Вы' : 'Фасилитатор'}</span>
+                <span className="ni-chat-content">{m.content}</span>
+              </div>
+            ))}
+            {facilitating && <div className="ni-chat-loading muted">Фасилитатор думает…</div>}
+          </div>
+
+          {/* Chat input */}
+          <div className="ni-chat-compose">
+            <textarea
+              className="disc-input"
+              data-testid="ni-chat-input"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && chatInput.trim() && !facilitating) handleFacilitate() }}
+              placeholder="Ваш ответ или уточнение…"
+              rows={2}
+              disabled={facilitating}
+            />
+            <button
+              className="btn sm pri"
+              data-testid="ni-chat-send"
+              disabled={!chatInput.trim() || facilitating}
+              onClick={handleFacilitate}
+            >{facilitating ? 'Отправка…' : 'Отправить'}</button>
+          </div>
+
+          {/* Acceptance block manual entry / auto-populated */}
+          <div className="ni-acceptance-section">
+            <label className="fld">
+              <span>Acceptance (machine) <span className="ni-required">*</span></span>
+              <textarea
+                data-testid="ni-acceptance-input"
+                className="ni-acceptance-textarea"
+                value={acceptanceBlock}
+                onChange={(e) => setAcceptanceBlock(e.target.value)}
+                placeholder={'## Acceptance (machine)\n- check: make test\n- test: path/to/test.sh'}
+                rows={5}
+              />
+            </label>
+            {acceptanceBlock.trim() && (
+              isBlockValid
+                ? <div className="ni-acceptance-valid" data-testid="ni-acceptance-valid">✓ Валидный блок</div>
+                : <div className="ni-acceptance-invalid" data-testid="ni-acceptance-invalid">✗ Нужен заголовок «## Acceptance (machine)» и минимум одна строка «- test: …» или «- check: …»</div>
+            )}
+          </div>
+
+          <div className="m-actions">
+            <button className="btn" data-testid="ni-discuss-back" onClick={() => setStep('form')}>← Назад</button>
+            <button
+              className="btn pri"
+              data-testid="ni-discuss-continue"
+              disabled={!isBlockValid}
+              onClick={() => setStep('summary')}
+            >Продолжить →</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (step === 'summary') {
     return (
       <div className="modal-bg" data-testid="ni-summary-backdrop" onClick={onClose}>
@@ -909,6 +1047,12 @@ function NewIssueModal({ state, onClose, onToast }: {
                     <div className="ni-summary-value">{acceptance}</div>
                   </div>
                 )}
+                {acceptanceBlock.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Acceptance (machine)</div>
+                    <div className="ni-summary-value" data-testid="ni-summary-acceptance-block">{acceptanceBlock}</div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="ni-summary-sections">
@@ -928,11 +1072,17 @@ function NewIssueModal({ state, onClose, onToast }: {
                     <div className="ni-summary-value" data-testid="ni-summary-depends">#{dependsOn.trim()}</div>
                   </div>
                 )}
+                {acceptanceBlock.trim() && (
+                  <div className="ni-summary-section">
+                    <div className="ni-summary-label">Acceptance (machine)</div>
+                    <div className="ni-summary-value" data-testid="ni-summary-acceptance-block">{acceptanceBlock}</div>
+                  </div>
+                )}
               </div>
             )}
           </div>
           <div className="m-actions">
-            <button className="btn" data-testid="ni-edit-btn" onClick={() => setStep('form')}>Редактировать</button>
+            <button className="btn" data-testid="ni-edit-btn" onClick={() => setStep('discuss')}>Редактировать</button>
             <button className="btn pri" data-testid="ni-confirm-btn" disabled={submitting} onClick={handleSubmit}>
               {submitting ? 'Creating…' : 'Подтвердить'}
             </button>
@@ -976,7 +1126,7 @@ function NewIssueModal({ state, onClose, onToast }: {
         )}
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('summary') }}>{submitting ? 'Creating…' : 'Create'}</button>
+          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('discuss') }}>{submitting ? 'Creating…' : 'Create'}</button>
         </div>
       </div>
     </div>

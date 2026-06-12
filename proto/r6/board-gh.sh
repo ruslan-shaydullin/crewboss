@@ -7,9 +7,10 @@
 #
 # Usage:
 #   board-gh.sh launchable                       -> launchable leaf numbers (canonical predicate)
+#   board-gh.sh review-leaves                    -> open agent leaves in status:review
 #   board-gh.sh get <id> <field>                 -> state|kind|role|charter|deps|held|pr_repo|prompt
 #   board-gh.sh claim <id> [launcher-id]         -> +status:in-progress (+claimed-by:<id>)
-#   board-gh.sh route <id> review|blocked|requeue [comment]
+#   board-gh.sh route <id> review|blocked|requeue|needs-rework [comment]
 set -uo pipefail
 REPO="${CB_REPO:?set CB_REPO=owner/repo}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,13 +22,28 @@ haslabel(){ jq -e --arg l "$1" '[.labels[].name]|any(.==$l)' >/dev/null; }
 cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
-    gh issue list -R "$REPO" --state all -L 200 --json number,state,labels,body | bash "$LAUNCHABLE" ;;
+    gh issue list -R "$REPO" --state all -L 200 --json number,state,labels,body \
+      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
     gh issue list -R "$REPO" --state open -L 200 --json number,labels | jq -r '
       .[] | select([.labels[].name] as $l
         | ($l|index("type:charter")) and ($l|index("status:needs-plan")) and (($l|index("hold"))|not))
       | .number' ;;
+
+  review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
+    # body is fetched to parse Charter: line; CREWBOSS_CHARTER scopes to one charter if set.
+    gh issue list -R "$REPO" --state open -L 200 --json number,state,labels,body | jq -r \
+        --argjson cs "${CREWBOSS_CHARTER:-0}" '
+      .[] | select(.state == "OPEN")
+           | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))
+           | . as $i
+           | ( [ ($i.body // "") | split("\n")[]
+                  | select(test("(?i)^[\\s*_>#-]*Charter\\s*:"))
+                ] | join(" ") | ( scan("\\d+") | tonumber ) // 0
+             ) as $cN
+           | select($cs == 0 or $cN == $cs)
+           | .number' ;;
 
   get)
     id="$1"; field="$2"; j=$(iview "$id")
@@ -43,6 +59,7 @@ case "$cmd" in
                 if .state=="CLOSED" then "done"
                 elif ([.labels[].name]|any(.=="status:blocked")) then "blocked"
                 elif ([.labels[].name]|any(.=="status:review")) then "review"
+                elif ([.labels[].name]|any(.=="status:needs-rework")) then "needs-rework"
                 elif ([.labels[].name]|any(.=="status:in-progress")) then "in-progress"
                 elif ([.labels[].name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[].name]|any(.=="status:plan-review")) then "plan-review"
@@ -55,6 +72,9 @@ case "$cmd" in
     id="$1"; lid="${2:-cb}"
     ensure_label "claimed-by:$lid" "bfdadc"
     gh issue edit "$id" -R "$REPO" --add-label status:in-progress --add-label "claimed-by:$lid" >/dev/null
+    # Lifecycle: transitioning out of needs-rework — strip the label so the leaf never
+    # carries needs-rework simultaneously with in-progress (spec §5 lifecycle).
+    gh issue edit "$id" -R "$REPO" --remove-label status:needs-rework 2>/dev/null || true
     echo "claimed #$id by $lid" ;;
 
   route)
@@ -69,8 +89,17 @@ case "$cmd" in
                labs=$(iview "$id" | jq -r '.labels[].name | select(startswith("claimed-by:") or .=="status:in-progress")')
                for l in $labs; do gh issue edit "$id" -R "$REPO" --remove-label "$l" >/dev/null; done
                echo "#$id -> open (requeued)" ;;
+      needs-rework)
+               # Integrator detected a merge conflict: drop in-progress/review/claimed-by:*,
+               # add status:needs-rework so the launcher re-dispatches via rework path.
+               ensure_label "status:needs-rework" "e4e669"
+               nrlabs=$(iview "$id" | jq -r '.labels[].name | select(startswith("claimed-by:") or .=="status:in-progress" or .=="status:review")')
+               for nrl in $nrlabs; do gh issue edit "$id" -R "$REPO" --remove-label "$nrl" >/dev/null; done
+               gh issue edit "$id" -R "$REPO" --add-label status:needs-rework >/dev/null
+               [ -n "$comment" ] && gh issue comment "$id" -R "$REPO" -b "$comment" >/dev/null
+               echo "#$id -> needs-rework" ;;
       *) echo "unknown outcome: $outcome" >&2; exit 64 ;;
     esac ;;
 
-  *) echo "usage: $0 {launchable|get|claim|route}" >&2; exit 64 ;;
+  *) echo "usage: $0 {launchable|review-leaves|get|claim|route}" >&2; exit 64 ;;
 esac

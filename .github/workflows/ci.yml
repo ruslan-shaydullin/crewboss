@@ -40,3 +40,5 @@ jobs:
         run: node scripts/smoke.mjs
       - name: repro-jitter (no spurious FLIP translate on idle ticks)
         run: node scripts/repro-jitter.mjs
+      - name: facilitator stage (discuss step + acceptance block gate)
+        run: node scripts/test-facilitator-stage.mjs

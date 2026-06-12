@@ -13,7 +13,14 @@ GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
 if [ "$ROLE" = "tech-lead" ]; then
-  PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST start with 'Charter: #$ID' and contain a self-contained task description (a cold executor sees only that issue). Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
+  PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
+1. Start with 'Charter: #$ID'
+2. Contain a self-contained task description (a cold executor sees only that issue)
+3. Include a '## Acceptance (machine)' section with at least one '- check: <cmd>' or '- test: <file>' line
+
+After creating each sub-issue N, add the required label: gh issue edit N -R $PR_REPO --add-label type:agent
+
+Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
 
 $(bash "$BOARD" get "$ID" prompt)"
 else
@@ -24,6 +31,7 @@ else
   CB=""
   [ -n "$CHARTER" ] && CB="charter/$CHARTER"
   if [ -n "$CB" ]; then
+    BRANCH="leaf/$ID-$TS"   # charter leaves must use leaf/ prefix so integrator can find them
     PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.

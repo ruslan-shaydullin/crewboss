@@ -7,10 +7,11 @@
 # Usage (matches launcher contract): charter-leaf-prep.sh <id> <role>
 set -uo pipefail
 CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
+CB_REPO="${CB_REPO:-stratch1989/crewboss}"
 ID="$1"; ROLE="${2:-executor}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
-URL="https://x-access-token:${GH_TOKEN}@github.com/stratch1989/crewboss.git"
-BODY="$(gh issue view "$ID" -R stratch1989/crewboss --json body --jq .body 2>/dev/null)"
+URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"
+BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"
 C="$(printf '%s' "$BODY" | grep -oiE 'charter:[[:space:]]*#?[0-9]+' | head -1 | grep -oE '[0-9]+')"
 [ -n "$C" ] || { echo "leaf #$ID: no 'Charter: #N' in body" >&2; exit 2; }
 CB="charter/$C"
@@ -39,7 +40,7 @@ else
   echo "leaf #$ID: $CB missing after create attempt" >&2; exit 2
 fi
 
-PROMPT="You are the executor for issue #$ID in repo stratch1989/crewboss.
+PROMPT="You are the executor for issue #$ID in repo $CB_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch leaf/$ID-$TS, based on the charter integration branch '$CB' (NOT main). Sibling leaves of charter #$C may already be merged into '$CB'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
 - When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base $CB --title '<short>' --body 'Closes #$ID'. The PR base MUST be '$CB', NOT main. Then STOP — do not merge, do not touch other issues.
@@ -48,4 +49,4 @@ Hard rules for THIS run:
 ---- TASK (issue #$ID) ----
 $BODY"
 PF="$RUN/work/$ID/task.prompt"; printf '%s' "$PROMPT" > "$PF"
-exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" stratch1989/crewboss
+exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$CB_REPO"
