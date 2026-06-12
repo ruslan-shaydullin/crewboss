@@ -42,6 +42,36 @@ plannable_scoped(){
   fi
 }
 
+# review-leaves scoped to the current charter scope.
+# When CREWBOSS_CHARTER is set, filters to leaves of that charter (one gh-get per leaf).
+# When unset (CHARTER_SCOPE=0), returns all review-leaves unscoped — safe fallback.
+_review_leaves_scoped(){
+  if [ "${CHARTER_SCOPE:-0}" = "0" ]; then
+    board review-leaves 2>/dev/null || true
+  else
+    local _all _rid _c
+    _all=$(board review-leaves 2>/dev/null || true)
+    for _rid in $_all; do
+      _c=$(board get "$_rid" charter 2>/dev/null || echo "$CHARTER_SCOPE")
+      [ "$_c" = "$CHARTER_SCOPE" ] && echo "$_rid"
+    done
+  fi
+}
+
+# _loop_is_alive: liveness predicate for the run loop.
+# Returns 0 (alive) when there is still pending work:
+#   running > 0  — spawns in flight
+#   fresh   > 0  — unhandled launchable/plannable work
+#   review-leaves non-empty — leaves waiting for integrator merge
+# Extensibility hook: future leaves (e.g. finale-in-progress, F4) add conditions here.
+_loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
+  local _running="$1" _fresh="$2"
+  [ "$_running" -gt 0 ] && return 0
+  [ "$_fresh"   -gt 0 ] && return 0
+  [ -n "$(_review_leaves_scoped | head -1)" ] && return 0
+  return 1
+}
+
 reconcile(){
   local d id pid
   for d in "$STATE"/*/; do [ -e "$d" ] || continue
@@ -125,9 +155,36 @@ _integrator_cycle(){
            | .baseRefName' 2>/dev/null | head -1 || true)
 
     if [ -z "$pr_num" ]; then
-      log "integrator: #$rid in review but no open PR — skip"
+      # If int_done=merged, reconcile will close this leaf — don't count as stale.
+      if [ "$(sget "$rid" int_done)" = "merged" ]; then
+        log "integrator: #$rid in review, int_done=merged (reconcile pending close) — skip"
+        continue
+      fi
+      # stale-guard: count consecutive ticks without an open PR.
+      # After CB_REVIEW_STALE_TICKS ticks → route blocked (anti-livelock).
+      # Reconcile check above runs BEFORE this increment, per contract with F5/#111.
+      local _stale_prev _stale_next _stale_cap
+      _stale_prev=$(sget "$rid" stale_ticks); _stale_prev=${_stale_prev:-0}
+      _stale_cap="${CB_REVIEW_STALE_TICKS:-10}"
+      _stale_next=$((_stale_prev + 1))
+      sset "$rid" stale_ticks "$_stale_next"
+      if [ "$_stale_next" -ge "$_stale_cap" ]; then
+        log "integrator: #$rid review-stale (${_stale_next} ticks without open PR) — blocking"
+        # Direct review→blocked transition: remove status:review AND add status:blocked so
+        # board review-leaves no longer reports this leaf and _loop_is_alive can exit cleanly.
+        # (board route blocked only removes status:in-progress, not status:review.)
+        gh issue edit "$rid" -R "$CB_REPO" \
+          --remove-label status:review --add-label status:blocked 2>/dev/null || true
+        gh issue comment "$rid" -R "$CB_REPO" \
+          --body "review-stale: this leaf has been in status:review for ${_stale_next} ticks without an open PR. Routed to blocked for human triage." \
+          2>/dev/null || true
+      else
+        log "integrator: #$rid in review but no open PR — skip (stale ${_stale_next}/${_stale_cap})"
+      fi
       continue
     fi
+    # PR found: reset stale counter so transient lag does not accumulate
+    sset "$rid" stale_ticks "0"
     case "$pr_base" in
       charter/[0-9]*)  ;;
       *) log "integrator: #$rid PR #$pr_num base='$pr_base' not charter/* — skip"; continue ;;
@@ -420,10 +477,16 @@ cmd_run(){
       if [ "$running" -eq 0 ] && [ -n "$stop" ]; then log "stopped"; break; fi
       # idle-exit is DEBOUNCED: require CB_IDLE_CONFIRM consecutive empty ticks, so a transient
       # empty `board launchable` (gh read-after-write lag) doesn't end the run with work pending.
-      if [ "$running" -eq 0 ] && [ "$fresh" -eq 0 ]; then
+      # Liveness: review-leaves (waiting for integrator merge) also hold the loop alive.
+      # Key: liveness is by ISSUE STATE (status:review label), NOT by open-PR list, so a
+      # read-after-write lag on `gh pr list` (leaf done→review, PR not yet visible) cannot
+      # cause a premature idle-exit. See _loop_is_alive for the extensible predicate.
+      if _loop_is_alive "$running" "$fresh"; then
+        idle_ticks=0
+      else
         idle_ticks=$((idle_ticks+1))
         [ "$idle_ticks" -ge "${CB_IDLE_CONFIRM:-2}" ] && { log "idle — run complete"; break; }
-      else idle_ticks=0; fi
+      fi
       ticks=$((ticks+1)); [ "$ticks" -ge "$maxticks" ] && { log "max ticks ($maxticks) — stop"; break; }
       sleep "$poll"
     done
