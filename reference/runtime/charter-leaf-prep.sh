@@ -34,6 +34,23 @@ mkdir -p "$RUN"
 
 git fetch -q origin "$CB" 2>/dev/null || true
 TS="$(date +%s)"
+# Freshness guard: if charter/C is behind main with no own commits → fast-forward push;
+# if it has own commits and is stale → loud dispatch refusal.
+if git rev-parse --verify -q "origin/$CB" >/dev/null 2>&1; then
+  behind=$(git rev-list --count "origin/$CB..origin/main" 2>/dev/null || echo 0)
+  if [ "$behind" -gt 0 ]; then
+    own=$(git rev-list --count "origin/main..origin/$CB" 2>/dev/null || echo 0)
+    if [ "$own" -eq 0 ]; then
+      main_sha="$(git rev-parse origin/main)"
+      git push -q origin "$main_sha:refs/heads/$CB" 2>/dev/null \
+        || { echo "leaf #$ID: ff push of $CB failed" >&2; exit 2; }
+      git fetch -q origin "$CB" 2>/dev/null || true
+    else
+      echo "leaf #$ID: $CB is behind origin/main by $behind commits with $own own commits — stale base, dispatch refused" >&2
+      exit 2
+    fi
+  fi
+fi
 if git rev-parse --verify -q "origin/$CB" >/dev/null; then
   git checkout -q -b "leaf/$ID-$TS" "origin/$CB"
 else
