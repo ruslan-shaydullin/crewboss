@@ -34,10 +34,10 @@ cat > "$BOARD" <<'JSON'
 [
  {"number":1,"state":"OPEN","labels":[{"name":"status:approved"},{"name":"type:charter"}],"title":"goal A","body":"goal"},
  {"number":2,"state":"OPEN","labels":[{"name":"status:plan-review"},{"name":"type:charter"}],"title":"goal B","body":"goal"},
- {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf ten","body":"Charter: #1"},
+ {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf ten","body":"Charter: #1\n## Acceptance (machine)\n- check: true"},
  {"number":13,"state":"OPEN","labels":[{"name":"status:in-progress"}],"title":"wip","body":"Charter: #1"},
- {"number":15,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf fifteen","body":"Charter: #1\nDepends-on: #99"},
- {"number":17,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf seventeen","body":"Charter: #1\nDepends-on: #16"},
+ {"number":15,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf fifteen","body":"Charter: #1\nDepends-on: #99\n## Acceptance (machine)\n- check: true"},
+ {"number":17,"state":"OPEN","labels":[{"name":"type:agent"}],"title":"leaf seventeen","body":"Charter: #1\nDepends-on: #16\n## Acceptance (machine)\n- check: true"},
  {"number":99,"state":"CLOSED","labels":[],"body":"dep done"},
  {"number":16,"state":"CLOSED","labels":[],"body":"Charter: #1"}
 ]
