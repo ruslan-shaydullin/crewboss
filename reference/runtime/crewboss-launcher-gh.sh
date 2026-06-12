@@ -100,16 +100,29 @@ _integrator_cycle(){
   review_ids=$(board review-leaves 2>/dev/null || true)
   [ -n "$review_ids" ] || return 0
 
-  local rid pr_info pr_num pr_base ci_json ci_status conflict_files try_ok merge_sha file_list
+  local open_prs rid pr_head pr_num pr_base ci_json ci_status conflict_files try_ok merge_sha file_list
+
+  # Snapshot all open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>-
+  open_prs=$(gh pr list -R "$CB_REPO" --state open \
+             --json number,headRefName,baseRefName 2>/dev/null || true)
+
   for rid in $review_ids; do
     # Skip leaves already merged this run (prevents double-merge)
     [ "$(sget "$rid" int_done)" = "merged" ] && continue
 
-    # Get the open PR for task/$rid (must target charter/C)
-    pr_info=$(gh pr list -R "$CB_REPO" --head "task/$rid" --state open \
-              --json number,baseRefName 2>/dev/null || true)
-    pr_num=$(printf '%s' "$pr_info" | jq -r '.[0].number // empty' 2>/dev/null || true)
-    pr_base=$(printf '%s' "$pr_info" | jq -r '.[0].baseRefName // empty' 2>/dev/null || true)
+    # Find the open PR: headRefName must start with leaf/$rid- AND base must be charter/*
+    pr_head=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
+      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
+           | select(.baseRefName | startswith("charter/"))
+           | .headRefName' 2>/dev/null | head -1 || true)
+    pr_num=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
+      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
+           | select(.baseRefName | startswith("charter/"))
+           | .number' 2>/dev/null | head -1 || true)
+    pr_base=$(printf '%s' "$open_prs" | jq -r --arg rid "$rid" \
+      '.[] | select(.headRefName | startswith("leaf/\($rid)-"))
+           | select(.baseRefName | startswith("charter/"))
+           | .baseRefName' 2>/dev/null | head -1 || true)
 
     if [ -z "$pr_num" ]; then
       log "integrator: #$rid in review but no open PR — skip"
@@ -139,7 +152,7 @@ _integrator_cycle(){
 
     # ── try-merge dry-run ─────────────────────────────────────────────────────
     try_ok=true
-    if ! conflict_files=$(bash "$INTEGRATOR_SCRIPT" try-merge "task/$rid" "$pr_base" \
+    if ! conflict_files=$(bash "$INTEGRATOR_SCRIPT" try-merge "$pr_head" "$pr_base" \
                           --remote "$GIT_REMOTE" 2>/dev/null); then
       try_ok=false
     fi

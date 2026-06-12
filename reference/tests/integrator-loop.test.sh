@@ -129,17 +129,31 @@ case "$obj $verb" in
     echo "close #$n" >> "$GH_LOG" ;;
 
   "pr list")
-    head=""; state_filter="open"
+    head_filter=""; base_filter=""; state_filter="open"
     while [ $# -gt 0 ]; do
-      case "$1" in --head) head="$2"; shift ;; --state) state_filter="$2"; shift ;; --json) shift ;; esac; shift
+      case "$1" in
+        --head)  head_filter="$2"; shift ;;
+        --base)  base_filter="$2"; shift ;;
+        --state) state_filter="$2"; shift ;;
+        --json)  shift ;;
+      esac
+      shift
     done
-    n="${head#task/}"
-    if [ -f "$PRDIR/$n" ] && [ ! -f "$PRDIR/merged-$n" ] && [ "$state_filter" = "open" ]; then
-      base="$(cat "$PRDIR/base-$n" 2>/dev/null || echo main)"
-      printf '[{"number":%s,"baseRefName":"%s","state":"OPEN"}]\n' "$n" "$base"
-    else
-      echo "[]"
-    fi ;;
+    # Build JSON array of matching PRs from PRDIR (real leaf/$ID-<ts> naming)
+    result="[]"
+    for pf in "$PRDIR"/[0-9]*; do
+      [ -f "$pf" ] || continue
+      n="$(basename "$pf")"
+      case "$n" in *[!0-9]*) continue ;; esac
+      [ "$state_filter" = "open" ] && [ -f "$PRDIR/merged-$n" ] && continue
+      h="$(cat "$PRDIR/head-$n" 2>/dev/null || echo "leaf/$n-1700000000")"
+      b="$(cat "$PRDIR/base-$n" 2>/dev/null || echo main)"
+      [ -n "$head_filter" ] && [ "$h" != "$head_filter" ] && continue
+      [ -n "$base_filter" ] && [ "$b" != "$base_filter" ] && continue
+      result="$(printf '%s' "$result" | jq --argjson n "$n" --arg h "$h" --arg b "$b" \
+        '. + [{"number":($n|tonumber),"headRefName":$h,"baseRefName":$b,"state":"OPEN"}]')"
+    done
+    printf '%s\n' "$result" ;;
 
   "pr view")
     n="$1"; shift; json_fields=""
@@ -167,13 +181,14 @@ case "$obj $verb" in
   "pr merge")
     n="$1"; shift
     base="$(cat "$PRDIR/base-$n" 2>/dev/null || echo charter/5)"
+    pr_head="$(cat "$PRDIR/head-$n" 2>/dev/null || echo "leaf/$n-1700000000")"
     # Perform the actual merge in the local bare remote
     _td="$(mktemp -d)"
     git clone -q "$REMOTE" "$_td" 2>/dev/null
     git -C "$_td" config user.email t@t; git -C "$_td" config user.name T
-    git -C "$_td" fetch -q origin "$base" "task/$n" 2>/dev/null
+    git -C "$_td" fetch -q origin "$base" "$pr_head" 2>/dev/null
     git -C "$_td" checkout -q -b "_merge_work" "origin/$base" 2>/dev/null
-    git -C "$_td" merge --no-ff "origin/task/$n" -m "Merge task/$n into $base (#$n)" \
+    git -C "$_td" merge --no-ff "origin/$pr_head" -m "Merge $pr_head into $base (#$n)" \
         >/dev/null 2>&1
     _sha="$(git -C "$_td" rev-parse HEAD)"
     git -C "$_td" push -q origin "_merge_work:refs/heads/$base" 2>/dev/null
@@ -220,14 +235,17 @@ git -C "$WA" config user.email t@t; git -C "$WA" config user.name T
 ) 9>"$SANDBOX/charter-$C.lock"
 
 git -C "$WA" fetch -q origin "$CB" 2>/dev/null
-git -C "$WA" checkout -q -b "task/$ID" "origin/$CB" 2>/dev/null
+# Real canonical spawn: leaf/$ID-<timestamp> branch (fixed TS for determinism in tests)
+TS=1700000000
+git -C "$WA" checkout -q -b "leaf/$ID-$TS" "origin/$CB" 2>/dev/null
 printf 'work for #%s\n' "$ID" > "$WA/work-$ID.txt"
 git -C "$WA" add -A
 git -C "$WA" commit -qm "executor: closes #$ID" 2>/dev/null
-git -C "$WA" push -q origin "task/$ID" 2>/dev/null
+git -C "$WA" push -q origin "leaf/$ID-$TS" 2>/dev/null
 
 touch "$PRDIR/$ID"
 printf '%s' "$CB" > "$PRDIR/base-$ID"
+printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
 [ -f "$PRDIR/checks-$ID" ] || printf 'success' > "$PRDIR/checks-$ID"
 
 rm -rf "$WA"
@@ -264,15 +282,18 @@ git -C "$WA" config user.email t@t; git -C "$WA" config user.name T
 ) 9>"$SANDBOX/charter-$C.lock"
 
 git -C "$WA" fetch -q origin "$CB" 2>/dev/null
-git -C "$WA" checkout -q -b "task/$ID" "origin/$CB" 2>/dev/null
+# Real canonical spawn: leaf/$ID-<timestamp> branch (fixed TS for determinism in tests)
+TS=1700000000
+git -C "$WA" checkout -q -b "leaf/$ID-$TS" "origin/$CB" 2>/dev/null
 # Both leaves write to the same file — creates a conflict between them
 printf 'from-%s\n' "$ID" > "$WA/shared.txt"
 git -C "$WA" add -A
 git -C "$WA" commit -qm "executor: closes #$ID (edits shared.txt)" 2>/dev/null
-git -C "$WA" push -q origin "task/$ID" 2>/dev/null
+git -C "$WA" push -q origin "leaf/$ID-$TS" 2>/dev/null
 
 touch "$PRDIR/$ID"
 printf '%s' "$CB" > "$PRDIR/base-$ID"
+printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
 [ -f "$PRDIR/checks-$ID" ] || printf 'success' > "$PRDIR/checks-$ID"
 
 rm -rf "$WA"
@@ -308,11 +329,13 @@ git -C "$WA" checkout -q -b "_rw_$ID" "origin/$CB" 2>/dev/null
 printf 'reworked-for-#%s\n' "$ID" > "$WA/rework-$ID.txt"
 git -C "$WA" add -A
 git -C "$WA" commit -qm "rework: closes #$ID" 2>/dev/null
-# Force-push to replace the old conflicting task branch
-git -C "$WA" push -q origin "_rw_$ID:refs/heads/task/$ID" --force 2>/dev/null
+# Force-push to replace the old conflicting leaf branch (same leaf/$ID-1700000000 name)
+TS=1700000000
+git -C "$WA" push -q origin "_rw_$ID:refs/heads/leaf/$ID-$TS" --force 2>/dev/null
 
-# Reset check status and un-mark any previous merge
+# Reset check status and un-mark any previous merge; refresh head pointer
 printf 'success' > "$PRDIR/checks-$ID"
+printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
 rm -f "$PRDIR/merged-$ID" "$PRDIR/merge-sha-$ID"
 
 rm -rf "$WA"
