@@ -50,7 +50,14 @@ cmd_close_leaf() {
   [ -n "$merge_sha" ] && comment="Closed by integrator after merge ${merge_sha}"
 
   gh issue comment "$id" "${repo_flag[@]}" --body "$comment" 2>/dev/null || true
-  gh issue close   "$id" "${repo_flag[@]}"
+  # Capture exit code explicitly — set -uo pipefail does NOT abort on standalone
+  # command failure (no -e), so we must check it ourselves and propagate it.
+  local close_exit=0
+  gh issue close   "$id" "${repo_flag[@]}" || close_exit=$?
+  if [ "$close_exit" -ne 0 ]; then
+    log "close-leaf: gh issue close #$id failed (exit $close_exit) — caller should retry"
+    exit "$close_exit"
+  fi
   log "closed leaf #$id (merge-sha: ${merge_sha:-n/a})"
 }
 
