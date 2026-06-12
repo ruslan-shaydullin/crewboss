@@ -31,6 +31,9 @@ else
 fi
 
 export CB_PLAN_SPAWN="${CB_PLAN_SPAWN:-$HOME/cbnet/crewboss-prep-spawn-gh.sh}"
+# CB_HARNESS: passthrough — empty by default; gate uses marker-grep only; override for harness tests.
 export CB_HARNESS="${CB_HARNESS:-}"
-# FIXME: CB_GATE_REPO_DIR default '.' is a known issue (gate-fix leaf will set correct path)
-export CB_GATE_REPO_DIR="${CB_GATE_REPO_DIR:-.}"
+# Gate location for charter finale: intentionally NOT configured here.
+# Production uses --remote (launcher:549-552) so the gate clones the real charter/C
+# branch tree and avoids false-RED from CWD self-matches (F8 contract, #116).
+# The --repo-dir override remains available for reference/tests (gate-charter-tree etc.).
