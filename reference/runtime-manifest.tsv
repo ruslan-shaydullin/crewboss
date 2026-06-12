@@ -1,0 +1,6 @@
+# reference/runtime-manifest.tsv — canonical runtime file registry with SHA-256 locks
+# Checked to detect drift between entrypoints. Update sha column whenever the file changes.
+# Columns: path (repo-root-relative) TAB sha256 TAB description
+reference/runtime/run-env.sh	a132eac146d8e67831e6d295a9578d18b9e7c77d0768dd647840ea2e9d8bb355	canonical env contract for the crewboss run loop
+reference/runtime/run-charter.sh	18939e29d4a3e45cc3d5e2055c2f486c90cdcbba0eac65ce893ccd4060a08fb0	charter-integration run loop entrypoint (sources run-env.sh)
+reference/runtime/start-stack.sh	1604a3d9920d818134fd8a601944681829c1dd73954ab4e64abf5244b2e3761c	stack run loop entrypoint (sources run-env.sh)
