@@ -204,8 +204,35 @@ def do_command(body):
         if os.path.exists(ks):
             return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
         os.makedirs(RUN,exist_ok=True)
-        subprocess.Popen(["bash", os.path.join(CB_HOME,"crewboss-launcher-gh.sh"),"run"],
-                         env=os.environ, stdout=open(os.path.join(RUN,"launcher.out"),"a"),
+        # Build full env from run-env.sh so the loop gets the complete contract even when
+        # the daemon was restarted with an empty env (e.g. after deploy-runtime.sh — issue #148).
+        # Never pass the daemon's os.environ directly — it is empty post-deploy, giving the
+        # launcher 120 ticks / no integration (finding #1+#2/#142).  set -a auto-exports
+        # everything sourced from run-env.sh including ~/.crewboss.env (CLAUDE_CODE_OAUTH_TOKEN).
+        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        seed_env = {
+            "HOME": home,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+        }
+        try:
+            env_raw = subprocess.run(
+                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
+                capture_output=True, text=True, env=seed_env, timeout=15
+            ).stdout
+            launch_env = {}
+            for line in env_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k and k.isidentifier():
+                        launch_env[k] = v
+            if not launch_env:
+                launch_env = dict(seed_env)
+        except Exception:
+            launch_env = dict(seed_env)
+        subprocess.Popen(["bash", os.path.join(CB_HOME, "crewboss-launcher-gh.sh"), "run"],
+                         env=launch_env,
+                         stdout=open(os.path.join(RUN,"launcher.out"),"a"),
                          stderr=subprocess.STDOUT)
         return {"ok":True,"msg":"launcher started"}
     elif a=="approve" and n.isdigit():
