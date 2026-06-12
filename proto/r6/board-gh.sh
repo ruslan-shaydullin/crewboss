@@ -7,9 +7,10 @@
 #
 # Usage:
 #   board-gh.sh launchable                       -> launchable leaf numbers (canonical predicate)
+#   board-gh.sh review-leaves                    -> open agent leaves in status:review
 #   board-gh.sh get <id> <field>                 -> state|kind|role|charter|deps|held|pr_repo|prompt
 #   board-gh.sh claim <id> [launcher-id]         -> +status:in-progress (+claimed-by:<id>)
-#   board-gh.sh route <id> review|blocked|requeue [comment]
+#   board-gh.sh route <id> review|blocked|requeue|needs-rework [comment]
 set -uo pipefail
 REPO="${CB_REPO:?set CB_REPO=owner/repo}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +30,12 @@ case "$cmd" in
       .[] | select([.labels[].name] as $l
         | ($l|index("type:charter")) and ($l|index("status:needs-plan")) and (($l|index("hold"))|not))
       | .number' ;;
+
+  review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
+    gh issue list -R "$REPO" --state open -L 200 --json number,state,labels | jq -r '
+      .[] | select(.state == "OPEN")
+           | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))
+           | .number' ;;
 
   get)
     id="$1"; field="$2"; j=$(iview "$id")
@@ -86,5 +93,5 @@ case "$cmd" in
       *) echo "unknown outcome: $outcome" >&2; exit 64 ;;
     esac ;;
 
-  *) echo "usage: $0 {launchable|get|claim|route}" >&2; exit 64 ;;
+  *) echo "usage: $0 {launchable|review-leaves|get|claim|route}" >&2; exit 64 ;;
 esac

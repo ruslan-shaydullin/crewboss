@@ -96,11 +96,58 @@ cmd_gate_charter() {
   log "gate-charter #$charter_id: GATE GREEN — safe to merge"
 }
 
+# ── subcommand: try-merge ─────────────────────────────────────────────────────
+# Dry-run merge of <branch> into <target> against --remote REMOTE_URL.
+# Clones into a throwaway tmpdir (NO push).
+# exit 0  → merge would be clean
+# exit 1  → conflict (conflicting file paths printed on stdout)
+cmd_try_merge() {
+  local branch="${1:-}" target="${2:-}"
+  [ -n "$branch" ] || { log "try-merge: missing branch argument"; exit 1; }
+  [ -n "$target" ] || { log "try-merge: missing target argument"; exit 1; }
+  shift 2 || true
+  local remote=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --remote) remote="$2"; shift ;; esac; shift
+  done
+  [ -n "$remote" ] || { log "try-merge: --remote is required"; exit 1; }
+
+  local tmpdir; tmpdir="$(mktemp -d)"
+
+  git clone -q "$remote" "$tmpdir" 2>/dev/null || {
+    log "try-merge: clone failed ($remote)"; rm -rf "$tmpdir"; exit 1
+  }
+  git -C "$tmpdir" config user.email "integrator@crewboss" 2>/dev/null
+  git -C "$tmpdir" config user.name  "crewboss-integrator"  2>/dev/null
+
+  git -C "$tmpdir" fetch -q origin "$target" "$branch" 2>/dev/null || {
+    log "try-merge: fetch of $target / $branch failed"; rm -rf "$tmpdir"; exit 1
+  }
+  git -C "$tmpdir" checkout -q -b "_integrator_try" "origin/$target" 2>/dev/null || {
+    log "try-merge: checkout of $target failed"; rm -rf "$tmpdir"; exit 1
+  }
+
+  local rc=0
+  git -C "$tmpdir" merge --no-commit --no-ff "origin/$branch" >/dev/null 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$tmpdir"
+    exit 0
+  else
+    # Print conflicting file paths (one per line)
+    git -C "$tmpdir" ls-files --unmerged 2>/dev/null \
+      | awk '{print $NF}' | sort -u || true
+    rm -rf "$tmpdir"
+    exit 1
+  fi
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────
 case "${1:-}" in
   close-leaf)   shift; cmd_close_leaf "$@" ;;
   gate-charter) shift; cmd_gate_charter "$@" ;;
+  try-merge)    shift; cmd_try_merge "$@" ;;
   *)
-    printf 'usage: %s {close-leaf|gate-charter} ...\n' "$(basename "$0")" >&2
+    printf 'usage: %s {close-leaf|gate-charter|try-merge} ...\n' "$(basename "$0")" >&2
     exit 64 ;;
 esac

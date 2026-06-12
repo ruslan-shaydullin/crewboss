@@ -5,8 +5,9 @@
 # SPAWN is overridable ($CB_SPAWN) so the loop is testable with a stub against synthetic
 # gh issues — no jail, no spend.
 #
-# Subcommands: reconcile | once     Env: CB_REPO (req), CB_HOME, CB_SPAWN, CB_REWORK_SPAWN,
-#                                        CB_RETRY_CAP, CB_MAX_PARALLEL, CB_LAUNCHER_ID
+# Subcommands: reconcile | once | run
+# Env: CB_REPO (req), CB_HOME, CB_SPAWN, CB_REWORK_SPAWN, CB_RETRY_CAP, CB_MAX_PARALLEL,
+#      CB_LAUNCHER_ID, CB_GIT_REMOTE, CB_INTEGRATOR
 set -uo pipefail
 : "${CB_REPO:?set CB_REPO=owner/repo}"; export CB_REPO
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
@@ -20,6 +21,8 @@ CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
 HERE_LAUNCHER="$(cd "$(dirname "$0")" && pwd)"
 REWORK_SPAWN="${CB_REWORK_SPAWN:-$HERE_LAUNCHER/rework-prep.sh}"
+GIT_REMOTE="${CB_GIT_REMOTE:-}"
+INTEGRATOR_SCRIPT="${CB_INTEGRATOR:-$HERE_LAUNCHER/crewboss-integrator.sh}"
 mkdir -p "$STATE"
 now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
@@ -81,6 +84,85 @@ claim_and_spawn(){ # id
   route "$id" "$ex"
 }
 
+# ── integrator cycle: merge review-state leaf PRs into charter/C ─────────────
+# Called every tick of cmd_run after finished-spawn routing.
+# GREEN-BEFORE-MERGE: CI (statusCheckRollup) must be success before any merge.
+# Idempotent: merged/closed leaves not re-processed.  All errors logged, non-fatal.
+_integrator_cycle(){
+  [ -n "$GIT_REMOTE" ]        || return 0
+  [ -x "$INTEGRATOR_SCRIPT" ] || { log "integrator: script not found: $INTEGRATOR_SCRIPT"; return 0; }
+
+  local review_ids
+  review_ids=$(board review-leaves 2>/dev/null || true)
+  [ -n "$review_ids" ] || return 0
+
+  local rid pr_info pr_num pr_base ci_json ci_status conflict_files try_ok merge_sha file_list
+  for rid in $review_ids; do
+    # Skip leaves already merged this run (prevents double-merge)
+    [ "$(sget "$rid" int_done)" = "merged" ] && continue
+
+    # Get the open PR for task/$rid (must target charter/C)
+    pr_info=$(gh pr list -R "$CB_REPO" --head "task/$rid" --state open \
+              --json number,baseRefName 2>/dev/null || true)
+    pr_num=$(printf '%s' "$pr_info" | jq -r '.[0].number // empty' 2>/dev/null || true)
+    pr_base=$(printf '%s' "$pr_info" | jq -r '.[0].baseRefName // empty' 2>/dev/null || true)
+
+    if [ -z "$pr_num" ]; then
+      log "integrator: #$rid in review but no open PR — skip"
+      continue
+    fi
+    case "$pr_base" in
+      charter/[0-9]*)  ;;
+      *) log "integrator: #$rid PR #$pr_num base='$pr_base' not charter/* — skip"; continue ;;
+    esac
+
+    # ── GREEN-BEFORE-MERGE: CI must be success ────────────────────────────────
+    ci_json=$(gh pr view "$pr_num" -R "$CB_REPO" --json statusCheckRollup \
+              2>/dev/null || echo '{"statusCheckRollup":[]}')
+    ci_status=$(printf '%s' "$ci_json" | jq -r '
+      if (.statusCheckRollup | length) == 0 then "pending"
+      elif (.statusCheckRollup | all(.conclusion == "SUCCESS" or .conclusion == "SKIPPED")) then "success"
+      elif (.statusCheckRollup | any(.status == "IN_PROGRESS" or .status == "QUEUED")) then "pending"
+      elif (.statusCheckRollup | any(.conclusion == null or .conclusion == "")) then "pending"
+      else "failure" end' 2>/dev/null) || ci_status="failure"
+
+    case "$ci_status" in
+      pending)  log "integrator: #$rid PR #$pr_num CI pending — wait next tick"; continue ;;
+      failure)  log "integrator: #$rid PR #$pr_num CI failed — not merging"; continue ;;
+      success)  ;;
+      *)        log "integrator: #$rid PR #$pr_num CI='$ci_status' unknown — skip"; continue ;;
+    esac
+
+    # ── try-merge dry-run ─────────────────────────────────────────────────────
+    try_ok=true
+    if ! conflict_files=$(bash "$INTEGRATOR_SCRIPT" try-merge "task/$rid" "$pr_base" \
+                          --remote "$GIT_REMOTE" 2>/dev/null); then
+      try_ok=false
+    fi
+
+    if [ "$try_ok" = "true" ]; then
+      # Clean: merge PR → close leaf (dependents unblock on next tick)
+      log "integrator: #$rid PR #$pr_num CI=green try-merge=clean — merging"
+      gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null || true
+      merge_sha=$(gh pr view "$pr_num" -R "$CB_REPO" --json mergeCommit \
+                 2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null) || merge_sha=""
+      bash "$INTEGRATOR_SCRIPT" close-leaf "$rid" \
+           ${merge_sha:+--merge-sha "$merge_sha"} \
+           --repo "$CB_REPO" 2>/dev/null || true
+      sset "$rid" int_done "merged"
+      log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
+    else
+      # Conflict: route needs-rework so rework-spawn can rebase
+      file_list=$(printf '%s' "$conflict_files" | head -5 | tr '\n' ' ' | sed 's/ *$//')
+      [ -z "$file_list" ] && file_list="(unknown)"
+      log "integrator: #$rid PR #$pr_num merge conflict: $file_list — needs-rework"
+      board route "$rid" needs-rework "Merge conflict in: $file_list" >/dev/null || true
+      # Clear terminal flag so rework-spawn can re-claim this leaf
+      sset "$rid" term ""
+    fi
+  done
+}
+
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
@@ -138,6 +220,8 @@ cmd_run(){
         esac
         sset "$id" pid ""
       done
+      # integrator step: merge review-state leaves into charter/C (every tick, non-fatal)
+      _integrator_cycle || log "integrator-cycle: error (continuing)"
       running=$(running_count)
       # pause: keep managing in-flight spawns but claim NO new work until the flag is removed.
       if [ -f "$RUN/pause" ]; then
