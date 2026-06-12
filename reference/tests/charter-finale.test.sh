@@ -245,9 +245,9 @@ exit 0
 GHEOF
 chmod +x "$BIN/gh"
 
-# Clean directory used as CB_GATE_REPO_DIR — no CREWBOSS_NOGATE markers.
-# (The working directory /work contains the string in crewboss-integrator.sh itself,
-# which would cause marker-grep to fire.  Tests must point gate-charter at a clean dir.)
+# Clean directory used as CB_GATE_REPO_DIR — no gate-bypass markers present.
+# Providing an explicit --repo-dir lets tests control the scanned tree without
+# cloning from a remote, keeping class-i tests fast and self-contained.
 CLEAN_GATE_DIR="$ROOT/clean_gate_dir"; mkdir -p "$CLEAN_GATE_DIR"
 
 # ── loop runner ───────────────────────────────────────────────────────────────

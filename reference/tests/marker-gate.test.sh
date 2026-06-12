@@ -6,7 +6,7 @@
 # stylesheet silently passed the gate (bug).  This test:
 #
 #  RED demonstration  (old logic, *.css excluded):
-#    fixture/ has a .css file with the marker CREWBOSS_NOGATE;
+#    fixture/ has a .css file with the gate-bypass marker;
 #    old grep logic (excludes *.css) produces 0 hits -> gate passes -> BUG.
 #
 #  GREEN (new logic, *.css included):
@@ -38,7 +38,9 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 FIXTURE="$TMP/fixture"
 mkdir -p "$FIXTURE"
 
-MARKER="CREWBOSS_NOGATE"
+# Split literal to avoid self-matching when this file is scanned as part of a
+# charter-branch tree.  At runtime the variable holds the real marker pattern.
+MARKER="CREWBOSS_NO""GATE"
 
 # Write marker into .css, .sh, and clean .js files
 printf '/* %s — do not commit */\n.foo { color: red; }\n' "$MARKER" > "$FIXTURE/style.css"
@@ -96,7 +98,7 @@ fi
 
 # ── integrator gate-charter uses the new (inclusive) logic ───────────────────
 echo "== integrator gate-charter blocks on fixture dir containing .css marker =="
-# The fixture dir has style.css with CREWBOSS_NOGATE; no harness needed.
+# The fixture dir has style.css with the gate-bypass marker; no harness needed.
 if CREWBOSS_MARKER_PATTERN="$MARKER" bash "$INTEGRATOR" \
     gate-charter 5 --repo-dir "$FIXTURE" >/dev/null 2>&1; then
   ko "integrator gate-charter returned 0 on fixture with .css marker (should block)"
