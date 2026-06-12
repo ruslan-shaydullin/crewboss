@@ -508,13 +508,25 @@ _charter_finale_cycle(){
       ] | length' 2>/dev/null) || open_leaf_count=1
     [ "$open_leaf_count" = "0" ] || continue
 
-    # Condition: charter/C branch exists on the remote and is ahead of main
+    # Condition: charter/C branch exists on the remote and is strictly ahead of main
+    # (main must be an ancestor of charter/C — stale/diverged branches are rejected)
     local branch="charter/$cid"
     git ls-remote --exit-code --heads "$GIT_REMOTE" "$branch" >/dev/null 2>&1 || continue
     local b_sha m_sha
     b_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/$branch" 2>/dev/null | awk '{print $1}' | head -1)
     m_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/main"    2>/dev/null | awk '{print $1}' | head -1)
     [ -n "$b_sha" ] && [ "$b_sha" != "$m_sha" ] || continue
+    # Ancestor check via temporary bare clone: main must be an ancestor of charter/C.
+    # A charter behind or diverged from main fails this check and is skipped.
+    local _anc_tmp _anc_rc
+    _anc_tmp=$(mktemp -d)
+    git clone -q --bare "$GIT_REMOTE" "$_anc_tmp/repo" 2>/dev/null \
+      || { rm -rf "$_anc_tmp"; continue; }
+    _anc_rc=0
+    git -C "$_anc_tmp/repo" merge-base --is-ancestor \
+      "main" "$branch" 2>/dev/null || _anc_rc=$?
+    rm -rf "$_anc_tmp"
+    [ "$_anc_rc" = "0" ] || continue  # main not ancestor of charter/C → stale/diverged
 
     # Idempotent: check for an existing open PR charter/C → main
     local existing_pr
