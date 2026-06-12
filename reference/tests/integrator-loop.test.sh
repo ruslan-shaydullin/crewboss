@@ -146,6 +146,7 @@ case "$obj $verb" in
       n="$(basename "$pf")"
       case "$n" in *[!0-9]*) continue ;; esac
       [ "$state_filter" = "open" ] && [ -f "$PRDIR/merged-$n" ] && continue
+      [ "$state_filter" = "open" ] && [ -f "$PRDIR/closed-$n" ] && continue
       h="$(cat "$PRDIR/head-$n" 2>/dev/null || echo "leaf/$n-1700000000")"
       b="$(cat "$PRDIR/base-$n" 2>/dev/null || echo main)"
       [ -n "$head_filter" ] && [ "$h" != "$head_filter" ] && continue
@@ -197,6 +198,18 @@ case "$obj $verb" in
     touch "$PRDIR/merged-$n"
     printf 'Merged pull request #%s (%s)\n' "$n" "$base"
     echo "pr merge #$n into $base sha=$_sha" >> "$GH_LOG" ;;
+
+  "pr comment")
+    n="$1"; shift; body=""
+    while [ $# -gt 0 ]; do case "$1" in --body|-b) body="$2"; shift ;; esac; shift; done
+    echo "pr comment #$n: $body" >> "$GH_LOG" ;;
+
+  "pr close")
+    n="$1"; shift; comment=""
+    while [ $# -gt 0 ]; do case "$1" in --comment|-c) comment="$2"; shift ;; esac; shift; done
+    touch "$PRDIR/closed-$n"
+    echo "pr close #$n" >> "$GH_LOG"
+    [ -n "$comment" ] && echo "pr close comment #$n: $comment" >> "$GH_LOG" ;;
 
   "label create") ;;   # no-op
 
@@ -302,12 +315,15 @@ CSEOF
 chmod +x "$CONFLICT_SPAWN"
 
 # ── rework spawn stub ─────────────────────────────────────────────────────────
-# Creates a fresh task/$ID branch off current charter/C HEAD (post-merge state).
+# Real-contract stub: called as (id, role); uses CB_OLD_BRANCH env (set by launcher).
+# Creates rework/<id>-<ts> branch off current charter/C HEAD (post-merge state).
+# Registers a NEW PR (id+100). Leaves old leaf PR open.
 # Writes a unique non-conflicting file (no shared.txt) — guaranteed clean merge.
 REWORK_STUB="$ROOT/rework.sh"
 cat > "$REWORK_STUB" <<'RWEOF'
 #!/usr/bin/env bash
 ID="$1"
+ROLE="${2:-}"
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"
 mkdir -p "$RUN/work/$ID"
@@ -323,23 +339,25 @@ git clone -q "$REMOTE" "$WA" 2>/dev/null
 git -C "$WA" config user.email t@t; git -C "$WA" config user.name T
 git -C "$WA" fetch -q origin "$CB" 2>/dev/null
 
-# Fresh branch off current charter/C HEAD (has previous siblings' commits)
-git -C "$WA" checkout -q -b "_rw_$ID" "origin/$CB" 2>/dev/null
+# Create rework/<id>-<ts> branch (REAL rework-prep naming — NOT leaf/...)
+TS="$(date +%s)"
+REWORK_BRANCH="rework/$ID-$TS"
+git -C "$WA" checkout -q -b "$REWORK_BRANCH" "origin/$CB" 2>/dev/null
 # Write a unique non-conflicting file for this rework
 printf 'reworked-for-#%s\n' "$ID" > "$WA/rework-$ID.txt"
 git -C "$WA" add -A
 git -C "$WA" commit -qm "rework: closes #$ID" 2>/dev/null
-# Force-push to replace the old conflicting leaf branch (same leaf/$ID-1700000000 name)
-TS=1700000000
-git -C "$WA" push -q origin "_rw_$ID:refs/heads/leaf/$ID-$TS" --force 2>/dev/null
+git -C "$WA" push -q origin "$REWORK_BRANCH" 2>/dev/null
 
-# Reset check status and un-mark any previous merge; refresh head pointer
-printf 'success' > "$PRDIR/checks-$ID"
-printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
-rm -f "$PRDIR/merged-$ID" "$PRDIR/merge-sha-$ID"
+# Register a NEW PR (id+100) — leave OLD leaf PR open
+NEW_PR_NUM=$((ID + 100))
+touch "$PRDIR/$NEW_PR_NUM"
+printf '%s' "$CB" > "$PRDIR/base-$NEW_PR_NUM"
+printf '%s' "$REWORK_BRANCH" > "$PRDIR/head-$NEW_PR_NUM"
+printf 'success' > "$PRDIR/checks-$NEW_PR_NUM"
 
 rm -rf "$WA"
-echo "rework: done #$ID" >> "$SANDBOX/spawn.log"
+echo "rework: done #$ID -> PR #$NEW_PR_NUM ($REWORK_BRANCH)" >> "$SANDBOX/spawn.log"
 exit 0
 RWEOF
 chmod +x "$REWORK_STUB"
@@ -514,20 +532,20 @@ has_comment 11 "shared.txt" \
   && ok "RED-2d: conflict comment on #11 names shared.txt" \
   || ko "RED-2d: conflict comment on #11 missing shared.txt"
 
-# PR #11 was NOT merged during Phase 1 (merged only after rework)
-# Verify from GH_LOG order: needs-rework comment on #11 precedes pr merge of #11
-# (meaning conflict was detected before the merge happened)
-if ghlog_has "pr merge #11"; then
-  # PR #11 was eventually merged — check it happened after the conflict comment
+# PR #11 was NOT merged directly; after rework, the rework PR (#111 = 11+100) is merged.
+# Verify from GH_LOG order: needs-rework comment on #11 precedes rework PR merge.
+_REWORK_PR_11=$((11 + 100))
+if ghlog_has "pr merge #$_REWORK_PR_11"; then
+  # Rework PR was eventually merged — check it happened after the conflict comment
   _nr_line=$(grep -n "comment #11.*Merge conflict\|comment #11.*shared.txt" "$GH_LOG" 2>/dev/null | head -1 | cut -d: -f1)
-  _mg_line=$(grep -n "pr merge #11" "$GH_LOG" 2>/dev/null | head -1 | cut -d: -f1)
+  _mg_line=$(grep -n "pr merge #$_REWORK_PR_11" "$GH_LOG" 2>/dev/null | head -1 | cut -d: -f1)
   if [ -n "$_nr_line" ] && [ -n "$_mg_line" ] && [ "$_nr_line" -lt "$_mg_line" ]; then
-    ok "RED-2e: conflict comment preceded PR #11 merge (correct order)"
+    ok "RED-2e: conflict comment preceded rework PR #$_REWORK_PR_11 merge (correct order)"
   else
-    ko "RED-2e: PR #11 merge order wrong (nr_line=$_nr_line, mg_line=$_mg_line)"
+    ko "RED-2e: rework PR merge order wrong (nr_line=$_nr_line, mg_line=$_mg_line)"
   fi
 else
-  ko "RED-2e: PR #11 was never merged (convergence failed)"
+  ko "RED-2e: rework PR #$_REWORK_PR_11 was never merged (convergence failed)"
 fi
 
 # Phase-2 assertions: convergence
@@ -535,9 +553,9 @@ fi
   && ok "RED-2f: #11 CLOSED (convergence complete)" \
   || ko "RED-2f: #11 not CLOSED"
 
-pr_merged 11 \
-  && ok "RED-2g: PR #11 eventually merged after rework" \
-  || ko "RED-2g: PR #11 not merged after rework"
+pr_merged "$_REWORK_PR_11" \
+  && ok "RED-2g: rework PR #$_REWORK_PR_11 merged (convergence complete)" \
+  || ko "RED-2g: rework PR #$_REWORK_PR_11 not merged after rework"
 
 # needs-rework was removed when rework-spawn claimed the leaf (lifecycle from #87)
 # After full convergence, #11 is CLOSED — verify needs-rework was stripped
