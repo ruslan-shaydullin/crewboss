@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-source ~/.crewboss.env
-export CB_REPO=stratch1989/crewboss CB_HOME=$HOME/cbnet
-export CB_MAX_TICKS=1800 CB_MAX_PARALLEL=${CB_MAX_PARALLEL:-4} CB_TASK_TIMEOUT=3600
+# shellcheck source=run-env.sh
+. "$(dirname "$0")/run-env.sh"
 API_PID="$HOME/cbnet/run/api.pid"
 mkdir -p "$HOME/cbnet/run"
 if [ ! -f "$API_PID" ] || ! kill -0 "$(cat "$API_PID" 2>/dev/null)" 2>/dev/null; then
