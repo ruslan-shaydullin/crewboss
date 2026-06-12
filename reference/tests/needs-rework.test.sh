@@ -124,13 +124,13 @@ BOARD_NR='[
   {"number":5,"state":"OPEN",
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter"},
   {"number":12,"state":"OPEN",
-   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5"}
+   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5\n## Acceptance (machine)\n- check: true"}
 ]'
 BOARD_BLOCKED='[
   {"number":5,"state":"OPEN",
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter"},
   {"number":12,"state":"OPEN",
-   "labels":[{"name":"type:agent"},{"name":"status:blocked"}],"body":"Charter: #5"}
+   "labels":[{"name":"type:agent"},{"name":"status:blocked"}],"body":"Charter: #5\n## Acceptance (machine)\n- check: true"}
 ]'
 
 # proto/r6/launchable.sh — needs-rework is launchable
@@ -173,7 +173,7 @@ reset_board <<'JSON'
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
   {"number":12,"state":"OPEN",
    "labels":[{"name":"type:agent"},{"name":"status:in-progress"},{"name":"claimed-by:cb1"}],
-   "body":"Charter: #5","comments":[]}
+   "body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]
 JSON
 
@@ -240,9 +240,9 @@ reset_board <<'JSON'
   {"number":5,"state":"OPEN",
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
   {"number":10,"state":"OPEN",
-   "labels":[{"name":"type:agent"}],"body":"Charter: #5","comments":[]},
+   "labels":[{"name":"type:agent"}],"body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]},
   {"number":12,"state":"OPEN",
-   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5","comments":[]}
+   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]
 JSON
 
@@ -310,7 +310,7 @@ reset_board <<'JSON'
   {"number":5,"state":"OPEN",
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
   {"number":12,"state":"OPEN",
-   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5","comments":[]}
+   "labels":[{"name":"type:agent"},{"name":"status:needs-rework"}],"body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]
 JSON
 
@@ -357,7 +357,7 @@ reset_board <<'JSON'
    "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
   {"number":12,"state":"OPEN",
    "labels":[{"name":"type:agent"},{"name":"status:review"},{"name":"status:needs-rework"}],
-   "body":"Charter: #5","comments":[]}
+   "body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]
 JSON
 
