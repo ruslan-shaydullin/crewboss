@@ -61,17 +61,43 @@ _review_leaves_scoped(){
   fi
 }
 
+# _finale_in_progress: returns 0 (true) if any charter has a draft PR with pending CI
+# and the deadline has not yet expired.  Called by _loop_is_alive to prevent premature
+# idle-exit while the non-blocking finale poll cycle is still working. [F4 #118]
+_finale_in_progress(){
+  local _d _cid _ci_state _pr_ts _now _timeout
+  _timeout="${CB_FINALE_CHECKS_TIMEOUT:-300}"
+  _now=$(date +%s)
+  for _d in "$STATE"/finale-*/; do
+    [ -d "$_d" ] || continue
+    _cid="${_d%/}"; _cid="${_cid##*finale-}"
+    # Scope filter (CHARTER_SCOPE=0 means no filter)
+    [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$_cid" = "$CHARTER_SCOPE" ] || continue
+    _ci_state=$(cat "$_d/ci_state" 2>/dev/null || echo "pending")
+    [ "$_ci_state" = "pending" ] || continue
+    _pr_ts=$(cat "$_d/pr_ts" 2>/dev/null || echo "")
+    [ -n "$_pr_ts" ] || continue
+    # Deadline not yet expired → this charter's finale is still in progress
+    if [ "$_now" -lt $(( _pr_ts + _timeout )) ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # _loop_is_alive: liveness predicate for the run loop.
 # Returns 0 (alive) when there is still pending work:
 #   running > 0  — spawns in flight
 #   fresh   > 0  — unhandled launchable/plannable work
 #   review-leaves non-empty — leaves waiting for integrator merge
-# Extensibility hook: future leaves (e.g. finale-in-progress, F4) add conditions here.
+#   finale-in-progress — draft PR created, CI pending, deadline not expired [F4 #118]
 _loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
   local _running="$1" _fresh="$2"
   [ "$_running" -gt 0 ] && return 0
   [ "$_fresh"   -gt 0 ] && return 0
   [ -n "$(_review_leaves_scoped | head -1)" ] && return 0
+  # finale-in-progress: draft PR created, CI pending, deadline not expired [F4 #118]
+  _finale_in_progress && return 0
   return 1
 }
 
@@ -361,49 +387,86 @@ _integrator_cycle(){
   done
 }
 
-# ── charter finale: wait for CI checks on an existing draft PR and promote if green ──
-# Called by _charter_finale_cycle after a draft PR is created (or already exists).
-# Exit 0 = CI green (PR promoted); exit 1 = CI failed; exit 2 = timeout.
+# ── charter finale: one non-blocking CI poll per tick ────────────────────────────
+# Called by _charter_finale_cycle every tick for each charter with a draft PR.
+# State is persisted in $STATE/finale-<cid>/ so the function is fast (no sleep).
+# Return codes: 0=green (PR promoted), 1=red (CI failed), 2=timeout, 3=pending (come back).
+# Dedup: posts a comment only on first transition into each terminal state. [F4 #118]
 _finale_check_ci(){
   local cid="$1" pr_num="$2"
   local timeout="${CB_FINALE_CHECKS_TIMEOUT:-300}"
-  local poll="${CB_FINALE_CHECKS_POLL:-15}"
-  local deadline
-  deadline=$(( $(date +%s) + timeout ))
+  local _fin_dir="$STATE/finale-$cid"
+  mkdir -p "$_fin_dir"
 
-  while :; do
-    local checks_out checks_rc=0
-    checks_out=$(gh pr checks "$pr_num" -R "$CB_REPO" 2>&1) || checks_rc=$?
+  # Load persistent state.
+  local ci_state pr_ts last_comment
+  ci_state=$(cat "$_fin_dir/ci_state"     2>/dev/null || echo "pending")
+  pr_ts=$(cat    "$_fin_dir/pr_ts"        2>/dev/null || echo "")
+  last_comment=$(cat "$_fin_dir/last_comment" 2>/dev/null || echo "")
 
-    if [ "$checks_rc" -eq 0 ]; then
+  # Initialise deadline clock on first call (after PR creation — anti-deadlock safe).
+  if [ -z "$pr_ts" ]; then
+    pr_ts=$(date +%s)
+    printf '%s' "$pr_ts" > "$_fin_dir/pr_ts"
+  fi
+
+  # Already terminal? Return cached result with no new gh call.
+  case "$ci_state" in
+    green)   return 0 ;;
+    red)     return 1 ;;
+    timeout) return 2 ;;
+  esac
+
+  # ONE poll this tick (no sleep, no inner loop).
+  local checks_out checks_rc=0
+  checks_out=$(gh pr checks "$pr_num" -R "$CB_REPO" 2>&1) || checks_rc=$?
+
+  local new_state
+  if [ "$checks_rc" -eq 0 ]; then
+    new_state="green"
+  elif ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
+    new_state="red"
+  elif [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
+    new_state="timeout"
+  else
+    # Still pending, deadline not expired. Come back next tick.
+    return 3
+  fi
+
+  # Persist new terminal state.
+  printf '%s' "$new_state" > "$_fin_dir/ci_state"
+
+  # Actions + dedup comment (one comment per state).
+  case "$new_state" in
+    green)
       log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
       gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
-      gh issue comment "$cid" -R "$CB_REPO" \
-        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
-        2>/dev/null || true
-      return 0
-    fi
-
-    # Definitive failure (output doesn't suggest still-pending)
-    if ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
+      if [ "$last_comment" != "green" ]; then
+        gh issue comment "$cid" -R "$CB_REPO" \
+          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
+          2>/dev/null || true
+        printf '%s' "green" > "$_fin_dir/last_comment"
+      fi
+      return 0 ;;
+    red)
       log "charter-finale: #$cid PR #$pr_num CI failed — stays draft"
-      gh issue comment "$cid" -R "$CB_REPO" \
-        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI failed — stays draft" \
-        2>/dev/null || true
-      return 1
-    fi
-
-    # Still pending — respect timeout
-    if [ "$(date +%s)" -ge "$deadline" ]; then
+      if [ "$last_comment" != "red" ]; then
+        gh issue comment "$cid" -R "$CB_REPO" \
+          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI failed — stays draft" \
+          2>/dev/null || true
+        printf '%s' "red" > "$_fin_dir/last_comment"
+      fi
+      return 1 ;;
+    timeout)
       log "charter-finale: #$cid PR #$pr_num CI check timeout (${timeout}s) — stays draft"
-      gh issue comment "$cid" -R "$CB_REPO" \
-        --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
-        2>/dev/null || true
-      return 2
-    fi
-
-    sleep "$poll"
-  done
+      if [ "$last_comment" != "timeout" ]; then
+        gh issue comment "$cid" -R "$CB_REPO" \
+          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
+          2>/dev/null || true
+        printf '%s' "timeout" > "$_fin_dir/last_comment"
+      fi
+      return 2 ;;
+  esac
 }
 
 # ── charter finale cycle ──────────────────────────────────────────────────────
@@ -508,6 +571,12 @@ _charter_finale_cycle(){
     fi
 
     log "charter-finale: #$cid draft PR #$pr_num created — awaiting CI checks"
+    # Initialise finale state so _finale_in_progress can track liveness from this tick.
+    local _fin_dir="$STATE/finale-$cid"
+    mkdir -p "$_fin_dir"
+    printf '%s' "$pr_num"     > "$_fin_dir/pr_num"
+    printf '%s' "$(date +%s)" > "$_fin_dir/pr_ts"
+    printf '%s' "pending"     > "$_fin_dir/ci_state"
     _finale_check_ci "$cid" "$pr_num" || true
   done
 }
