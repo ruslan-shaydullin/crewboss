@@ -61,3 +61,6 @@ export CB_HARNESS="${CB_HARNESS:-}"
 # CB_VERIFY_TIMEOUT — engine-run ceiling in seconds (#174 F2 timeout wrap); default 600.
 export CB_VERIFY_CACHE="${CB_VERIFY_CACHE:-$CB_HOME/run/verify-cache}"
 export CB_VERIFY_TIMEOUT="${CB_VERIFY_TIMEOUT:-600}"
+# CB_VERIFY_CONFIRM_N — consecutive real-red confirmations before terminal fail-cache
+#                     + escalation trigger (#195/#196: one counter, one threshold); default 2.
+export CB_VERIFY_CONFIRM_N="${CB_VERIFY_CONFIRM_N:-2}"

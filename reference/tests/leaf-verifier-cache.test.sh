@@ -296,6 +296,56 @@ else
 fi
 
 # =============================================================================
+# Test 5 (#195): anti-poison — transient rc=1 (once) NOT cached as terminal fail (I3)
+# =============================================================================
+echo "=== Test 5 (#195): anti-poison — transient red not permanently cached ==="
+REMOTE_P="$ROOT/remote-poison.git"; CACHE_P="$ROOT/cache-poison"; MARK_P="$ROOT/poison-marker"
+mkdir -p "$CACHE_P"; rm -rf "$REMOTE_P"; git init --bare -q "$REMOTE_P"
+TMP_P="$(mktemp -d)"; git clone -q "$REMOTE_P" "$TMP_P" 2>/dev/null
+git -C "$TMP_P" config user.email t@t; git -C "$TMP_P" config user.name T
+mkdir -p "$TMP_P/reference/tests"
+printf '#!/usr/bin/env bash\nif [ -f "%s" ]; then exit 0; else : > "%s"; exit 1; fi\n' "$MARK_P" "$MARK_P" > "$TMP_P/reference/tests/acceptance-block.test.sh"
+chmod +x "$TMP_P/reference/tests/acceptance-block.test.sh"
+printf 'base\n' > "$TMP_P/README.md"; git -C "$TMP_P" add -A; git -C "$TMP_P" commit -qm base 2>/dev/null
+git -C "$TMP_P" push -q origin HEAD:refs/heads/charter/5 2>/dev/null
+printf 'leaf\n' > "$TMP_P/leaf.txt"; git -C "$TMP_P" add -A; git -C "$TMP_P" commit -qm leaf 2>/dev/null
+git -C "$TMP_P" push -q origin HEAD:refs/heads/leaf/42 2>/dev/null; rm -rf "$TMP_P"
+LSHA_P=$(git ls-remote "$REMOTE_P" refs/heads/leaf/42 | awk '{print $1}')
+BSHA_P=$(git ls-remote "$REMOTE_P" refs/heads/charter/5 | awk '{print $1}')
+CFILE_P="${CACHE_P}/${LSHA_P}_${BSHA_P}"
+rc=0; CB_VERIFY_CACHE="$CACHE_P" CB_VERIFY_CONFIRM_N=2 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 --remote "$REMOTE_P" 2>/dev/null || rc=$?
+if [ "$rc" -ne 1 ]; then ok "anti-poison: first call NOT terminal fail (exit $rc, retryable)"; else ko "anti-poison: first call terminal fail (exit 1) — flake permanently cached"; fi
+if [ -f "$CFILE_P" ] && [ "$(cat "$CFILE_P" 2>/dev/null)" = "fail" ]; then ko "anti-poison: terminal 'fail' cached on single transient red"; else ok "anti-poison: no terminal 'fail' cached after single transient red"; fi
+rc=0; CB_VERIFY_CACHE="$CACHE_P" CB_VERIFY_CONFIRM_N=2 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 --remote "$REMOTE_P" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then ok "anti-poison: second call recovers → pass (not permanently blocked)"; else ko "anti-poison: second call expected pass (exit 0), got $rc"; fi
+
+# =============================================================================
+# Test 6 (#195): N-confirmation + single red-counter (blocker #5)
+# =============================================================================
+echo "=== Test 6 (#195): N-confirmation + single red-counter ==="
+REMOTE_N="$ROOT/remote-ncfm.git"; CACHE_N="$ROOT/cache-ncfm"
+mkdir -p "$CACHE_N"; rm -rf "$REMOTE_N"; git init --bare -q "$REMOTE_N"
+TMP_N="$(mktemp -d)"; git clone -q "$REMOTE_N" "$TMP_N" 2>/dev/null
+git -C "$TMP_N" config user.email t@t; git -C "$TMP_N" config user.name T
+mkdir -p "$TMP_N/reference/tests"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP_N/reference/tests/acceptance-block.test.sh"
+chmod +x "$TMP_N/reference/tests/acceptance-block.test.sh"
+printf 'base\n' > "$TMP_N/README.md"; git -C "$TMP_N" add -A; git -C "$TMP_N" commit -qm base 2>/dev/null
+git -C "$TMP_N" push -q origin HEAD:refs/heads/charter/5 2>/dev/null
+printf 'leaf\n' > "$TMP_N/leaf.txt"; git -C "$TMP_N" add -A; git -C "$TMP_N" commit -qm leaf 2>/dev/null
+git -C "$TMP_N" push -q origin HEAD:refs/heads/leaf/42 2>/dev/null; rm -rf "$TMP_N"
+LSHA_N=$(git ls-remote "$REMOTE_N" refs/heads/leaf/42 | awk '{print $1}')
+BSHA_N=$(git ls-remote "$REMOTE_N" refs/heads/charter/5 | awk '{print $1}')
+CFILE_N="${CACHE_N}/${LSHA_N}_${BSHA_N}"; RCNT_N="${CFILE_N}.redcount"
+rc=0; CB_VERIFY_CACHE="$CACHE_N" CB_VERIFY_CONFIRM_N=2 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 --remote "$REMOTE_N" 2>/dev/null || rc=$?
+if [ "$rc" -eq 3 ]; then ok "N-confirm: call1 retryable (exit 3, <N)"; else ko "N-confirm: call1 expected exit 3, got $rc"; fi
+if [ "$(cat "$RCNT_N" 2>/dev/null)" = "1" ]; then ok "N-confirm: single counter=1 after call1"; else ko "N-confirm: counter expected 1, got '$(cat "$RCNT_N" 2>/dev/null)'"; fi
+if [ ! -f "$CFILE_N" ] || [ "$(cat "$CFILE_N" 2>/dev/null)" != "fail" ]; then ok "N-confirm: no terminal fail cached before N"; else ko "N-confirm: terminal fail cached before N"; fi
+rc=0; CB_VERIFY_CACHE="$CACHE_N" CB_VERIFY_CONFIRM_N=2 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 --remote "$REMOTE_N" 2>/dev/null || rc=$?
+if [ "$rc" -eq 1 ]; then ok "N-confirm: call2 confirmed terminal fail (exit 1, >=N)"; else ko "N-confirm: call2 expected exit 1, got $rc"; fi
+if [ "$(cat "$CFILE_N" 2>/dev/null)" = "fail" ]; then ok "N-confirm: terminal fail cached at N"; else ko "N-confirm: expected terminal fail cached at N"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

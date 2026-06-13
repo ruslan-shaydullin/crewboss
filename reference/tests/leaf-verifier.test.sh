@@ -134,7 +134,7 @@ VERDICT3="$ROOT/verdict3.txt"
 setup_bare_remote "$REMOTE3" "charter/5" "leaf/42" "fail"
 
 rc=0
-bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
+CB_VERIFY_CONFIRM_N=1 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
   --remote "$REMOTE3" --verdict-file "$VERDICT3" 2>/dev/null || rc=$?
 [ "$rc" -eq 1 ] \
   && ok "RED-class2: exit 1 (engine RED — catches blind merge without real CI)" \
