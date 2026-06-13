@@ -1,0 +1,91 @@
+# per-leaf-manifest — per-leaf verify-merged ALLOW / EXCLUDED filter (issue #194)
+#
+# PURPOSE: Only leaf-unit-safe tests run in per-leaf verify-merged (I2 fix / F-A fix).
+#   Heavy/timing/launcher-self/integration tests run ONLY in the GHA full suite
+#   (ci.yml:21-33) where each job runs in an isolated single-container environment.
+#
+# CRITERION for ALLOW (leaf-unit-safe):
+#   Verdict = pure function of merged content (parse/logic/static grep).
+#   NO spawning launcher loops, NO background processes, NO timing/poll/sleep asserts,
+#   NO recursive verify-merged calls.
+#
+# FORMAT: one entry per line, "ALLOW <basename>" or "EXCLUDED <basename>".
+#   <basename> = filename without .test.sh extension.
+#   Lines starting with '#' or blank are ignored.
+#
+# GUARD: union(ALLOW, EXCLUDED) MUST equal the full reference/tests/*.test.sh listing.
+#   A new unclassified test causes the guard to fail-closed (leaf-verifier.test.sh).
+#   To add a test: classify it here first; fail-safe default is EXCLUDED.
+#
+# ALLOW = 10  (leaf-unit-safe; run per-leaf AND in GHA full suite)
+# EXCLUDED = 35  (launcher-self/integration/timing/heavy-git/recursive; GHA full suite only)
+
+# ── ALLOW — leaf-unit-safe (10) ───────────────────────────────────────────────
+ALLOW acceptance-block
+ALLOW cli-smoke
+ALLOW gate-comment-payload
+ALLOW launchable
+ALLOW manifest-lib
+ALLOW marker-gate
+ALLOW prep-params
+ALLOW runtime-lint
+ALLOW spawn-unit
+ALLOW token-hygiene
+
+# ── EXCLUDED — GHA full suite only (35) ──────────────────────────────────────
+# Timing / launcher-self (spawn real launcher loops, timing-asserts, pkill)
+EXCLUDED ci-taxonomy
+EXCLUDED finale-nonblocking
+EXCLUDED killswitch
+EXCLUDED launcher-dryrun
+EXCLUDED launcher-gh-scope
+EXCLUDED launcher-integration
+EXCLUDED run-liveness
+EXCLUDED ui-loop-mode
+
+# Integration / heavy-git (spawn integrator, create many temp repos, real I/O+fork)
+EXCLUDED charter-branch
+EXCLUDED charter-finale
+EXCLUDED integrator
+EXCLUDED integrator-atomicity
+EXCLUDED integrator-loop
+EXCLUDED integrator-scope
+EXCLUDED rework-contract
+
+# Recursive verify-merged (self-referential — call verify-merged from inside verify-merged)
+EXCLUDED leaf-verifier
+EXCLUDED leaf-verifier-cache
+
+# Process / doctor (spawn real background processes, kill-by-port)
+EXCLUDED doctor-drift
+EXCLUDED doctor-process
+
+# API server (spawn API server processes, kill them)
+EXCLUDED ui-api-contract
+EXCLUDED ui-run-contract
+
+# Freshness / staleness (real git history + date arithmetic)
+EXCLUDED base-freshness
+
+# Deploy steps (heavy: provision, deploy pipeline, build artifacts)
+EXCLUDED deploy-contract
+EXCLUDED deploy-step
+EXCLUDED deploy-verify
+EXCLUDED provision-build
+
+# Gate infra (gate subcommands that spawn integrator/launcher)
+EXCLUDED gate-charter-tree
+EXCLUDED gate-integrator
+EXCLUDED gate-layer-a
+EXCLUDED gate-layer-b
+EXCLUDED gate-repo-dir
+EXCLUDED infra-false-green
+
+# run-env (spawns background processes + poll-deadline)
+EXCLUDED run-env-contract
+
+# Needs-rework contract (integrator-dependent)
+EXCLUDED needs-rework
+
+# Runtime manifest (auto-regen, timing-sensitive re-scan)
+EXCLUDED runtime-manifest

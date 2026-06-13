@@ -301,6 +301,10 @@ _resolve_verify_cache_dir() {
 #   as a script path → false fail.
 # F2 timeout: timeout exit 124 → infra (exit 2), not fail.  A hanging test
 #   must not block the host integration loop.
+# F-A / I2 fix (issue #194): per-leaf ALLOW-list via merged-tree manifest.
+#   Only leaf-unit-safe tests run per-leaf; heavy/timing/launcher-self/integration
+#   tests run only in GHA full suite.  Fail-safe: no manifest → no tests → pass.
+#   Manifest: reference/tests/per-leaf-manifest in the merged tree.
 # Security note: host executes arbitrary pushed bash outside jail; sole runtime
 #   constraint is CB_VERIFY_TIMEOUT.
 cmd_verify_merged() {
@@ -370,7 +374,22 @@ cmd_verify_merged() {
   #        to 124 (timeout convention) → infra (exit 2).
   #    Tests run from the clone root (reference/tests/ and reference/bin/ come from
   #    the clone, not from ~/cbnet box-deploy — HD-2 fresh-clone requirement).
+  #
+  #    I2/F-A fix (issue #194): per-leaf ALLOW-list — only leaf-unit-safe tests run
+  #    per-leaf.  Heavy/timing/launcher-self/integration tests are EXCLUDED from per-leaf
+  #    and run only in the GHA full suite (ci.yml:21-33).
+  #    Manifest: $merged_dir/reference/tests/per-leaf-manifest (ALLOW <basename> lines).
+  #    Fail-safe / DENY-by-default: if no manifest or test not listed → test is skipped.
+  #    An ALLOW-listed test that exits non-zero still yields verdict=fail (I5 preserved).
   local suite_rc=0
+
+  # Read per-leaf ALLOW-list from the merged tree's manifest (before spawning subshell).
+  # Fail-safe: if manifest absent or unreadable → _per_leaf_allows="" → all tests skipped.
+  local _per_leaf_allows=""
+  local _manifest_path="$merged_dir/reference/tests/per-leaf-manifest"
+  if [ -f "$_manifest_path" ]; then
+    _per_leaf_allows=$(grep '^ALLOW ' "$_manifest_path" 2>/dev/null | awk '{print $2}')
+  fi
 
   # Start engine run in background subshell
   (
@@ -378,6 +397,10 @@ cmd_verify_merged() {
     shopt -s nullglob
     fail=0
     for t in reference/tests/*.test.sh; do
+      # ALLOW-list filter (I2/F-A fix): skip test unless its basename is in the ALLOW list.
+      # Fail-safe: if _per_leaf_allows is empty (no manifest), skip all tests → pass.
+      _tname=$(basename "$t" .test.sh)
+      printf '%s\n' "$_per_leaf_allows" | grep -qx "$_tname" || continue
       bash "$t" || fail=1
     done
     exit "$fail"
