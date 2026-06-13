@@ -7,6 +7,26 @@ CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"
 BOARD="$CB_HOME/board-gh.sh"
 ID="$1"; ROLE="$2"
+HERE_PREP="$(cd "$(dirname "$0")" && pwd)"
+_ROLE_IN_MANIFEST=0
+# ── CB_MANIFEST: source manifest library when configured ─────────────────────
+# Same search order as crewboss-launcher-gh.sh: CB_MANIFEST_LIB env override →
+# sibling ../launcher/manifest.sh (repo checkout) → $CB_HOME/manifest.sh (box deploy).
+if [ -n "${CB_MANIFEST:-}" ]; then
+  _mlib=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _mlib="$CB_MANIFEST_LIB"
+  elif [ -f "$HERE_PREP/../launcher/manifest.sh" ]; then
+    _mlib="$HERE_PREP/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _mlib="$CB_HOME/manifest.sh"
+  fi
+  if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
+    echo "prep-spawn-gh: CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)" >&2; exit 2
+  fi
+  # shellcheck source=../launcher/manifest.sh
+  source "$_mlib"
+fi
 PR_REPO=$(bash "$BOARD" get "$ID" pr_repo)
 [ -n "$PR_REPO" ] || { echo "adapter-gh: #$ID has no pr_repo" >&2; exit 2; }
 GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
@@ -37,9 +57,33 @@ else
   CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
   CB=""
   [ -n "$CHARTER" ] && CB="charter/$CHARTER"
+  # CB_MANIFEST role validation: fail-fast on unknown role: label (typo guard).
+  # Without CB_MANIFEST this block is a no-op (HD-1: legacy path unchanged).
+  # File-existence check avoids pipefail+grep-q SIGPIPE on short role lists.
+  if [ -n "${CB_MANIFEST:-}" ]; then
+    if [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
+      _ROLE_IN_MANIFEST=1
+    else
+      echo "prep-spawn-gh: role '$ROLE' not found in manifest $CB_MANIFEST/roles/ — check role: label (typo?)" >&2; exit 2
+    fi
+  fi
   if [ -n "$CB" ]; then
     BRANCH="leaf/$ID-$TS"   # charter leaves must use leaf/ prefix so integrator can find them
-    PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+    if [ "$_ROLE_IN_MANIFEST" = "1" ]; then
+      # Role-resolved prompt: hard-rules block VERBATIM + role body before ---- TASK ----.
+      _ROLE_BODY="$(manifest_role_prompt "$CB_MANIFEST" "$ROLE")"
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+Hard rules for THIS run:
+- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
+
+$_ROLE_BODY
+
+---- TASK (issue #$ID) ----
+$(bash "$BOARD" get "$ID" prompt)"
+    else
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
 - When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
@@ -47,6 +91,7 @@ Hard rules for THIS run:
 
 ---- TASK (issue #$ID) ----
 $(bash "$BOARD" get "$ID" prompt)"
+    fi
   else
     PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
 - You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
@@ -135,6 +180,14 @@ echo ".task.prompt" >> "$WA/work/.git/info/exclude"
 if [ "${CB_GOVERNED:-0}" = "1" ] && [ -d "$CB_HOME/gov/.claude" ]; then
   cp -r "$CB_HOME/gov/.claude" "$WA/work/.claude"
   printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+# CB_MANIFEST: inject role agent file into work-tree so claude --agent <ROLE> finds it.
+# Precedent: CB_GOVERNED injection above (cp + .git/info/exclude). No-op without CB_MANIFEST.
+if [ "$_ROLE_IN_MANIFEST" = "1" ]; then
+  mkdir -p "$WA/work/.claude/agents"
+  cp "$CB_MANIFEST/roles/$ROLE.md" "$WA/work/.claude/agents/$ROLE.md"
+  grep -qF '.claude' "$WA/work/.git/info/exclude" 2>/dev/null \
+    || printf '.claude\n' >> "$WA/work/.git/info/exclude"
 fi
 
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"
