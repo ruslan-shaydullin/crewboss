@@ -3,9 +3,9 @@
 # Class i: integration with gh/spawn stubs + throwaway bare git remote.
 # Models real-world conditions the loop must survive:
 #
-# RED-a (CI longer than tick): spawn is instant; CI starts pending, flips to success
-#   after K statusCheckRollup calls. Without fix: loop exits idle (fresh=0, running=0)
-#   before CI flips → PR never merged. With fix: review-leaf holds loop alive until merge.
+# RED-a (CI longer than tick): REMOVED as obsolete (#176 Ф-A).
+#   петля больше не опрашивает statusCheckRollup; verify-merged синхронен (один тик).
+#   Механизм «CI длиннее тика» с box-native отсутствует.
 #
 # RED-b (PR-list read-after-write lag): leaf transitions to review, but gh pr list
 #   returns empty for the first N calls (simulating GH lag). Without fix: loop exits idle
@@ -172,29 +172,9 @@ case "$obj $verb" in
     while [ $# -gt 0 ]; do case "$1" in --json) json_fields="$2"; shift ;; esac; shift; done
     case "$json_fields" in
       statusCheckRollup)
-        # CI flip: if ci-flip-at-$n present, track calls and flip to success after N calls (RED-a)
-        flipfile="$PRDIR/ci-flip-at-$n"
-        if [ -f "$flipfile" ]; then
-          flip_at="$(cat "$flipfile")"
-          callsfile="$PRDIR/ci-calls-$n"
-          ci_calls=0; [ -f "$callsfile" ] && ci_calls="$(cat "$callsfile")"
-          ci_calls=$((ci_calls+1))
-          printf '%d' "$ci_calls" > "$callsfile"
-          if [ "$ci_calls" -le "$flip_at" ]; then
-            printf '{"statusCheckRollup":[{"conclusion":null,"status":"IN_PROGRESS"}]}\n'
-          else
-            printf '{"statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}\n'
-          fi
-        else
-          status="$(cat "$PRDIR/checks-$n" 2>/dev/null || echo success)"
-          case "$status" in
-            success) cr='[{"conclusion":"SUCCESS","status":"COMPLETED"}]' ;;
-            failure) cr='[{"conclusion":"FAILURE","status":"COMPLETED"}]' ;;
-            pending) cr='[{"conclusion":null,"status":"IN_PROGRESS"}]' ;;
-            *)       cr='[]' ;;
-          esac
-          printf '{"statusCheckRollup":%s}\n' "$cr"
-        fi ;;
+        # Anti-фальш (#176): always return EMPTY rollup — loop no longer reads statusCheckRollup.
+        # RED-a (ci-flip) removed as obsolete; verify-merged provides box-verdict.
+        printf '{"statusCheckRollup":[]}\n' ;;
       mergeCommit)
         sha="$(cat "$PRDIR/merge-sha-$n" 2>/dev/null || echo "")"
         printf '{"mergeCommit":{"oid":"%s"}}\n' "$sha" ;;
@@ -292,60 +272,15 @@ run_loop(){
     CB_IDLE_CONFIRM=2 \
     CB_MAX_PARALLEL=4 \
     CB_RETRY_CAP=3 \
+    CREWBOSS_CHARTER= \
     env "$@" \
     bash "$LAUNCHER" run >"$logfile" 2>&1 || true
 }
 
 # =============================================================================
-# RED-a: CI longer than a tick
-# =============================================================================
-echo "== RED-a: CI longer than a tick — loop stays alive until CI flips to success =="
-
-CBHOME_A="$ROOT/cbhome_a"
-LOGFILE_A="$ROOT/loop_a.log"
-reset_sandbox "$CBHOME_A"
-
-cat > "$BOARD_STATE" <<'JSON'
-[
-  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],
-   "body":"charter","comments":[]},
-  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],
-   "body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
-]
-JSON
-
-# CI will be pending for the first 4 statusCheckRollup calls, then success.
-# CB_IDLE_CONFIRM=2 means without the fix: idle-exit at ~tick 4 with only 2 CI polls
-# (still pending) → PR never merged.  With the fix: review-leaf holds loop alive until
-# CI flips at poll #5 → merge → leaf CLOSED → idle-exit.
-printf '4' > "$PRDIR/ci-flip-at-10"
-
-run_loop "$CBHOME_A" "$LOGFILE_A"
-
-# After the loop: PR merged proves the loop DID wait for CI to flip.
-pr_merged 10 \
-  && ok "RED-a: PR #10 merged (loop waited for CI to flip to success)" \
-  || ko "RED-a: PR #10 NOT merged — loop exited idle before CI flipped"
-
-[ "$(issue_state 10)" = "CLOSED" ] \
-  && ok "RED-a: #10 CLOSED after CI success" \
-  || ko "RED-a: #10 not CLOSED — premature idle exit"
-
-# Loop should have polled CI more than flip_at times (proves it actually waited)
-ci_calls_a="$(cat "$PRDIR/ci-calls-10" 2>/dev/null || echo 0)"
-[ "$ci_calls_a" -gt 4 ] \
-  && ok "RED-a: CI polled ${ci_calls_a} times (> 4 flip threshold — loop waited)" \
-  || ko "RED-a: CI polled only ${ci_calls_a} times — loop exited too early"
-
-# Loop should have exited with idle-complete (not max-ticks)
-grep -q "idle — run complete" "$LOGFILE_A" \
-  && ok "RED-a: loop exited cleanly (idle — run complete, not max-ticks)" \
-  || ko "RED-a: loop did not exit with idle — run complete"
-
-grep -q "max ticks" "$LOGFILE_A" \
-  && ko "RED-a: loop hit max-ticks (should have exited idle after merge)" \
-  || ok "RED-a: loop did NOT hit max-ticks"
-
+# RED-a: REMOVED (obsolete, #176 Ф-A)
+# CI-polling-liveness (ci-flip-at-$n / statusCheckRollup multi-tick) отсутствует:
+# петля не читает statusCheckRollup; verify-merged синхронен (один тик).
 # =============================================================================
 # RED-b: PR-list read-after-write lag
 # =============================================================================

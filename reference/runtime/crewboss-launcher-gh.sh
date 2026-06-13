@@ -148,39 +148,9 @@ claim_and_spawn(){ # id
   route "$id" "$ex"
 }
 
-# ── CI classifier ────────────────────────────────────────────────────────────
-# _classify_ci <rollup_json_array>
-# Normalises both CheckRun (.status/.conclusion) and StatusContext (.state) nodes.
-# Returns: "success" | "failure" | "pending"
-# SUCCESS of either type = success; FAILURE/ERROR = failure; everything else = pending.
-_classify_ci(){
-  local arr="$1"
-  printf '%s' "$arr" | jq -r '
-    [ .[] |
-      if .state != null then
-        # StatusContext node: use .state (SUCCESS / FAILURE / ERROR / PENDING / …)
-        if   .state == "SUCCESS"                               then "success"
-        elif (.state == "FAILURE" or .state == "ERROR")       then "failure"
-        else "pending" end
-      else
-        # CheckRun node: use .status / .conclusion
-        if .status == "COMPLETED" then
-          if   (.conclusion == "SUCCESS" or .conclusion == "SKIPPED") then "success"
-          elif (.conclusion == "FAILURE" or .conclusion == "ERROR"
-               or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT") then "failure"
-          else "pending" end
-        else "pending" end
-      end
-    ] |
-    if   (map(select(. == "failure")) | length) > 0 then "failure"
-    elif (map(select(. == "pending")) | length) > 0 then "pending"
-    else "success" end
-  ' 2>/dev/null || echo "pending"
-}
-
 # ── integrator cycle: merge review-state leaf PRs into charter/C ─────────────
 # Called every tick of cmd_run after finished-spawn routing.
-# GREEN-BEFORE-MERGE: CI (statusCheckRollup) must be success before any merge.
+# GREEN-BEFORE-MERGE: verify-merged (engine suite on merged tree) must pass before merge.
 # Idempotent: merged/closed leaves not re-processed.  All errors logged, non-fatal.
 _integrator_cycle(){
   if [ -z "$GIT_REMOTE" ]; then
@@ -194,7 +164,7 @@ _integrator_cycle(){
   review_ids=$(board review-leaves 2>/dev/null || true)
   [ -n "$review_ids" ] || return 0
 
-  local open_prs="" merged_prs="" rid pr_entry pr_head pr_num pr_base ci_raw ci_rc rollup_arr ci_status conflict_files try_exit
+  local open_prs="" merged_prs="" rid pr_entry pr_head pr_num pr_base conflict_files try_exit
   local merge_sha="" file_list="" merge_rc=0 close_rc=0 pr_state="" rec_num="" rec_sha_r="" rec_rc=0
 
   # Snapshot open PRs once per cycle; match leaves by headRefName prefix leaf/<rid>- OR rework/<rid>-
@@ -279,51 +249,6 @@ _integrator_cycle(){
       *) log "integrator: #$rid PR #$pr_num base='$pr_base' not charter/* — skip"; continue ;;
     esac
 
-    # ── GREEN-BEFORE-MERGE: CI must be success ────────────────────────────────
-    # (a) Distinguish infra error from real empty rollup.
-    # (b) Normalise both CheckRun and StatusContext nodes via _classify_ci.
-    # (c) Empty rollup: apply no-CI policy with per-leaf tick counter.
-    ci_rc=0
-    ci_raw=$(gh pr view "$pr_num" -R "$CB_REPO" --json statusCheckRollup 2>/dev/null) || ci_rc=$?
-
-    if [ "$ci_rc" -ne 0 ]; then
-      # Infra error reading rollup — log and retry next tick; do NOT count as empty rollup.
-      log "integrator: #$rid PR #$pr_num gh error reading CI rollup (exit $ci_rc) — retry next tick"
-      continue
-    fi
-
-    rollup_arr=$(printf '%s' "$ci_raw" | jq -c '.statusCheckRollup // []' 2>/dev/null) || rollup_arr="[]"
-
-    if [ "$rollup_arr" = "[]" ]; then
-      # Empty rollup: apply no-CI policy (human decision required, per spec §p.2).
-      # Counter is per-leaf in $STATE so it persists across ticks within a run.
-      local empty_limit="${CB_CI_EMPTY_TICKS:-30}"
-      local prev_empty; prev_empty=$(sget "$rid" ci_empty_ticks); prev_empty=${prev_empty:-0}
-      local new_empty; new_empty=$((prev_empty + 1))
-      sset "$rid" ci_empty_ticks "$new_empty"
-      if [ "$new_empty" -ge "$empty_limit" ]; then
-        log "integrator: #$rid PR #$pr_num empty CI rollup ${new_empty} ticks (≥${empty_limit}) — blocking, needs human"
-        board route "$rid" blocked \
-          "нет CI — на человека: PR #$pr_num имеет пустой CI rollup после ${new_empty} тиков. Добавьте CI или снимите метку blocked вручную." \
-          >/dev/null || true
-        sset "$rid" int_done "no-ci-blocked"
-      else
-        log "integrator: #$rid PR #$pr_num CI rollup пустой (тик ${new_empty}/${empty_limit}) — ожидание"
-      fi
-      continue
-    fi
-
-    # Real nodes present: reset empty counter and classify.
-    sset "$rid" ci_empty_ticks "0"
-    ci_status=$(_classify_ci "$rollup_arr")
-
-    case "$ci_status" in
-      pending)  log "integrator: #$rid PR #$pr_num CI pending — wait next tick"; continue ;;
-      failure)  log "integrator: #$rid PR #$pr_num CI failed — not merging"; continue ;;
-      success)  ;;
-      *)        log "integrator: #$rid PR #$pr_num CI='$ci_status' unknown — skip"; continue ;;
-    esac
-
     # ── try-merge dry-run ─────────────────────────────────────────────────────
     # Exit codes from crewboss-integrator.sh try-merge:
     #   0 = clean (safe to merge)
@@ -337,8 +262,22 @@ _integrator_cycle(){
       # Infra error: keep leaf in review and retry next tick (no needs-rework). [F6 #112]
       log "integrator: #$rid PR #$pr_num try-merge infra error (exit 2) — keeping in review, retry next tick"
     elif [ "$try_exit" -eq 0 ]; then
+      # Clean merge: run verify-merged (engine suite on merged tree) before merging. [#176]
+      local vm_exit=0
+      bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
+           --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null || vm_exit=$?
+      if [ "$vm_exit" -eq 1 ]; then
+        # Engine RED on merged tree — do NOT merge; leave leaf in status:review (retryable).
+        log "integrator: #$rid PR #$pr_num verify-merged FAIL (engine red on merged tree) — staying in review"
+        continue
+      elif [ "$vm_exit" -eq 2 ]; then
+        # Infra error — log and retry next tick (same as try-merge infra). [F6]
+        log "integrator: #$rid PR #$pr_num verify-merged infra error (exit 2) — retry next tick"
+        continue
+      fi
+      # verify-merged PASS (exit 0): proceed to merge.
       # Clean: merge PR → verify MERGED → close leaf → set int_done (all-or-nothing). [F5 #111]
-      log "integrator: #$rid PR #$pr_num CI=green try-merge=clean — merging"
+      log "integrator: #$rid PR #$pr_num verify-merged=pass try-merge=clean — merging"
       merge_rc=0
       gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null || merge_rc=$?
       # Verify the PR is actually MERGED (guards against silent server-side rejections).
