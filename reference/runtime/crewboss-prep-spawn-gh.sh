@@ -72,9 +72,49 @@ else
   CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
   CB=""
   [ -n "$CHARTER" ] && CB="charter/$CHARTER"
+  # manifest role-validation: when CB_MANIFEST is set, ROLE must exist in the manifest.
+  # Fail-fast on unknown roles so a typo in role: label never silently falls back to
+  # the generic executor prompt (issue #137). Skipped entirely without CB_MANIFEST (HD-1).
+  _ROLE_SECTION=""
+  if [ -n "${CB_MANIFEST:-}" ]; then
+    _HERE_PREP_X="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _mlib_x=""
+    if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+      _mlib_x="$CB_MANIFEST_LIB"
+    elif [ -f "$_HERE_PREP_X/../launcher/manifest.sh" ]; then
+      _mlib_x="$_HERE_PREP_X/../launcher/manifest.sh"
+    elif [ -f "$CB_HOME/manifest.sh" ]; then
+      _mlib_x="$CB_HOME/manifest.sh"
+    fi
+    if [ -z "$_mlib_x" ] || [ ! -f "$_mlib_x" ]; then
+      echo "prep-spawn: CB_MANIFEST set but manifest library not found (set CB_MANIFEST_LIB or place manifest.sh in $CB_HOME/)" >&2; exit 2
+    fi
+    # shellcheck source=../launcher/manifest.sh
+    source "$_mlib_x"
+    if [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
+      _ROLE_SECTION=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE")
+    else
+      echo "prep-spawn: role '$ROLE' not found in manifest '$CB_MANIFEST' — typo in role: label?" >&2
+      exit 2
+    fi
+  fi
   if [ -n "$CB" ]; then
     BRANCH="leaf/$ID-$TS"   # charter leaves must use leaf/ prefix so integrator can find them
-    PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+    if [ -n "$_ROLE_SECTION" ]; then
+      # role-resolved executor: insert role body before ---- TASK ---- (issue #137).
+      # Hard-rules block is preserved VERBATIM (HD-1); only the role section is added.
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+Hard rules for THIS run:
+- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
+
+$_ROLE_SECTION
+
+---- TASK (issue #$ID) ----
+$(bash "$BOARD" get "$ID" prompt)"
+    else
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
 - When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
@@ -82,6 +122,7 @@ Hard rules for THIS run:
 
 ---- TASK (issue #$ID) ----
 $(bash "$BOARD" get "$ID" prompt)"
+    fi
   else
     PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
 - You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
@@ -170,6 +211,15 @@ echo ".task.prompt" >> "$WA/work/.git/info/exclude"
 if [ "${CB_GOVERNED:-0}" = "1" ] && [ -d "$CB_HOME/gov/.claude" ]; then
   cp -r "$CB_HOME/gov/.claude" "$WA/work/.claude"
   printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+# role-agent injection (CB_MANIFEST, issue #137): materialise $CB_MANIFEST/roles/$ROLE.md
+# into .claude/agents/$ROLE.md so claude --agent $ROLE resolves the agent in the work-tree
+# (CB_GOVERNED-injection precedent; _ROLE_SECTION is non-empty iff role is manifest-validated).
+if [ -n "${_ROLE_SECTION:-}" ]; then
+  mkdir -p "$WA/work/.claude/agents"
+  cp "$CB_MANIFEST/roles/$ROLE.md" "$WA/work/.claude/agents/$ROLE.md"
+  grep -qxF '.claude' "$WA/work/.git/info/exclude" 2>/dev/null \
+    || printf '.claude\n' >> "$WA/work/.git/info/exclude"
 fi
 
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"
