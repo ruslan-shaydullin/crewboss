@@ -372,6 +372,40 @@ grep -q "max ticks" "$LOGFILE_C" \
   || ok "RED-c: loop did NOT hit max-ticks"
 
 # =============================================================================
+# RED-d (#196): confirmed verify-merged RED → escalate (blocked at cap) + NOT merged (I5) + idle-exit (I4)
+# =============================================================================
+echo "== RED-d: verify-merged confirmed RED → escalation (blocked), NOT merged, loop exits =="
+CBHOME_D="$ROOT/cbhome_d"; LOGFILE_D="$ROOT/loop_d.log"
+reset_sandbox "$CBHOME_D"
+# Push charter/5 with a RED acceptance-block test (ALLOW-name → secure filter runs it) +
+# leaf/42 (non-conflicting) → merged tree is deterministically RED.
+WD="$(mktemp -d)"; git clone -q "$REMOTE" "$WD" 2>/dev/null
+git -C "$WD" config user.email t@t; git -C "$WD" config user.name T
+git -C "$WD" checkout -q -b cb5 origin/main 2>/dev/null
+mkdir -p "$WD/reference/tests"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WD/reference/tests/acceptance-block.test.sh"
+chmod +x "$WD/reference/tests/acceptance-block.test.sh"
+git -C "$WD" add -A; git -C "$WD" commit -qm "charter5 red" 2>/dev/null
+git -C "$WD" push -q origin cb5:refs/heads/charter/5 2>/dev/null
+printf 'leaf change\n' > "$WD/leaf.txt"; git -C "$WD" add -A; git -C "$WD" commit -qm "leaf42" 2>/dev/null
+git -C "$WD" push -q origin cb5:refs/heads/leaf/42 2>/dev/null
+rm -rf "$WD"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:review"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+touch "$PRDIR/20"; printf 'charter/5' > "$PRDIR/base-20"; printf 'leaf/42' > "$PRDIR/head-20"
+run_loop "$CBHOME_D" "$LOGFILE_D" "CB_VERIFY_CONFIRM_N=1" "CB_REWORK_CAP=0" "CB_MAX_TICKS=20"
+if has_label 20 "status:blocked"; then ok "RED-d: #20 → status:blocked (verify-red escalation at rework-cap)"; else ko "RED-d: #20 NOT blocked — escalation missing (busy-loop persists)"; fi
+if has_label 20 "status:review"; then ko "RED-d: #20 still status:review (not escalated)"; else ok "RED-d: status:review removed on escalation"; fi
+if [ -f "$PRDIR/merged-20" ]; then ko "RED-d: #20 PR MERGED despite verify-merged RED — green-before-merge BROKEN (I5)"; else ok "RED-d: #20 PR NOT merged (green-before-merge intact, I5)"; fi
+if grep -q "pr merge #20" "$GH_LOG"; then ko "RED-d: merge command issued for RED #20 (I5 broken)"; else ok "RED-d: no merge command for RED #20 (I5)"; fi
+if grep -q "idle — run complete" "$LOGFILE_D"; then ok "RED-d: loop exited cleanly (idle, not max-ticks) — I4 finiteness"; else ko "RED-d: loop did not idle-exit (busy-loop persists)"; fi
+if grep -q "max ticks" "$LOGFILE_D"; then ko "RED-d: loop hit max-ticks (escalation did not terminate busy-loop)"; else ok "RED-d: loop did NOT hit max-ticks"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
