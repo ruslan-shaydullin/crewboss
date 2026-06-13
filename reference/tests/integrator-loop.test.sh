@@ -161,14 +161,9 @@ case "$obj $verb" in
     while [ $# -gt 0 ]; do case "$1" in --json) json_fields="$2"; shift ;; esac; shift; done
     case "$json_fields" in
       statusCheckRollup)
-        # Per-PR check status: read from $PRDIR/checks-$n (success/failure/pending)
-        status="$(cat "$PRDIR/checks-$n" 2>/dev/null || echo success)"
-        case "$status" in
-          success) cr='[{"conclusion":"SUCCESS","status":"COMPLETED"}]' ;;
-          failure) cr='[{"conclusion":"FAILURE","status":"COMPLETED"}]' ;;
-          pending) cr='[{"conclusion":null,"status":"IN_PROGRESS"}]' ;;
-          *)       cr='[]' ;;
-        esac
+        # Anti-фальш (#176): always return EMPTY rollup — loop no longer reads statusCheckRollup.
+        # Merge decision comes from verify-merged (box-verdict), not GHA.
+        cr='[]'
         printf '{"statusCheckRollup":%s}\n' "$cr" ;;
       mergeCommit)
         sha="$(cat "$PRDIR/merge-sha-$n" 2>/dev/null || echo "")"
@@ -259,7 +254,7 @@ git -C "$WA" push -q origin "leaf/$ID-$TS" 2>/dev/null
 touch "$PRDIR/$ID"
 printf '%s' "$CB" > "$PRDIR/base-$ID"
 printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
-[ -f "$PRDIR/checks-$ID" ] || printf 'success' > "$PRDIR/checks-$ID"
+# Note: checks-$ID (statusCheckRollup) no longer read by loop (#176); gh stub always returns [].
 
 rm -rf "$WA"
 echo "spawn: done #$ID (charter $C)" >> "$SANDBOX/spawn.log"
@@ -307,7 +302,7 @@ git -C "$WA" push -q origin "leaf/$ID-$TS" 2>/dev/null
 touch "$PRDIR/$ID"
 printf '%s' "$CB" > "$PRDIR/base-$ID"
 printf '%s' "leaf/$ID-$TS" > "$PRDIR/head-$ID"
-[ -f "$PRDIR/checks-$ID" ] || printf 'success' > "$PRDIR/checks-$ID"
+# Note: checks-$ID (statusCheckRollup) no longer read by loop (#176); gh stub always returns [].
 
 rm -rf "$WA"
 exit 0
@@ -379,6 +374,7 @@ run_loop(){
     CB_IDLE_CONFIRM=2 \
     CB_MAX_PARALLEL=2 \
     CB_RETRY_CAP=3 \
+    CREWBOSS_CHARTER= \
     bash "$LAUNCHER" run 2>/dev/null
 }
 
@@ -567,10 +563,21 @@ ghlog_has "edit #11.*-\[.*needs-rework\]\|edit #11.*status:needs-rework" \
   # as part of close flow; the important fact is #11 is CLOSED (RED-2f).
 
 # =============================================================================
-# RED-4: RED CI blocks merge; GREEN CI allows merge (GREEN-BEFORE-MERGE, стадия-3)
+# RED-4: GREEN-BEFORE-MERGE via box-verdict (verify-merged engine suite) (#176 Ф-A)
+#
+# Anti-фальш: gh stub возвращает ПУСТОЙ statusCheckRollup (cr='[]') — петля не читает GHA.
+# Зелёность определяет engine на merged-дереве (verify-merged).
+#
+# Класс 2 (RED-4a–c): падающий reference/tests/<x>.test.sh в leaf-ветке ДО push
+#   → engine RED на merged-дереве → НЕ влит; лист остаётся status:review (retryable),
+#   НЕ blocked (иначе регресс empty-rollup-блока из находки #6).
+#
+# Класс 1 (RED-4d–e): merged-дерево пусто (leaf несёт только work-10.txt, без reference/tests/)
+#   → empty-suite pass (nullglob, #174) → лист СЛИТ (box-вердикт pass).
 # =============================================================================
-echo "== RED-4: red CI blocks merge; green CI allows merge =="
+echo "== RED-4: box-verdict (verify-merged) — engine RED blocks merge; engine pass allows merge =="
 
+# ── Класс 2: падающий тест в leaf → engine RED → NOT merged ──────────────────
 CBHOME4A="$ROOT/cbhome4a"
 reset_sandbox "$CBHOME4A"
 
@@ -583,45 +590,90 @@ cat > "$BOARD_STATE" <<'JSON'
 ]
 JSON
 
-# Pre-set check status to FAILURE before spawn runs
-printf 'failure' > "$PRDIR/checks-10"
+# Seed a FAILING reference/tests/fail.test.sh into leaf/10-1700000000 BEFORE push.
+# This causes verify-merged engine RED on merged tree → leaf NOT merged.
+_seed_tmp="$(mktemp -d)"
+git clone -q "$REMOTE" "$_seed_tmp" 2>/dev/null
+git -C "$_seed_tmp" config user.email t@t; git -C "$_seed_tmp" config user.name T
+# Create charter/5 branch (spawn stub needs it)
+git -C "$_seed_tmp" checkout -q -b "charter/5" 2>/dev/null || git -C "$_seed_tmp" checkout -q "charter/5" 2>/dev/null
+git -C "$_seed_tmp" push -q origin "charter/5" 2>/dev/null || true
+# Create leaf/10-1700000000 branch with a failing test
+git -C "$_seed_tmp" checkout -q -b "leaf/10-1700000000" "origin/charter/5" 2>/dev/null || \
+  git -C "$_seed_tmp" checkout -q -b "leaf/10-1700000000" "charter/5" 2>/dev/null
+printf 'work for #10\n' > "$_seed_tmp/work-10.txt"
+mkdir -p "$_seed_tmp/reference/tests"
+printf '#!/usr/bin/env bash\nexit 1  # always fails\n' > "$_seed_tmp/reference/tests/fail.test.sh"
+git -C "$_seed_tmp" add -A
+git -C "$_seed_tmp" commit -qm "leaf #10 work with failing test" 2>/dev/null
+git -C "$_seed_tmp" push -q origin "leaf/10-1700000000" 2>/dev/null
+rm -rf "$_seed_tmp"
+
+# Register the pre-seeded PR (bypass spawn stub for this leaf)
+touch "$PRDIR/10"
+printf 'charter/5'          > "$PRDIR/base-10"
+printf 'leaf/10-1700000000' > "$PRDIR/head-10"
+# Board: leaf already in status:review so integrator processes it immediately
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"the charter","comments":[]},
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:review"}],
+   "body":"task A\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
 
 run_loop "$CBHOME4A" "$SPAWN_STUB" "$REWORK_STUB"
 
-# After loop: PR merge-clean but CI red → NOT merged
+# Engine RED on merged tree → NOT merged
 pr_not_merged 10 \
-  && ok "RED-4a: CI=failure → PR #10 NOT merged" \
-  || ko "RED-4a: CI=failure → PR #10 should NOT be merged"
+  && ok "RED-4a: engine RED (failing test in leaf) → PR #10 NOT merged" \
+  || ko "RED-4a: engine RED → PR #10 should NOT be merged"
 
 [ "$(issue_state 10)" != "CLOSED" ] \
-  && ok "RED-4b: CI=failure → issue #10 NOT closed" \
-  || ko "RED-4b: CI=failure → issue #10 should NOT be closed"
+  && ok "RED-4b: engine RED → issue #10 NOT closed" \
+  || ko "RED-4b: engine RED → issue #10 should NOT be closed"
 
-# Verify it stayed in review (not needs-rework — CI failure is not a conflict)
+# F6: leaf stays in status:review (retryable), NOT blocked (anti-regress empty-rollup-blocker)
 has_label 10 "status:review" \
-  && ok "RED-4c: #10 remains in status:review after CI failure" \
-  || ok "RED-4c: (acceptable — loop exited with #10 in review or needs-rework)"
-  # Either review or needs-rework is acceptable; closed/merged is NOT (checked above).
+  && ok "RED-4c: #10 remains in status:review (retryable, NOT blocked)" \
+  || ok "RED-4c: (acceptable: loop exited; key: NOT closed/merged — checked above)"
+# Specifically must NOT be blocked
+no_label 10 "status:blocked" \
+  && ok "RED-4c-anti-regress: #10 NOT status:blocked (engine fail ≠ empty-rollup block)" \
+  || ko "RED-4c-anti-regress: #10 was blocked — regression to empty-rollup-blocker (finding #6)"
 
-# ── Phase 2: switch CI to success, run again ──────────────────────────────────
-printf 'success' > "$PRDIR/checks-10"
+# ── Класс 1: пустой rollup + empty suite pass → merged ───────────────────────
+# Same board.json (reset it to pre-review state for a clean new issue #10)
+reset_sandbox "$CBHOME4A"   # resets SANDBOX/PRDIR/GH_LOG, re-inits remote
 
-# Use a fresh state dir (same board.json which still has #10 in status:review)
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"the charter","comments":[]},
+  {"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],
+   "body":"task A\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+
+# Use a fresh state dir for class-1 phase
 CBHOME4B="$ROOT/cbhome4b"
 mkdir -p "$CBHOME4B"
 cp "$BOARD_GH_SRC"  "$CBHOME4B/board-gh.sh"
 cp "$LAUNCHABLE_SRC" "$CBHOME4B/launchable.sh"
 chmod +x "$CBHOME4B/board-gh.sh" "$CBHOME4B/launchable.sh"
 
+# Normal spawn creates leaf/10-1700000000 with only work-10.txt (no reference/tests/).
+# verify-merged → empty suite → pass (nullglob). PУСТОЙ statusCheckRollup (anti-фальш).
 run_loop "$CBHOME4B" "$SPAWN_STUB" "$REWORK_STUB"
 
 pr_merged 10 \
-  && ok "RED-4d: CI=success → PR #10 merged on re-run" \
-  || ko "RED-4d: CI=success → PR #10 should be merged"
+  && ok "RED-4d: empty rollup + engine pass (empty suite) → PR #10 merged" \
+  || ko "RED-4d: empty rollup + engine pass → PR #10 should be merged"
 
 [ "$(issue_state 10)" = "CLOSED" ] \
-  && ok "RED-4e: CI=success → issue #10 CLOSED" \
-  || ko "RED-4e: CI=success → issue #10 should be CLOSED"
+  && ok "RED-4e: engine pass → issue #10 CLOSED" \
+  || ko "RED-4e: engine pass → issue #10 should be CLOSED"
 
 # =============================================================================
 echo
