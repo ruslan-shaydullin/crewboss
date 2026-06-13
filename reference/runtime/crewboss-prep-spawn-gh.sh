@@ -7,6 +7,20 @@ CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"
 BOARD="$CB_HOME/board-gh.sh"
 ID="$1"; ROLE="$2"
+# Source manifest library when CB_MANIFEST is set (analysis-role prompt support). [#136]
+# Same search order as the launcher: CB_MANIFEST_LIB override → adjacent launcher/ → CB_HOME.
+if [ -n "${CB_MANIFEST:-}" ]; then
+  HERE_SPAWN="$(cd "$(dirname "$0")" && pwd)"
+  _mlib_spawn=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _mlib_spawn="$CB_MANIFEST_LIB"
+  elif [ -f "$HERE_SPAWN/../launcher/manifest.sh" ]; then
+    _mlib_spawn="$HERE_SPAWN/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _mlib_spawn="$CB_HOME/manifest.sh"
+  fi
+  [ -n "$_mlib_spawn" ] && [ -f "$_mlib_spawn" ] && source "$_mlib_spawn" || true
+fi
 PR_REPO=$(bash "$BOARD" get "$ID" pr_repo)
 [ -n "$PR_REPO" ] || { echo "adapter-gh: #$ID has no pr_repo" >&2; exit 2; }
 GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
@@ -19,6 +33,8 @@ export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
+# An analysis role (manifest mode, from policy.analysis_roles) gets a prompt built from the
+# role file body + rubric.json + artifact contract + routing instruction. [#136]
 if [ "$ROLE" = "tech-lead" ]; then
   PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
 1. Start with 'Charter: #$ID'
@@ -28,6 +44,41 @@ if [ "$ROLE" = "tech-lead" ]; then
 After creating each sub-issue N, add the required label: gh issue edit N -R $PR_REPO --add-label type:agent
 
 Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
+
+$(bash "$BOARD" get "$ID" prompt)"
+elif [ -n "${CB_MANIFEST:-}" ] && \
+     type manifest_analysis_roles >/dev/null 2>&1 && \
+     manifest_analysis_roles "${CB_MANIFEST}" 2>/dev/null | grep -qx "${ROLE}"; then
+  # Analysis role: compose prompt from role-file body + rubric + artifact contract. [#136]
+  _role_prompt=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || echo "")
+  _rubric_content=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  PROMPT="${_role_prompt}
+
+## Rubric (objective floor — apply to every decision)
+\`\`\`json
+${_rubric_content}
+\`\`\`
+
+## Artifact contract (N-3 canon — parseable by composition-parse.sh)
+Post exactly the following block as a comment on charter issue #${ID}:
+
+  gh issue comment ${ID} -R ${PR_REPO} --body '<comment-body>'
+
+The comment body MUST contain this block verbatim (roles/leaves are repeatable lines):
+
+\`\`\`
+## Composition (machine)
+- approach: <одна строка описания подхода>
+- role: <role-id>
+- leaf: <leaf-id> -> <role-id>
+- est_cost_usd: <число>
+\`\`\`
+
+After posting the comment, route the charter to team-review:
+
+  gh issue edit ${ID} -R ${PR_REPO} --remove-label status:needs-analysis --add-label status:team-review
+
+Charter goal (issue body):
 
 $(bash "$BOARD" get "$ID" prompt)"
 else

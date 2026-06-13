@@ -23,6 +23,9 @@ SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
 # CB_PLAN_SPAWN: separate spawn for planning/tech-lead (default: same as CB_SPAWN so existing
 # setups that only set CB_SPAWN keep working; run-charter.sh sets both explicitly).
 PLAN_SPAWN="${CB_PLAN_SPAWN:-$SPAWN}"
+# CB_ANALYSIS_SPAWN: spawn script for the analysis stage (manifest mode).  Defaults to
+# PLAN_SPAWN so existing setups without CB_ANALYSIS_SPAWN keep working unchanged.
+ANALYSIS_SPAWN="${CB_ANALYSIS_SPAWN:-$PLAN_SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -94,6 +97,64 @@ _review_leaves_scoped(){
   fi
 }
 
+# _analysis_candidates_scoped: charters needing the analysis stage (manifest mode only).
+# Returns open type:charter issues in:
+#   - status:needs-analysis  (re-entry: analyst crashed or launcher restarted mid-analysis)
+#   - status:needs-plan without composition:approved and without hold (first-time routing)
+# Scoped to CHARTER_SCOPE when set. [#136]
+_analysis_candidates_scoped(){
+  local _raw _cid _ids
+  _raw=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null || echo '[]')
+  _ids=$(printf '%s' "$_raw" | jq -r '
+    .[] | select([.labels[].name] as $l
+      | ($l | index("type:charter")) != null
+      and (
+        (($l | index("status:needs-analysis")) != null)
+        or (
+          (($l | index("status:needs-plan")) != null)
+          and (($l | index("composition:approved")) == null)
+          and (($l | index("hold")) == null)
+        )
+      )
+    )
+    | .number' 2>/dev/null || true)
+  if [ "${CHARTER_SCOPE:-0}" = "0" ]; then
+    printf '%s\n' "$_ids"
+  else
+    for _cid in $_ids; do
+      [ "$_cid" = "$CHARTER_SCOPE" ] && echo "$_cid"
+    done
+  fi
+}
+
+# _manifest_liveness: returns 0 (alive) when manifest-pipeline work is pending in scope.
+# Alive: any scoped open charter in status:needs-analysis (analysis in-flight), OR in
+# status:team-review WITHOUT an open type:human-decision issue with "Charter: #<cid>"
+# (over-threshold escalation to human → run exits idle; next run picks up after approval). [#136]
+_manifest_liveness(){
+  local _raw _cid _has_hd
+  _raw=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo '[]')
+  for _cid in $(printf '%s' "$_raw" | jq -r '
+    .[] | select([.labels[].name] as $l
+      | ($l | index("type:charter")) != null and ($l | index("status:needs-analysis")) != null)
+    | .number' 2>/dev/null || true); do
+    [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$_cid" = "$CHARTER_SCOPE" ] || continue
+    return 0
+  done
+  for _cid in $(printf '%s' "$_raw" | jq -r '
+    .[] | select([.labels[].name] as $l
+      | ($l | index("type:charter")) != null and ($l | index("status:team-review")) != null)
+    | .number' 2>/dev/null || true); do
+    [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$_cid" = "$CHARTER_SCOPE" ] || continue
+    _has_hd=$(printf '%s' "$_raw" | jq -r --argjson c "$_cid" '
+      [ .[] | select([.labels[].name] | any(. == "type:human-decision"))
+             | select((.body // "") | test("Charter:[[:space:]]*#?" + ($c|tostring)))
+      ] | length' 2>/dev/null || echo "0")
+    [ "${_has_hd:-0}" -eq 0 ] && return 0
+  done
+  return 1
+}
+
 # _finale_in_progress: returns 0 (true) if any charter has a draft PR with pending CI
 # and the deadline has not yet expired.  Called by _loop_is_alive to prevent premature
 # idle-exit while the non-blocking finale poll cycle is still working. [F4 #118]
@@ -131,6 +192,8 @@ _loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
   [ -n "$(_review_leaves_scoped | head -1)" ] && return 0
   # finale-in-progress: draft PR created, CI pending, deadline not expired [F4 #118]
   _finale_in_progress && return 0
+  # manifest-mode: needs-analysis or team-review (without human-decision) holds alive [#136]
+  [ -n "${CB_MANIFEST:-}" ] && _manifest_liveness && return 0
   return 1
 }
 
@@ -673,6 +736,25 @@ cmd_run(){
           fi
           sset "$id" pid ""; continue
         fi
+        # analysis stage (manifest mode): own branch — kind=charter branch must NOT see it.
+        # Success: team-review → clear pid+term+tries (F-1: no term on success, no deadlock).
+        # Fail: tries++ and clear pid → reentrant condition re-spawns on next tick.
+        # Terminal: tries ≥ RETRY_CAP → term=1 + blocked (livelock-safe). [#136]
+        if [ "$(sget "$id" kind)" = "analysis" ]; then
+          cst=$(board get "$id" state)
+          if [ "$cst" = "team-review" ]; then
+            sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            log "#$id analysis done -> team-review"
+          else
+            prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+            if [ "$tries" -ge "$RETRY_CAP" ]; then
+              sset "$id" term 1; board route "$id" blocked "analyst failed to complete analysis ($tries×)" >/dev/null
+              log "#$id analysis failed -> blocked"
+            else log "#$id analysis failed (try $tries) -> retry"; fi
+            sset "$id" pid ""
+          fi
+          continue
+        fi
         ph=$(jq -r '.phase' "$RUN/work/$id/status.json" 2>/dev/null || echo unknown)
         case "$ph" in
           done)        board route "$id" review  >/dev/null; sset "$id" term 1; log "#$id done -> review" ;;
@@ -693,6 +775,25 @@ cmd_run(){
         log "paused — not claiming new (rm $RUN/pause to resume)"
       # claim new launchable up to the cap
       elif [ -z "$stop" ]; then
+        # analysis cycle (manifest mode): BEFORE tech-lead decomposition, spawn an analyst
+        # for needs-plan charters without composition:approved OR needs-analysis charters.
+        # Reentrant (F-3): needs-analysis + no pid = re-spawn after crash or launcher restart.
+        # Charters with composition:approved skip this cycle and go straight to tech-lead. [#136]
+        if [ -n "${CB_MANIFEST:-}" ]; then
+          _analysis_role=$(manifest_analysis_roles "$CB_MANIFEST" | head -1)
+          if [ -n "$_analysis_role" ]; then
+            for cid in $(_analysis_candidates_scoped); do
+              [ "$running" -ge "$MAXP" ] && break
+              [ -n "$(sget "$cid" pid)" ] && continue
+              [ -n "$(sget "$cid" term)" ] && continue
+              _cst=$(board get "$cid" state)
+              [ "$_cst" = "needs-plan" ] && board route "$cid" analysis >/dev/null
+              sset "$cid" kind analysis; sset "$cid" starttime "$(now)"
+              ( "$ANALYSIS_SPAWN" "$cid" "$_analysis_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+              running=$((running+1)); log "bg-spawn analysis ($_analysis_role) for charter #$cid (running=$running/$MAXP)"
+            done
+          fi
+        fi
         # plan charters first: a needs-plan charter -> spawn a tech-lead to decompose it
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
         for cid in $(plannable_scoped); do
