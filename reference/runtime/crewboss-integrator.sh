@@ -64,6 +64,10 @@
 #
 # Env: CB_REPO            — default owner/repo for gh calls
 #      CB_VERIFY_TIMEOUT  — verify-merged engine-run timeout in seconds (default 600)
+#      CB_VERIFY_CACHE    — verdict cache directory for verify-merged (#175).
+#                           Default: $CB_HOME/run/verify-cache when CB_HOME is set,
+#                           otherwise a mktemp per-run directory (no persistence).
+#                           L4 (#177) wires this to the production env.
 set -uo pipefail
 
 log() { printf '[integrator] %s\n' "$*"; }
@@ -255,6 +259,21 @@ cmd_try_merge() {
   fi
 }
 
+# ── cache: resolve verify-merged verdict cache directory ──────────────────────
+# Priority: CB_VERIFY_CACHE > $CB_HOME/run/verify-cache > mktemp per-run.
+# When neither CB_VERIFY_CACHE nor CB_HOME is set, each invocation of
+# verify-merged creates a fresh tmpdir — the cache works only within that single
+# call (effectively no cross-call persistence), which is safe.
+_resolve_verify_cache_dir() {
+  if [ -n "${CB_VERIFY_CACHE:-}" ]; then
+    printf '%s' "${CB_VERIFY_CACHE}"
+  elif [ -n "${CB_HOME:-}" ]; then
+    printf '%s' "${CB_HOME}/run/verify-cache"
+  else
+    mktemp -d
+  fi
+}
+
 # ── subcommand: verify-merged ─────────────────────────────────────────────────
 # Build merged tree (leaf merged into target-branch, reusing _build_merged_tree)
 # and run engine test suite (reference/tests/*.test.sh) on the result.
@@ -267,6 +286,15 @@ cmd_try_merge() {
 #
 # --verdict-file PATH  Write 'pass'/'fail'/'infra' to PATH (machine-readable).
 # CB_VERIFY_TIMEOUT    Engine-run timeout in seconds (default 600).
+# CB_VERIFY_CACHE      Verdict cache dir (#175, F3 key = leaf_sha+target_base_sha).
+#
+# F3 cache (issue #175):
+#   Cache key = leaf-sha + target-base-sha (both resolved via git ls-remote before
+#   clone).  If the target branch advances (sibling merged in), target-base-sha
+#   changes → cache miss → full re-run (does not mask semantic breakage after the
+#   new sibling lands).  A cache keyed only on leaf-sha would be a hole (F3): the
+#   base could shift while the leaf stays the same → stale pass served.
+#   Only pass/fail are cached; infra (exit 2) is never stored — retry on next tick.
 #
 # F1 nullglob: shopt -s nullglob before test loop; no *.test.sh → empty loop
 #   → pass.  Without nullglob, bash would pass the literal glob string to bash
@@ -289,6 +317,37 @@ cmd_verify_merged() {
     esac; shift
   done
   [ -n "$remote" ] || { log "verify-merged: --remote is required"; exit 2; }
+
+  # ── F3 verdict cache (issue #175) ────────────────────────────────────────
+  # Key = leaf_sha + target_base_sha.  Both SHAs resolved from the remote NOW
+  # (before cloning) so that any base movement (sibling merged) invalidates the
+  # key.  Only pass/fail cached; infra never stored.
+  local _leaf_sha="" _base_sha="" _cache_dir="" _cache_key="" _cache_file=""
+  _leaf_sha=$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk '{print $1}')
+  _base_sha=$(git ls-remote "$remote" "refs/heads/$target" 2>/dev/null | awk '{print $1}')
+
+  if [ -n "$_leaf_sha" ] && [ -n "$_base_sha" ]; then
+    _cache_dir="$(_resolve_verify_cache_dir)"
+    mkdir -p "$_cache_dir" 2>/dev/null || true
+    _cache_key="${_leaf_sha}_${_base_sha}"
+    _cache_file="${_cache_dir}/${_cache_key}"
+
+    if [ -f "$_cache_file" ]; then
+      local _cached
+      _cached="$(cat "$_cache_file" 2>/dev/null)"
+      case "$_cached" in
+        pass)
+          log "verify-merged: cache hit ($_cache_key) → pass"
+          [ -n "$verdict_file" ] && printf 'pass' > "$verdict_file"
+          exit 0 ;;
+        fail)
+          log "verify-merged: cache hit ($_cache_key) → fail"
+          [ -n "$verdict_file" ] && printf 'fail' > "$verdict_file"
+          exit 1 ;;
+        # infra or unknown in cache file: ignore — fall through to full re-run
+      esac
+    fi
+  fi
 
   # 1. Build merged tree (reuses _build_merged_tree — same mechanism as try-merge).
   #    Merge conflict or infra failure both yield exit 2 (infra) for verify-merged.
@@ -353,6 +412,11 @@ cmd_verify_merged() {
   fi
 
   [ -n "$verdict_file" ] && printf '%s' "$verdict" > "$verdict_file"
+
+  # Write verdict to cache (only pass/fail; infra is never cached — must retry).
+  if [ -n "$_cache_file" ] && [ "$verdict" != "infra" ]; then
+    printf '%s' "$verdict" > "$_cache_file"
+  fi
 
   case "$verdict" in
     pass)
