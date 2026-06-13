@@ -1,0 +1,66 @@
+# per-leaf-manifest — ALLOW-LIST for verify-merged per-leaf suite filter (issue #194)
+#
+# Format:
+#   ALLOW    <basename>  — leaf-unit-safe; included in per-leaf verify-merged
+#   EXCLUDED <basename>  — heavy/timing/process; GHA full suite only (ci.yml:21-33)
+#
+# Criterion ALLOW (fail-safe): verdict = pure function of merged content only.
+#   No launcher loops, no background processes, no timing/poll/sleep asserts,
+#   no recursive verify-merged calls.  Any doubt ⇒ EXCLUDED (fail-closed default).
+#
+# Guard invariant (fail-closed):
+#   ALLOW ∪ EXCLUDED == all reference/tests/*.test.sh   (union is complete)
+#   ALLOW ∩ EXCLUDED == ∅                               (disjoint)
+#   Any unclassified *.test.sh ⇒ guard RED.
+#   To add a test to ALLOW you MUST document it here with a criterion justification.
+#
+# Counts: ALLOW=10, EXCLUDED=35, union=45  (verify with: leaf-verifier.test.sh Test 7)
+
+# ── ALLOW (10 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
+ALLOW acceptance-block
+ALLOW cli-smoke
+ALLOW gate-comment-payload
+ALLOW launchable
+ALLOW manifest-lib
+ALLOW marker-gate
+ALLOW prep-params
+ALLOW runtime-lint
+ALLOW spawn-unit
+ALLOW token-hygiene
+
+# ── EXCLUDED (35 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
+EXCLUDED base-freshness
+EXCLUDED charter-branch
+EXCLUDED charter-finale
+EXCLUDED ci-taxonomy
+EXCLUDED deploy-contract
+EXCLUDED deploy-step
+EXCLUDED deploy-verify
+EXCLUDED doctor-drift
+EXCLUDED doctor-process
+EXCLUDED finale-nonblocking
+EXCLUDED gate-charter-tree
+EXCLUDED gate-integrator
+EXCLUDED gate-layer-a
+EXCLUDED gate-layer-b
+EXCLUDED gate-repo-dir
+EXCLUDED infra-false-green
+EXCLUDED integrator
+EXCLUDED integrator-atomicity
+EXCLUDED integrator-loop
+EXCLUDED integrator-scope
+EXCLUDED killswitch
+EXCLUDED launcher-dryrun
+EXCLUDED launcher-gh-scope
+EXCLUDED launcher-integration
+EXCLUDED leaf-verifier
+EXCLUDED leaf-verifier-cache
+EXCLUDED needs-rework
+EXCLUDED provision-build
+EXCLUDED rework-contract
+EXCLUDED run-env-contract
+EXCLUDED run-liveness
+EXCLUDED runtime-manifest
+EXCLUDED ui-api-contract
+EXCLUDED ui-loop-mode
+EXCLUDED ui-run-contract
