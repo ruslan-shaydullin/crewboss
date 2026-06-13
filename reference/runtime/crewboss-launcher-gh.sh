@@ -35,6 +35,39 @@ now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
 sget(){ cat "$STATE/$1/$2" 2>/dev/null || echo ""; }
 sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
+# ── CB_MANIFEST: optional team manifest directory ────────────────────────────
+# When CB_MANIFEST is set:
+#   1. Locate and source reference/launcher/manifest.sh (accessor library).
+#      Search order: CB_MANIFEST_LIB (test override) →
+#                    $HERE_LAUNCHER/../launcher/manifest.sh (repo checkout) →
+#                    $CB_HOME/manifest.sh (box deploy).
+#   2. manifest_validate "$CB_MANIFEST" — non-zero → log + exit 65 (fail-fast,
+#      before any flock/board/loop activity; no issue claimed).
+#   3. success → log "manifest: $CB_MANIFEST ok"; export CB_MANIFEST so child
+#      spawns and board-gh inherit it.
+# Without CB_MANIFEST: block is a no-op (legacy behaviour unchanged, byte-for-byte).
+if [ -n "${CB_MANIFEST:-}" ]; then
+  _mlib=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _mlib="$CB_MANIFEST_LIB"
+  elif [ -f "$HERE_LAUNCHER/../launcher/manifest.sh" ]; then
+    _mlib="$HERE_LAUNCHER/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _mlib="$CB_HOME/manifest.sh"
+  fi
+  if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
+    log "CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)"
+    exit 65
+  fi
+  # shellcheck source=../launcher/manifest.sh
+  source "$_mlib"
+  if ! manifest_validate "$CB_MANIFEST" >/dev/null 2>&1; then
+    log "manifest invalid: $CB_MANIFEST"
+    exit 65
+  fi
+  log "manifest: $CB_MANIFEST ok"
+  export CB_MANIFEST
+fi
 board(){ bash "$BOARD" "$@"; }
 # plannable_scoped: when CREWBOSS_CHARTER is set, restrict plannable output to that charter only.
 plannable_scoped(){
