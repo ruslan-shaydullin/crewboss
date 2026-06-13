@@ -120,6 +120,21 @@ assert_contract(){
   else
     no "$label: CB_HOME wrong (got: '$v', want: '$want_home')"
   fi
+
+  # Leaf green-before-merge verifier env (#177: box-native, NOT GHA, no freshness gate)
+  v="$(dump_val CB_VERIFY_CACHE)"
+  if [ -n "$v" ]; then
+    ok "$label: CB_VERIFY_CACHE set (=$v)"
+  else
+    no "$label: CB_VERIFY_CACHE not set (leaf verifier prod-env missing)"
+  fi
+
+  v="$(dump_val CB_VERIFY_TIMEOUT)"
+  if [ -n "$v" ]; then
+    ok "$label: CB_VERIFY_TIMEOUT set (=$v)"
+  else
+    no "$label: CB_VERIFY_TIMEOUT not set (leaf verifier prod-env missing)"
+  fi
 }
 
 # =============================================================================

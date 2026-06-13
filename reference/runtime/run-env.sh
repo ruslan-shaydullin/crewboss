@@ -49,3 +49,15 @@ export CB_HARNESS="${CB_HARNESS:-}"
 # Production uses --remote (launcher:549-552) so the gate clones the real charter/C
 # branch tree and avoids false-RED from CWD self-matches (F8 contract, #116).
 # The --repo-dir override remains available for reference/tests (gate-charter-tree etc.).
+
+# ── Leaf green-before-merge verifier env (charter #173 Ф-A, #177) ─────────────
+# Leaf GREEN-BEFORE-MERGE is box-native: verify-merged runs engine suite on the
+# merged tree from try-merge — NOT GHA statusCheckRollup, NO leaf-freshness gate
+# (freshness guard F4 removed; FRESHNESS_THRESHOLD NOT exported on leaf path).
+# Production default: enabled (HD-1).
+#
+# CB_VERIFY_CACHE  — verdict cache dir (#175); mirrors integrator priority logic:
+#                    CB_VERIFY_CACHE → $CB_HOME/run/verify-cache → mktemp per-run.
+# CB_VERIFY_TIMEOUT — engine-run ceiling in seconds (#174 F2 timeout wrap); default 600.
+export CB_VERIFY_CACHE="${CB_VERIFY_CACHE:-$CB_HOME/run/verify-cache}"
+export CB_VERIFY_TIMEOUT="${CB_VERIFY_TIMEOUT:-600}"
