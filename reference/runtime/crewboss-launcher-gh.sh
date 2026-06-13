@@ -23,6 +23,8 @@ SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
 # CB_PLAN_SPAWN: separate spawn for planning/tech-lead (default: same as CB_SPAWN so existing
 # setups that only set CB_SPAWN keep working; run-charter.sh sets both explicitly).
 PLAN_SPAWN="${CB_PLAN_SPAWN:-$SPAWN}"
+# CB_ANALYSIS_SPAWN: spawn script for the manifest analysis role (default: same as PLAN_SPAWN).
+ANALYSIS_SPAWN="${CB_ANALYSIS_SPAWN:-$PLAN_SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -75,6 +77,47 @@ plannable_scoped(){
     board plannable
   else
     board plannable | grep "^${CHARTER_SCOPE}$" || true
+  fi
+}
+
+# _analysis_candidates_scoped: open charters needing the analysis stage [#136].
+# Matches: (status:needs-plan AND NOT composition:approved) OR status:needs-analysis.
+# Not held; scoped to CHARTER_SCOPE when set.
+_analysis_candidates_scoped(){
+  local _list
+  _list=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null \
+    | jq -r '
+      .[] | select([.labels[].name] as $l
+        | ($l|index("type:charter"))
+        and (($l|index("hold"))|not)
+        and (($l|index("status:blocked"))|not)
+        and (
+          (($l|index("status:needs-plan")) and (($l|index("composition:approved"))|not))
+          or ($l|index("status:needs-analysis"))
+        ))
+      | .number')
+  if [ "${CHARTER_SCOPE:-0}" = "0" ]; then
+    echo "$_list"
+  else
+    echo "$_list" | grep "^${CHARTER_SCOPE}$" || true
+  fi
+}
+
+# _needs_analysis_scoped: open charters in status:needs-analysis (in scope, not held) [#136].
+_needs_analysis_scoped(){
+  local _list
+  _list=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null \
+    | jq -r '
+      .[] | select([.labels[].name] as $l
+        | ($l|index("type:charter"))
+        and ($l|index("status:needs-analysis"))
+        and (($l|index("status:blocked"))|not)
+        and (($l|index("hold"))|not))
+      | .number')
+  if [ "${CHARTER_SCOPE:-0}" = "0" ]; then
+    echo "$_list"
+  else
+    echo "$_list" | grep "^${CHARTER_SCOPE}$" || true
   fi
 }
 
@@ -131,6 +174,32 @@ _loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
   [ -n "$(_review_leaves_scoped | head -1)" ] && return 0
   # finale-in-progress: draft PR created, CI pending, deadline not expired [F4 #118]
   _finale_in_progress && return 0
+  # manifest-mode analysis liveness [#136]:
+  #   needs-analysis — analyst in flight or restarted; loop must stay alive.
+  #   team-review    — waiting for human approval; loop stays alive UNLESS an open
+  #                    type:human-decision issue already exists for this charter
+  #                    (over-threshold escalation: human decides externally, loop exits
+  #                    idle, next run picks up after approval — N-1 decision).
+  if [ -n "${CB_MANIFEST:-}" ]; then
+    [ -n "$(_needs_analysis_scoped | head -1)" ] && return 0
+    local _oi _cid _hd
+    _oi=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body \
+          2>/dev/null || echo '[]')
+    while IFS= read -r _cid; do
+      [ -z "$_cid" ] && continue
+      [ "${CHARTER_SCOPE:-0}" != "0" ] && [ "$_cid" != "$CHARTER_SCOPE" ] && continue
+      _hd=$(printf '%s' "$_oi" | jq -r --arg c "$_cid" '
+        .[] | select([.labels[].name] | any(. == "type:human-decision"))
+             | select(.body | test("Charter: #" + $c))
+             | .number' | head -1)
+      [ -z "$_hd" ] && return 0
+    done < <(printf '%s' "$_oi" | jq -r '
+      .[] | select([.labels[].name] as $l
+        | ($l|index("type:charter")) and ($l|index("status:team-review"))
+        and (($l|index("status:blocked"))|not)
+        and (($l|index("hold"))|not))
+      | .number')
+  fi
   return 1
 }
 
@@ -602,6 +671,27 @@ cmd_run(){
       for d in "$STATE"/*/; do [ -e "$d" ] || continue; id=$(basename "$d"); pid=$(sget "$id" pid)
         { [ -n "$pid" ] && [ "$pid" != PENDING ]; } || continue
         kill -0 "$pid" 2>/dev/null && continue          # still running
+        # manifest analysis task: route by charter state; success = team-review. [#136]
+        # F-1 contract: success clears pid+term+tries (no term=1) so approval cycle can follow.
+        # From-analysis-failure: charter stays in needs-analysis/needs-plan → retry via re-entrant
+        # condition; blocked at RETRY_CAP only (term=1). Existing kind=charter branch not affected.
+        if [ "$(sget "$id" kind)" = "analysis" ]; then
+          cst=$(board get "$id" state)
+          if [ "$cst" = "team-review" ]; then
+            sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            log "#$id analysis done -> team-review"
+          else
+            prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+            if [ "$tries" -ge "$RETRY_CAP" ]; then
+              board route "$id" blocked "analyst failed to produce composition ($tries×)" >/dev/null
+              sset "$id" term 1; log "#$id analysis failed -> blocked"
+            else
+              log "#$id analysis failed (try $tries) -> retry"
+            fi
+            sset "$id" pid ""
+          fi
+          continue
+        fi
         # charter planning task (tech-lead): route by the charter's own label, not by review.
         if [ "$(sget "$id" kind)" = "charter" ]; then
           cst=$(board get "$id" state)
@@ -632,12 +722,39 @@ cmd_run(){
         log "paused — not claiming new (rm $RUN/pause to resume)"
       # claim new launchable up to the cap
       elif [ -z "$stop" ]; then
+        # manifest analysis cycle [#136]: before tech-lead decomposition, run mandatory analysis.
+        # Re-entrant condition (F-3): needs-plan without composition:approved OR needs-analysis.
+        # Guard: composition:approved charters skip analysis and go directly to tech-lead below.
+        # Guard: pid/term prevent double-spawn for already-running or terminal charters.
+        if [ -n "${CB_MANIFEST:-}" ]; then
+          _analysis_role=$(manifest_analysis_roles "$CB_MANIFEST" 2>/dev/null | head -1)
+          if [ -n "$_analysis_role" ]; then
+            for cid in $(_analysis_candidates_scoped); do
+              [ "$running" -ge "$MAXP" ] && break
+              [ -n "$(sget "$cid" pid)" ] && continue
+              [ -n "$(sget "$cid" term)" ] && continue
+              _cst=$(board get "$cid" state)
+              [ "$_cst" = "needs-plan" ] && board route "$cid" analysis >/dev/null
+              sset "$cid" kind analysis; sset "$cid" starttime "$(now)"
+              ( "$ANALYSIS_SPAWN" "$cid" "$_analysis_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+              running=$((running+1)); log "bg-spawn analysis ($_analysis_role) for charter #$cid (running=$running/$MAXP)"
+            done
+          fi
+        fi
         # plan charters first: a needs-plan charter -> spawn a tech-lead to decompose it
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
+        # In manifest mode: only spawn tech-lead for charters that have composition:approved
+        # (others are handled by the analysis cycle above).
         for cid in $(plannable_scoped); do
           [ "$running" -ge "$MAXP" ] && break
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
+          # manifest mode guard: skip charters awaiting analysis (no composition:approved yet)
+          if [ -n "${CB_MANIFEST:-}" ]; then
+            _has_comp=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+              | jq -r '[.labels[].name] | any(. == "composition:approved")' 2>/dev/null || echo false)
+            [ "$_has_comp" != "true" ] && continue
+          fi
           sset "$cid" kind charter; sset "$cid" starttime "$(now)"
           ( "$PLAN_SPAWN" "$cid" tech-lead >/dev/null 2>&1 ) & sset "$cid" pid "$!"
           running=$((running+1)); log "bg-spawn tech-lead for charter #$cid (running=$running/$MAXP)"
@@ -665,6 +782,10 @@ cmd_run(){
       # laggy gh list may still report but we've already handled (pid set / term).
       local fresh=0 fid
       for fid in $(board launchable) $(plannable_scoped); do { [ -n "$(sget "$fid" pid)" ] || [ -n "$(sget "$fid" term)" ]; } || fresh=$((fresh+1)); done
+      # manifest mode: count analysis candidates (not yet in plannable) as fresh work
+      if [ -n "${CB_MANIFEST:-}" ]; then
+        for fid in $(_analysis_candidates_scoped); do { [ -n "$(sget "$fid" pid)" ] || [ -n "$(sget "$fid" term)" ]; } || fresh=$((fresh+1)); done
+      fi
       if [ "$running" -eq 0 ] && [ -n "$stop" ]; then log "stopped"; break; fi
       # idle-exit is DEBOUNCED: require CB_IDLE_CONFIRM consecutive empty ticks, so a transient
       # empty `board launchable` (gh read-after-write lag) doesn't end the run with work pending.

@@ -19,7 +19,52 @@ export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
-if [ "$ROLE" = "tech-lead" ]; then
+# In manifest mode, analysis roles get a dedicated prompt: role body + rubric + artifact contract.
+_IS_ANALYSIS_ROLE=""
+if [ -n "${CB_MANIFEST:-}" ]; then
+  _HERE_PREP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _mlib_prep=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _mlib_prep="$CB_MANIFEST_LIB"
+  elif [ -f "$_HERE_PREP/../launcher/manifest.sh" ]; then
+    _mlib_prep="$_HERE_PREP/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _mlib_prep="$CB_HOME/manifest.sh"
+  fi
+  if [ -n "$_mlib_prep" ] && [ -f "$_mlib_prep" ]; then
+    # shellcheck source=../launcher/manifest.sh
+    source "$_mlib_prep"
+    for _ar in $(manifest_analysis_roles "$CB_MANIFEST" 2>/dev/null); do
+      [ "$ROLE" = "$_ar" ] && _IS_ANALYSIS_ROLE=1 && break
+    done
+  fi
+fi
+if [ -n "${CB_MANIFEST:-}" ] && [ -n "$_IS_ANALYSIS_ROLE" ]; then
+  # Manifest analysis role prompt [#136]:
+  #   role body (roles/<role>.md after frontmatter) + rubric.json + artifact contract + routing.
+  TS=$(date +%s)
+  BRANCH="analysis/$ID-$TS"
+  _ROLE_BODY=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || echo "")
+  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  PROMPT="$_ROLE_BODY
+
+## Rubric (apply as objective floor — no bypass; N-3 canon)
+\`\`\`json
+$_RUBRIC
+\`\`\`
+
+## Artifact contract (machine-readable; N-3 canon — parsed by composition-parse.sh)
+Post the following block verbatim as a comment on charter #$ID:
+  gh issue comment $ID -R $PR_REPO --body '## Composition (machine)
+- approach: <one line>
+- role: <role-id>              (repeatable — one per role needed)
+- leaf: <leaf-id> -> <role-id> (repeatable — one per sub-issue)
+- est_cost_usd: <number>'
+
+## Routing instruction
+After posting the composition comment, move the charter to team-review:
+  gh issue edit $ID -R $PR_REPO --remove-label status:needs-analysis --add-label status:team-review"
+elif [ "$ROLE" = "tech-lead" ]; then
   TS=$(date +%s)
   BRANCH="tech-lead/$ID-$TS"
   # Base tech-lead prompt — phrasing locked (HD-1 / legacy-pin #135); do NOT alter without pin bump.
