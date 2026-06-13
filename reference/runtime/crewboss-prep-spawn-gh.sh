@@ -20,7 +20,10 @@ export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
 if [ "$ROLE" = "tech-lead" ]; then
-  PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
+  TS=$(date +%s)
+  BRANCH="tech-lead/$ID-$TS"
+  # Base tech-lead prompt — phrasing locked (HD-1 / legacy-pin #135); do NOT alter without pin bump.
+  _TL_PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
 1. Start with 'Charter: #$ID'
 2. Contain a self-contained task description (a cold executor sees only that issue)
 3. Include a '## Acceptance (machine)' section with at least one '- check: <cmd>' or '- test: <file>' line
@@ -30,6 +33,38 @@ After creating each sub-issue N, add the required label: gh issue edit N -R $PR_
 Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
 
 $(bash "$BOARD" get "$ID" prompt)"
+  if [ -n "${CB_MANIFEST:-}" ]; then
+    # Manifest mode: augment prompt with approved composition.
+    # Parsing delegated to composition-parse.sh (#134) — do NOT duplicate format logic here.
+    _HERE_PREP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+      | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+      2>/dev/null || true)
+    _COMP_TSV=""
+    if [ -n "$_COMP_BODY" ]; then
+      _COMP_TSV=$(printf '%s\n' "$_COMP_BODY" \
+        | bash "$_HERE_PREP/composition-parse.sh" "$CB_MANIFEST" 2>/dev/null) || _COMP_TSV=""
+    fi
+    if [ -n "$_COMP_TSV" ]; then
+      _COMP_ROLES=$(printf '%s\n' "$_COMP_TSV" | awk -F'\t' '$1=="role"{print $2}')
+      _COMP_LEAVES=$(printf '%s\n' "$_COMP_TSV" | awk -F'\t' '$1=="leaf"{printf "%s -> %s\n",$2,$3}')
+      PROMPT="$_TL_PROMPT
+
+## Approved composition (charter #$ID)
+Leaf assignments (symbolic leaf-id -> role-id):
+$_COMP_LEAVES
+Roles in this charter: $(printf '%s' "$_COMP_ROLES" | tr '\n' ' ')
+
+For each sub-issue N you create, additionally run:
+  gh issue edit N -R $PR_REPO --add-label role:<role-id>
+where <role-id> is from the composition map above — do NOT invent role-ids.
+Sub-issues correspond 1:1 to the composition; map symbolic leaf-ids to the created issue numbers yourself."
+    else
+      PROMPT="$_TL_PROMPT"
+    fi
+  else
+    PROMPT="$_TL_PROMPT"
+  fi
 else
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
