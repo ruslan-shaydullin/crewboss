@@ -35,9 +35,9 @@ ko() { fail=$((fail+1)); printf 'FAIL %s\n' "$1"; }
 #   <leaf_branch>  — leaf commit (adds leaf.txt, branches from base)
 #
 # suite_type values:
-#   pass   — reference/tests/dummy.test.sh that exits 0
-#   fail   — reference/tests/dummy.test.sh that exits 1
-#   hang   — reference/tests/dummy.test.sh that sleeps 999
+#   pass   — reference/tests/acceptance-block.test.sh that exits 0
+#   fail   — reference/tests/acceptance-block.test.sh that exits 1
+#   hang   — reference/tests/acceptance-block.test.sh that sleeps 999
 #   none   — no reference/tests/ directory (empty suite scenario)
 setup_bare_remote() {
   local remote_path="$1" base_branch="${2:-charter/5}" leaf_branch="${3:-leaf/42}" \
@@ -55,20 +55,20 @@ setup_bare_remote() {
   case "$suite_type" in
     pass)
       mkdir -p "$tmp/reference/tests"
-      printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/reference/tests/acceptance-block.test.sh"
+      chmod +x "$tmp/reference/tests/acceptance-block.test.sh"
       # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
       printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     fail)
       mkdir -p "$tmp/reference/tests"
-      printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/reference/tests/acceptance-block.test.sh"
+      chmod +x "$tmp/reference/tests/acceptance-block.test.sh"
       # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
       printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     hang)
       mkdir -p "$tmp/reference/tests"
-      printf '#!/usr/bin/env bash\nsleep 999\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      printf '#!/usr/bin/env bash\nsleep 999\n' > "$tmp/reference/tests/acceptance-block.test.sh"
+      chmod +x "$tmp/reference/tests/acceptance-block.test.sh"
       # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
       printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     none)
@@ -198,12 +198,12 @@ VERDICT6="$ROOT/verdict6.txt"
   git -C "$_tmp6" config user.name  T
 
   # Create reference/tests/ with:
-  #   dummy.test.sh         — always exit 0 (ALLOW-listed)
+  #   acceptance-block.test.sh         — always exit 0 (ALLOW-listed)
   #   sentinel-always-fail.test.sh — always exit 1 (NOT in ALLOW)
   #   per-leaf-manifest     — classifies both: ALLOW dummy, EXCLUDED sentinel
   mkdir -p "$_tmp6/reference/tests"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$_tmp6/reference/tests/dummy.test.sh"
-  chmod +x "$_tmp6/reference/tests/dummy.test.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_tmp6/reference/tests/acceptance-block.test.sh"
+  chmod +x "$_tmp6/reference/tests/acceptance-block.test.sh"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$_tmp6/reference/tests/sentinel-always-fail.test.sh"
   chmod +x "$_tmp6/reference/tests/sentinel-always-fail.test.sh"
   # Fixture manifest: ALLOW dummy only; sentinel is EXCLUDED (not ALLOW)
@@ -240,7 +240,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   Expected: ALLOW=10, EXCLUDED=35, union=45, disjoint, every file classified.
 # =============================================================================
 echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=10 EXCLUDED=35) ==="
-_MANIFEST="$HERE/per-leaf-manifest"
+_MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
 else

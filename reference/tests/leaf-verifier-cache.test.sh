@@ -35,7 +35,7 @@ ko()  { fail=$((fail+1)); printf 'FAIL %s\n' "$1"; }
 
 # ── helper: setup_bare_remote_counter ────────────────────────────────────────
 # Creates a bare repo at <path> with:
-#   <base_branch> — base commit with reference/tests/counter.test.sh
+#   <base_branch> — base commit with reference/tests/acceptance-block.test.sh
 #                   (increments CB_TEST_COUNTER_FILE + exits 0)
 #   <leaf_branch> — leaf commit (adds leaf.txt on top of base)
 #
@@ -56,8 +56,8 @@ setup_bare_remote_counter() {
   mkdir -p "$tmp/reference/tests"
   # Writes one 'x' byte to counter file (if env var set), then exits 0
   printf '#!/usr/bin/env bash\n[ -n "${CB_TEST_COUNTER_FILE:-}" ] && printf x >> "$CB_TEST_COUNTER_FILE"\nexit 0\n' \
-    > "$tmp/reference/tests/counter.test.sh"
-  chmod +x "$tmp/reference/tests/counter.test.sh"
+    > "$tmp/reference/tests/acceptance-block.test.sh"
+  chmod +x "$tmp/reference/tests/acceptance-block.test.sh"
 
   git -C "$tmp" add -A
   git -C "$tmp" commit -qm "base" 2>/dev/null
@@ -264,8 +264,8 @@ git -C "$TMP_C4B" config user.name  T
 printf 'base\n' > "$TMP_C4B/README.md"
 mkdir -p "$TMP_C4B/reference/tests"
 # Hanging test: sleeps longer than CB_VERIFY_TIMEOUT
-printf '#!/usr/bin/env bash\nsleep 999\n' > "$TMP_C4B/reference/tests/hang.test.sh"
-chmod +x "$TMP_C4B/reference/tests/hang.test.sh"
+printf '#!/usr/bin/env bash\nsleep 999\n' > "$TMP_C4B/reference/tests/acceptance-block.test.sh"
+chmod +x "$TMP_C4B/reference/tests/acceptance-block.test.sh"
 git -C "$TMP_C4B" add -A
 git -C "$TMP_C4B" commit -qm "base" 2>/dev/null
 git -C "$TMP_C4B" push -q origin "HEAD:refs/heads/charter/5" 2>/dev/null

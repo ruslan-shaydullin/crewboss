@@ -375,18 +375,18 @@ cmd_verify_merged() {
   #    Full suite (including EXCLUDED) still runs in GHA (ci.yml:21-33).
   #    Manifest: reference/tests/per-leaf-manifest (ALLOW/EXCLUDED classification).
   local suite_rc=0
+  _pl_manifest="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/per-leaf-manifest"
 
   # Start engine run in background subshell
   (
     cd "$merged_dir"
     shopt -s nullglob
     fail=0
-    _manifest="reference/tests/per-leaf-manifest"
     for t in reference/tests/*.test.sh; do
       _base="$(basename "$t" .test.sh)"
       # Only run tests explicitly classified as ALLOW in the manifest.
       # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
-      grep -qE "^ALLOW[[:space:]]+${_base}$" "$_manifest" 2>/dev/null || continue
+      grep -qE "^ALLOW[[:space:]]+${_base}$" "$_pl_manifest" 2>/dev/null || continue
       bash "$t" || fail=1
     done
     exit "$fail"
