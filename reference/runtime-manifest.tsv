@@ -28,7 +28,7 @@
 #   #70 extends the gate to *.css scenarios.
 #
 # repo_path	sha256	status	purpose
-proto/r6/board-gh.sh	63a6731d10c18f7dd6f6d894bd7d982bf8660574df3b33714ae1b1e0d80f100c	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6; #89 CREWBOSS_CHARTER pass-through to launchable.sh; #87 adds route needs-rework, claim strips needs-rework, get state priority review>needs-rework; #92 adds review-leaves subcommand
+proto/r6/board-gh.sh	b26b8e5aa3b52e41d7c101498d7dda4178e80a326d1b19a5888fa368dd407db6	canonical	GitHub board adapter (issues+labels ↔ launcher state machine); R6; #89 CREWBOSS_CHARTER pass-through to launchable.sh; #87 adds route needs-rework, claim strips needs-rework, get state priority review>needs-rework; #92 adds review-leaves subcommand; #133 manifest-pipeline states needs-analysis/team-review + route analysis/team-review/plan
 proto/net/bridge.py	36b9cb3c62092fa20debe6e94e1929a06f661beab79cf8e487990ff6f5ecc551	canonical	In-jail CONNECT proxy bridge (proxy.sock → localhost:3128)
 proto/provision/build-provision.sh	77856db9decefcb7b288d2007e5da4aa5f35c128e52840b30e92df96b7144de2	canonical	Assembles self-contained provision.sh by embedding runtime files as base64 tarball; CB_SRC=reference/runtime/ (#66)
 reference/runtime/charter-leaf-prep.sh	ccd8df501e7ce4eecaee3b4353908f3fb61a9cfd665469042fba4f3d2b1d0912	canonical	Charter-aware leaf dispatch: clones, creates charter/C branch, sets leaf/$ID-$TS; box-only → reference/runtime/ via #65; #86 CB_REPO param; #155 freshness guard (ff-push or loud refusal if charter/C behind main)
@@ -45,7 +45,7 @@ proto/seccomp/find-unknown.sh	27ee5f89f1ec581678d3bd9f95f8019380c66e3f605d868c8e
 proto/seccomp/gen-names.sh	6c008e53393bab22882baca9ab8c75dc085b2795ef488cb0d668c6d7d85435df	canonical	Generates kafel-compatible syscall name list from union + essentials
 proto/seccomp/gen-policy.sh	75e4674a619db75ea035829fb7fad521362973707b2165fd3c66926e42524db3	canonical	Builds kafel allowlist from union list + benign essentials (ausyscall auto-map for unknowns)
 proto/net/jail-test.sh	98d17935222badb953303faeb7705424cb64db05169dc1b418cab2bf8f33299e	canonical	Inside-jail R3b network test payload (brings up bridge, runs curl tests)
-reference/launcher/labels-setup.sh	525670fba6c8c49c4247f89ae4816a5ea89c0a990feae2c6e77a60978be535d2	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit)
+reference/launcher/labels-setup.sh	395a44e2e9672d1e63d98773721db5b1f0ec3f109c1d834bfaf238608f5c5e69	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit); #133 adds needs-analysis/team-review/composition:approved
 reference/launcher/launchable.sh	c8886068ed490b537265f6d9ef2b93090a3f7b1e134cbd912bd08a94b37b845f	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed; --charter N scope filter (#70); acceptance-block gate (#90); #87 documents needs-rework intentionally launchable (re-dispatch contract)
 proto/provision/provision-template.sh	5432b0b89bc4fe4027cf1872eeb3555e89b68e324a756942b6c91ed701543cfb	canonical	Provision script template (__RUNTIME_PLACEHOLDER__ injected by build-provision.sh)
 proto/provision/provision.sh	e62fdfe40477f02a95d581ded3cf4397300515d34f8ee2206b4e842bc5d34369	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)

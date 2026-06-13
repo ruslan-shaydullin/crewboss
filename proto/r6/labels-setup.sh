@@ -6,10 +6,13 @@ mklabel() { gh label create "$1" --color "$2" --description "$3" 2>/dev/null \
   || gh label edit "$1" --color "$2" --description "$3" 2>/dev/null || true; }
 
 # charter lifecycle
-mklabel "type:charter"       "c2e0c6" "boss-authored goal (root for decomposition)"
-mklabel "status:needs-plan"  "ededed" "charter: awaiting tech-lead decomposition"
-mklabel "status:plan-review" "fbca04" "charter: plan awaiting boss approval"
-mklabel "status:approved"    "0e8a16" "charter: plan approved — leaves launchable"
+mklabel "type:charter"          "c2e0c6" "boss-authored goal (root for decomposition)"
+mklabel "status:needs-plan"     "ededed" "charter: awaiting tech-lead decomposition"
+mklabel "status:plan-review"    "fbca04" "charter: plan awaiting boss approval"
+mklabel "status:approved"       "0e8a16" "charter: plan approved — leaves launchable"
+mklabel "status:needs-analysis" "bfd4f2" "charter: awaiting solution analysis (manifest mode)"
+mklabel "status:team-review"    "d4c5f9" "charter: composition awaiting approval (manifest mode)"
+mklabel "composition:approved"  "0e8a16" "charter: composition approved — leaves may launch (manifest mode)"
 # leaf lifecycle
 mklabel "status:in-progress"  "1d76db" "leaf: claimed / executor running"
 mklabel "status:review"       "5319e7" "leaf: PR open, awaiting approval+merge"
