@@ -2,16 +2,16 @@
 # ci-taxonomy.test.sh — CI classification and try-merge exit-code taxonomy (issue #112).
 # Class i + ii tests:
 #
-#   RED-a: empty CI rollup → status:blocked after CB_CI_EMPTY_TICKS ticks
-#          ДО фикса: :140 (old) — вечный pending, лист молча висит в review
-#   RED-b: StatusContext node (.state="SUCCESS") → classified as success → PR merged
-#          ДО фикса: :143 (old) — SUCCESS-статус даёт вечный pending
+#   RED-b (box-verdict): empty statusCheckRollup + box verify-merged pass → PR merged
+#          (#176 Ф-A: statusCheckRollup больше не читается; зелёность = engine на merged-дереве)
 #   RED-c: unit try-merge, --remote /nonexistent → exit code EXACTLY 2
 #          ДО фикса: clone-провал даёт exit 1, неотличим от конфликта
-#   RED-d: valid PR + green CI + broken CB_GIT_REMOTE → leaf stays status:review, NOT needs-rework
+#   RED-d: broken CB_GIT_REMOTE → try-merge infra error (exit 2) → leaf stays status:review, NOT needs-rework
 #          ДО фикса: инфра-провал роутится в needs-rework
-#   RED-e: gh pr view fails N ticks (N > CB_CI_EMPTY_TICKS) → leaf NOT blocked, stays review
-#          ДО фикса: gh-ошибка фабрикует пустой rollup, инкрементит счётчик, уводит в blocked
+#
+# RED-a (empty rollup → blocked) и RED-e (gh-error → not-blocked) убраны как obsolete (#176):
+#   после Ф-A петля не читает statusCheckRollup; путь empty-rollup→blocked отсутствует;
+#   verify-merged всегда даёт детерминированный вердикт (находка #6 закрыта).
 #
 # Requires: jq, git, bash, flock.
 set -u
@@ -95,15 +95,13 @@ REVIEW_BOARD='[
    "body":"task A\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
 ]'
 
-# ── gh stub (extended for ci-taxonomy scenarios) ─────────────────────────────
-# pr view --json statusCheckRollup reads $PRDIR/checks-$n:
-#   success                 → CheckRun SUCCESS
-#   failure                 → CheckRun FAILURE
-#   pending                 → CheckRun IN_PROGRESS
-#   empty                   → empty array [] (no CI checks registered)
-#   status_context_success  → StatusContext {"state":"SUCCESS"} (legacy commit-status API)
-#   gh_error                → exit 1 (simulate gh infra failure; logs to GH_LOG)
-#   (anything else / absent)→ success (default)
+# ── gh stub (ci-taxonomy scenarios) ──────────────────────────────────────────
+# pr view --json statusCheckRollup always returns EMPTY array [] (anti-фальш, #176):
+#   петля больше не читает statusCheckRollup; зелёность от verify-merged (box-вердикт).
+#   Пустой rollup гарантирует, что слияние идёт от box-вердикта, не от GHA.
+#
+# gh_error flag in $PRDIR/checks-$n: → exit 1 on statusCheckRollup (retained for RED-d
+#   broken-remote scenario where the loop never reaches statusCheckRollup anyway).
 cat > "$BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 obj="$1"; verb="$2"; shift 2
@@ -192,27 +190,9 @@ case "$obj $verb" in
     while [ $# -gt 0 ]; do case "$1" in --json) json_fields="$2"; shift ;; esac; shift; done
     case "$json_fields" in
       statusCheckRollup)
-        status="$(cat "$PRDIR/checks-$n" 2>/dev/null || echo success)"
-        case "$status" in
-          success)
-            printf '{"statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}\n' ;;
-          failure)
-            printf '{"statusCheckRollup":[{"conclusion":"FAILURE","status":"COMPLETED"}]}\n' ;;
-          pending)
-            printf '{"statusCheckRollup":[{"conclusion":null,"status":"IN_PROGRESS"}]}\n' ;;
-          empty)
-            # Real gh response when no CI checks are registered on the PR
-            printf '{"statusCheckRollup":[]}\n' ;;
-          status_context_success)
-            # Legacy GitHub commit-status API: StatusContext node with .state field
-            printf '{"statusCheckRollup":[{"state":"SUCCESS"}]}\n' ;;
-          gh_error)
-            # Simulate a gh infra failure (network, token, etc.)
-            echo "gh-error-rollup-$n" >> "$GH_LOG"
-            exit 1 ;;
-          *)
-            printf '{"statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}\n' ;;
-        esac ;;
+        # Anti-фальш (#176): always return EMPTY rollup — loop no longer reads it.
+        # Merge decision comes from verify-merged (box-verdict), not GHA.
+        printf '{"statusCheckRollup":[]}\n' ;;
       mergeCommit)
         sha="$(cat "$PRDIR/merge-sha-$n" 2>/dev/null || echo "")"
         printf '{"mergeCommit":{"oid":"%s"}}\n' "$sha" ;;
@@ -264,6 +244,7 @@ run_loop(){
     CB_IDLE_CONFIRM=2 \
     CB_MAX_PARALLEL=2 \
     CB_RETRY_CAP=3 \
+    CREWBOSS_CHARTER= \
     $extra_env \
     bash \"$LAUNCHER\" run 2>/dev/null"
 }
@@ -314,56 +295,29 @@ bash "$INTEGRATOR" try-merge "branch-b" "main" --remote "$REMOTE_C" 2>/dev/null 
   || ko "RED-c: real conflict exited $try_exit_conflict instead of 1"
 
 # =============================================================================
-# RED-a: empty CI rollup → status:blocked after CB_CI_EMPTY_TICKS ticks
+# RED-b (box-verdict, class 1): empty statusCheckRollup + verify-merged pass → PR merged
+# (#176 Ф-A: петля не читает rollup; зелёность = engine на merged-дереве; пустой rollup антифальш)
+# leaf-ветка несёт только work-10.txt (без reference/tests/) → merged-дерево пусто
+# → verify-merged empty-suite = pass (nullglob, #174) → лист СЛИТ.
 # =============================================================================
-echo "== RED-a: empty CI rollup policy — status:blocked after CB_CI_EMPTY_TICKS=2 ticks =="
-
-CBHOME_A="$ROOT/cbhome_a"
-reset_sandbox "$CBHOME_A"
-printf '%s' "$REVIEW_BOARD" > "$BOARD_STATE"
-# Activate the "empty rollup" branch of the stub (real gh response when no CI is configured)
-printf 'empty' > "$PRDIR/checks-10"
-
-# CB_CI_EMPTY_TICKS=2: after 2 ticks of empty rollup, leaf must be blocked.
-# CB_IDLE_CONFIRM=2 is enough: tick-1 → ci_empty=1 (wait), tick-2 → ci_empty=2 (block+exit).
-run_loop "$CBHOME_A" "CB_CI_EMPTY_TICKS=2"
-
-has_label 10 "status:blocked" \
-  && ok "RED-a: leaf #10 in status:blocked after empty rollup (≥CB_CI_EMPTY_TICKS=2 ticks)" \
-  || ko "RED-a: leaf #10 NOT blocked — before fix loop hung forever in review with empty rollup"
-
-has_comment 10 "нет CI" \
-  && ok "RED-a: comment on #10 contains 'нет CI'" \
-  || ko "RED-a: no 'нет CI' comment on #10 (blocked but human not notified?)"
-
-pr_not_merged 10 \
-  && ok "RED-a: PR #10 NOT merged (empty rollup must never trigger merge)" \
-  || ko "RED-a: PR #10 was merged — empty rollup must not equal green"
-
-[ "$(issue_state 10)" != "CLOSED" ] \
-  && ok "RED-a: leaf #10 NOT closed (only human closes after blocking)" \
-  || ko "RED-a: leaf #10 was closed (must not happen)"
-
-# =============================================================================
-# RED-b: StatusContext node (.state="SUCCESS") → classified as success → PR merged
-# =============================================================================
-echo "== RED-b: StatusContext .state=SUCCESS → success → PR merged =="
+echo "== RED-b: box-verdict — empty rollup + engine pass → PR merged =="
 
 CBHOME_B="$ROOT/cbhome_b"
 reset_sandbox "$CBHOME_B"
 printf '%s' "$REVIEW_BOARD" > "$BOARD_STATE"
-# Legacy GitHub commit-status: StatusContext with .state="SUCCESS" (no .status/.conclusion)
-printf 'status_context_success' > "$PRDIR/checks-10"
+# gh stub returns empty statusCheckRollup (always, anti-фальш).
+# leaf/10-1700000000 уже в remote (setup_remote создаёт), несёт только work-10.txt —
+# без reference/tests/ → merged-дерево пусто → verify-merged empty-suite pass.
 
 run_loop "$CBHOME_B" ""
 
 [ "$(issue_state 10)" = "CLOSED" ] \
-  && ok "RED-b: leaf #10 CLOSED — StatusContext SUCCESS correctly triggered merge" \
-  || ko "RED-b: leaf #10 NOT closed — before fix, StatusContext SUCCESS was classified as pending forever"
+  && ok "RED-b: leaf #10 CLOSED — box-verdict pass (empty suite) triggered merge" \
+  || ko "RED-b: leaf #10 NOT closed — box-verdict should have triggered merge on empty suite"
 
 pr_merged 10 \
-  && ok "RED-b: PR #10 merged (StatusContext SUCCESS = green)" \
-  || ko "RED-b: PR #10 NOT merged — StatusContext SUCCESS should have triggered merge"
+  && ok "RED-b: PR #10 merged (box-verdict pass = green)" \
+  || ko "RED-b: PR #10 NOT merged — verify-merged empty-suite should be pass"
 
 # =============================================================================
 # RED-d: broken GIT_REMOTE → try-merge infra error (exit 2) → leaf stays review
@@ -373,8 +327,7 @@ echo "== RED-d: broken CB_GIT_REMOTE → leaf stays status:review, NOT needs-rew
 CBHOME_D="$ROOT/cbhome_d"
 reset_sandbox "$CBHOME_D"
 printf '%s' "$REVIEW_BOARD" > "$BOARD_STATE"
-# CI is green — the only failure is the broken remote (infra, not a real conflict)
-printf 'success' > "$PRDIR/checks-10"
+# Broken remote → try-merge exit 2 (infra) → leaf stays review (no CI read needed)
 
 BROKEN_D="$ROOT/broken_remote_d"
 # CB_GIT_REMOTE overrides the base REMOTE set in run_loop (last assignment wins in eval)
@@ -397,38 +350,8 @@ pr_not_merged 10 \
   || ko "RED-d: PR #10 merged despite broken remote"
 
 # =============================================================================
-# RED-e: gh pr view infra failures NOT counted as empty rollup (F3-c / point 3)
-# =============================================================================
-echo "== RED-e: gh pr view failures NOT counted as empty-rollup ticks → leaf NOT blocked =="
-
-CBHOME_E="$ROOT/cbhome_e"
-reset_sandbox "$CBHOME_E"
-printf '%s' "$REVIEW_BOARD" > "$BOARD_STATE"
-# gh stub: exit 1 on every statusCheckRollup call for PR #10 (simulate infra flap)
-printf 'gh_error' > "$PRDIR/checks-10"
-
-# CB_CI_EMPTY_TICKS=2: threshold is 2 empty-rollup ticks.
-# CB_IDLE_CONFIRM=6: loop runs 6 ticks → 6 gh errors >> 2 empty-rollup limit.
-# Despite 6 errors exceeding the limit, the leaf must NOT be blocked:
-# gh-errors must NOT increment the empty-rollup counter (point 3 of spec).
-run_loop "$CBHOME_E" "CB_CI_EMPTY_TICKS=2 CB_IDLE_CONFIRM=6"
-
-no_label 10 "status:blocked" \
-  && ok "RED-e: leaf #10 NOT blocked — gh errors do NOT count as empty rollup" \
-  || ko "RED-e: leaf #10 was blocked — before fix, gh errors fabricated empty rollup and incremented counter"
-
-has_label 10 "status:review" \
-  && ok "RED-e: leaf #10 still in status:review" \
-  || ko "RED-e: leaf #10 not in status:review"
-
-ghlog_has "gh-error-rollup-10" \
-  && ok "RED-e: gh-error-rollup entries in log (infra errors logged as retry, not empty)" \
-  || ko "RED-e: no gh-error-rollup entries in log (infra errors should be logged)"
-
-pr_not_merged 10 \
-  && ok "RED-e: PR #10 NOT merged (CI unreadable)" \
-  || ko "RED-e: PR #10 merged despite gh errors reading CI"
-
+# RED-e: REMOVED (obsolete, #176 Ф-A)
+# gh-error на чтение rollup — беспредметен: петля больше не читает statusCheckRollup.
 # =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
