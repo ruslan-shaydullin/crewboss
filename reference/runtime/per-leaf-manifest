@@ -1,0 +1,63 @@
+# per-leaf-manifest — allow/exclude list for per-leaf verify-merged (issue #194 / F-A / I2)
+#
+# Criterion for ALLOW: verdict = pure function of merged content; no launcher loops,
+# no background processes, no timing/poll/sleep asserts, no recursive verify-merged.
+#
+# Criterion for EXCLUDE (default-fail-safe): anything not meeting the above criterion.
+# New/unknown/unclassified test ⇒ NOT in ALLOW ⇒ excluded from per-leaf by default.
+# GHA engine job (ci.yml:21-33) runs the FULL suite regardless of this manifest.
+#
+# Guard: reference/tests/leaf-verifier.test.sh verifies:
+#   union(ALLOW, EXCLUDE) == all reference/tests/*.test.sh (currently 45 total)
+#   ALLOW ∩ EXCLUDE = ∅
+#   ALLOW = 10, EXCLUDE = 35
+# A new unclassified *.test.sh causes the guard to RED (fail-closed / drift prevention).
+#
+# Format: ALLOW <basename>  or  EXCLUDE <basename>  (basename = without .test.sh suffix)
+
+ALLOW acceptance-block
+ALLOW cli-smoke
+ALLOW gate-comment-payload
+ALLOW launchable
+ALLOW manifest-lib
+ALLOW marker-gate
+ALLOW prep-params
+ALLOW runtime-lint
+ALLOW spawn-unit
+ALLOW token-hygiene
+
+EXCLUDE base-freshness
+EXCLUDE charter-branch
+EXCLUDE charter-finale
+EXCLUDE ci-taxonomy
+EXCLUDE deploy-contract
+EXCLUDE deploy-step
+EXCLUDE deploy-verify
+EXCLUDE doctor-drift
+EXCLUDE doctor-process
+EXCLUDE finale-nonblocking
+EXCLUDE gate-charter-tree
+EXCLUDE gate-integrator
+EXCLUDE gate-layer-a
+EXCLUDE gate-layer-b
+EXCLUDE gate-repo-dir
+EXCLUDE infra-false-green
+EXCLUDE integrator
+EXCLUDE integrator-atomicity
+EXCLUDE integrator-loop
+EXCLUDE integrator-scope
+EXCLUDE killswitch
+EXCLUDE launcher-dryrun
+EXCLUDE launcher-gh-scope
+EXCLUDE launcher-integration
+EXCLUDE leaf-verifier
+EXCLUDE leaf-verifier-cache
+EXCLUDE needs-rework
+EXCLUDE provision-build
+EXCLUDE rework-contract
+EXCLUDE run-env-contract
+EXCLUDE run-liveness
+EXCLUDE runtime-manifest
+EXCLUDE ui-api-contract
+EXCLUDE ui-loop-mode
+EXCLUDE ui-run-contract

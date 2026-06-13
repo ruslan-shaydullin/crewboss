@@ -370,7 +370,17 @@ cmd_verify_merged() {
   #        to 124 (timeout convention) → infra (exit 2).
   #    Tests run from the clone root (reference/tests/ and reference/bin/ come from
   #    the clone, not from ~/cbnet box-deploy — HD-2 fresh-clone requirement).
+  #    F-A fix (issue #194 / I2 soundness): per-leaf ALLOW-list filter — only
+  #    leaf-unit-safe tests run here; heavy launcher/integration/timing tests are
+  #    EXCLUDED by default (fail-safe).  Full suite runs in GHA (ci.yml:21-33).
+  #    Manifest: per-leaf-manifest in the same directory as this integrator script
+  #    (box: ~/cbnet/per-leaf-manifest; test: reference/runtime/per-leaf-manifest).
   local suite_rc=0
+
+  # Resolve manifest path from the integrator's own directory (not the merged tree)
+  # so leaf authors cannot manipulate which tests run by editing their PR.
+  local _manifest_path
+  _manifest_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/per-leaf-manifest"
 
   # Start engine run in background subshell
   (
@@ -378,6 +388,10 @@ cmd_verify_merged() {
     shopt -s nullglob
     fail=0
     for t in reference/tests/*.test.sh; do
+      _base="$(basename "$t" .test.sh)"
+      # F-A filter: skip any test not explicitly listed as ALLOW in the manifest.
+      # Fail-closed: if manifest is missing, grep exits non-zero → test skipped.
+      grep -qxF "ALLOW $_base" "$_manifest_path" 2>/dev/null || continue
       bash "$t" || fail=1
     done
     exit "$fail"
