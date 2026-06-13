@@ -56,17 +56,23 @@ setup_bare_remote() {
     pass)
       mkdir -p "$tmp/reference/tests"
       printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh" ;;
+      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
+      printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     fail)
       mkdir -p "$tmp/reference/tests"
       printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh" ;;
+      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
+      printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     hang)
       mkdir -p "$tmp/reference/tests"
       printf '#!/usr/bin/env bash\nsleep 999\n' > "$tmp/reference/tests/dummy.test.sh"
-      chmod +x "$tmp/reference/tests/dummy.test.sh" ;;
+      chmod +x "$tmp/reference/tests/dummy.test.sh"
+      # Manifest: ALLOW dummy so per-leaf filter runs it (#194)
+      printf 'ALLOW dummy\n' > "$tmp/reference/tests/per-leaf-manifest" ;;
     none)
-      # no reference/tests/ directory — empty suite
+      # no reference/tests/ directory — empty suite (no manifest either)
       ;;
   esac
 
@@ -171,6 +177,138 @@ CB_VERIFY_TIMEOUT=1 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 [ "$(cat "$VERDICT5" 2>/dev/null)" = "infra" ] \
   && ok "F2-timeout: verdict=infra" \
   || ko "F2-timeout: verdict mismatch (got '$(cat "$VERDICT5" 2>/dev/null)')"
+
+# =============================================================================
+# Test 6: MAIN red→green — sentinel excluded from per-leaf suite (I2 fix, #194)
+#   Merged tree has a deterministic always-fail sentinel NOT in the ALLOW list.
+#   BEFORE fix: per-leaf ran ALL *.test.sh → sentinel executed → rc=1 → "fail".
+#   AFTER fix:  sentinel not in ALLOW → default-excluded → not executed → "pass".
+# =============================================================================
+echo "=== Test 6: ALLOW filter — sentinel excluded from per-leaf suite (I2 fix) ==="
+REMOTE6="$ROOT/remote6.git"
+VERDICT6="$ROOT/verdict6.txt"
+
+# Build synthetic bare remote: merged tree has dummy (ALLOW) + sentinel (EXCLUDED).
+{
+  rm -rf "$REMOTE6"
+  git init --bare -q "$REMOTE6"
+  _tmp6="$(mktemp -d)"
+  git clone -q "$REMOTE6" "$_tmp6" 2>/dev/null
+  git -C "$_tmp6" config user.email t@t
+  git -C "$_tmp6" config user.name  T
+
+  # Create reference/tests/ with:
+  #   dummy.test.sh         — always exit 0 (ALLOW-listed)
+  #   sentinel-always-fail.test.sh — always exit 1 (NOT in ALLOW)
+  #   per-leaf-manifest     — classifies both: ALLOW dummy, EXCLUDED sentinel
+  mkdir -p "$_tmp6/reference/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_tmp6/reference/tests/dummy.test.sh"
+  chmod +x "$_tmp6/reference/tests/dummy.test.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$_tmp6/reference/tests/sentinel-always-fail.test.sh"
+  chmod +x "$_tmp6/reference/tests/sentinel-always-fail.test.sh"
+  # Fixture manifest: ALLOW dummy only; sentinel is EXCLUDED (not ALLOW)
+  printf 'ALLOW dummy\nEXCLUDED sentinel-always-fail\n' \
+    > "$_tmp6/reference/tests/per-leaf-manifest"
+
+  printf 'base\n' > "$_tmp6/README.md"
+  git -C "$_tmp6" add -A
+  git -C "$_tmp6" commit -qm "base" 2>/dev/null
+  git -C "$_tmp6" push -q origin "HEAD:refs/heads/charter/5" 2>/dev/null
+
+  printf 'leaf change\n' > "$_tmp6/leaf.txt"
+  git -C "$_tmp6" add -A
+  git -C "$_tmp6" commit -qm "leaf work" 2>/dev/null
+  git -C "$_tmp6" push -q origin "HEAD:refs/heads/leaf/42" 2>/dev/null
+
+  rm -rf "$_tmp6"
+}
+
+rc=0
+bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
+  --remote "$REMOTE6" --verdict-file "$VERDICT6" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] \
+  && ok "ALLOW-filter(sentinel): exit 0 — sentinel excluded, only ALLOW tests ran" \
+  || ko "ALLOW-filter(sentinel): expected exit 0, got $rc (sentinel was not excluded from per-leaf)"
+[ "$(cat "$VERDICT6" 2>/dev/null)" = "pass" ] \
+  && ok "ALLOW-filter(sentinel): verdict=pass" \
+  || ko "ALLOW-filter(sentinel): verdict mismatch (got '$(cat "$VERDICT6" 2>/dev/null)')"
+
+# =============================================================================
+# Test 7: Composition / guard fail-closed (ALLOW∪EXCLUDED = actual, disjoint, #194)
+#   Checks the REAL repository manifest against the actual reference/tests/*.test.sh.
+#   Guards against drift: any new unclassified test makes the union check fail.
+#   Expected: ALLOW=10, EXCLUDED=35, union=45, disjoint, every file classified.
+# =============================================================================
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=10 EXCLUDED=35) ==="
+_MANIFEST="$HERE/per-leaf-manifest"
+if [ ! -f "$_MANIFEST" ]; then
+  ko "guard: per-leaf-manifest not found at $_MANIFEST"
+else
+  # Extract classifications from manifest
+  _allow_count=$(grep -c '^ALLOW ' "$_MANIFEST" 2>/dev/null || echo 0)
+  _excl_count=$(grep -c '^EXCLUDED ' "$_MANIFEST" 2>/dev/null || echo 0)
+  _union_count=$(grep -E '^(ALLOW|EXCLUDED) ' "$_MANIFEST" 2>/dev/null | wc -l | tr -d '[:space:]')
+
+  # Get actual test basenames (strip .test.sh)
+  _actual_tests="$(ls "$HERE"/*.test.sh 2>/dev/null | xargs -n1 basename | sed 's/\.test\.sh$//' | sort)"
+  _actual_count="$(printf '%s\n' "$_actual_tests" | grep -c .)"
+
+  # Build manifest union (sorted)
+  _manifest_union="$(grep -E '^(ALLOW|EXCLUDED)[[:space:]]+' "$_MANIFEST" \
+    | awk '{print $2}' | sort -u)"
+
+  [ "$_allow_count" -eq 10 ] \
+    && ok "guard: ALLOW count=10" \
+    || ko "guard: ALLOW count expected 10, got $_allow_count"
+
+  [ "$_excl_count" -eq 35 ] \
+    && ok "guard: EXCLUDED count=35" \
+    || ko "guard: EXCLUDED count expected 35, got $_excl_count"
+
+  [ "$_actual_count" -eq 45 ] \
+    && ok "guard: actual *.test.sh count=45" \
+    || ko "guard: actual *.test.sh count expected 45, got $_actual_count"
+
+  # Check disjoint: no name in both ALLOW and EXCLUDED
+  _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"
+  _excl_names="$(grep '^EXCLUDED ' "$_MANIFEST" | awk '{print $2}' | sort)"
+  _intersection="$(comm -12 <(printf '%s\n' "$_allow_names") <(printf '%s\n' "$_excl_names") 2>/dev/null)"
+  [ -z "$_intersection" ] \
+    && ok "guard: ALLOW∩EXCLUDED=∅ (disjoint)" \
+    || ko "guard: ALLOW∩EXCLUDED not empty — duplicates: $_intersection"
+
+  # Check union == actual (every *.test.sh classified, no phantom entries)
+  _diff="$(comm -3 <(printf '%s\n' "$_manifest_union") <(printf '%s\n' "$_actual_tests") 2>/dev/null)"
+  [ -z "$_diff" ] \
+    && ok "guard: ALLOW∪EXCLUDED == actual reference/tests/*.test.sh (no unclassified, no phantom)" \
+    || ko "guard: manifest mismatch (unclassified or phantom entries): $(printf '%s\n' "$_diff")"
+fi
+
+# =============================================================================
+# Test 8: Smoke — parallel concurrent verify-merged stability
+#   Runs 3 verify-merged concurrently on a passing bare remote.
+#   Asserts all verdicts = pass.  Non-deterministic (prababilistic) supplement
+#   to Test 6 (deterministic); not the primary gate.
+# =============================================================================
+echo "=== Test 8: Smoke — parallel concurrent verify-merged (I1 stability) ==="
+REMOTE8="$ROOT/remote8.git"
+setup_bare_remote "$REMOTE8" "charter/5" "leaf/42" "pass"
+
+for _i in 1 2 3; do
+  ( bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
+      --remote "$REMOTE8" --verdict-file "$ROOT/verdict8_${_i}.txt" \
+      2>/dev/null ) &
+done
+wait
+
+_smoke_ok=1
+for _i in 1 2 3; do
+  _v="$(cat "$ROOT/verdict8_${_i}.txt" 2>/dev/null)"
+  [ "$_v" = "pass" ] || _smoke_ok=0
+done
+[ "$_smoke_ok" -eq 1 ] \
+  && ok "smoke-parallel: all 3 concurrent verify-merged returned pass" \
+  || ko "smoke-parallel: one or more concurrent verify-merged did not return pass"
 
 # =============================================================================
 echo

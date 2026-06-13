@@ -370,6 +370,10 @@ cmd_verify_merged() {
   #        to 124 (timeout convention) → infra (exit 2).
   #    Tests run from the clone root (reference/tests/ and reference/bin/ come from
   #    the clone, not from ~/cbnet box-deploy — HD-2 fresh-clone requirement).
+  #    I2 fix (#194): per-leaf ALLOW filter — only leaf-unit-safe tests run here.
+  #    Default-exclude (fail-safe/fail-closed): any test NOT in ALLOW is skipped.
+  #    Full suite (including EXCLUDED) still runs in GHA (ci.yml:21-33).
+  #    Manifest: reference/tests/per-leaf-manifest (ALLOW/EXCLUDED classification).
   local suite_rc=0
 
   # Start engine run in background subshell
@@ -377,7 +381,12 @@ cmd_verify_merged() {
     cd "$merged_dir"
     shopt -s nullglob
     fail=0
+    _manifest="reference/tests/per-leaf-manifest"
     for t in reference/tests/*.test.sh; do
+      _base="$(basename "$t" .test.sh)"
+      # Only run tests explicitly classified as ALLOW in the manifest.
+      # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
+      grep -qE "^ALLOW[[:space:]]+${_base}$" "$_manifest" 2>/dev/null || continue
       bash "$t" || fail=1
     done
     exit "$fail"
