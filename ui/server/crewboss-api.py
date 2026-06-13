@@ -65,6 +65,48 @@ def build_agents(by_n):
         agents.append(dict(task=None, role="boss", phase="interactive", title="boss session", started=""))
     return agents
 
+def build_loop_info():
+    """Read loop-mode info from run-env.sh (same source as action=run, #148)."""
+    run_env_sh = os.path.join(CB_HOME, "run-env.sh")
+    home = os.environ.get("HOME", os.path.expanduser("~"))
+    seed_env = {
+        "HOME": home,
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+    }
+    # Pass CB_NO_INTEGRATE through so D2 opt-out is respected when the daemon carries it
+    if os.environ.get("CB_NO_INTEGRATE"):
+        seed_env["CB_NO_INTEGRATE"] = os.environ["CB_NO_INTEGRATE"]
+    env = {}
+    if os.path.isfile(run_env_sh):
+        try:
+            env_raw = subprocess.run(
+                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
+                capture_output=True, text=True, env=seed_env, timeout=15
+            ).stdout
+            for line in env_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k and k.isidentifier():
+                        env[k] = v
+        except Exception:
+            pass
+    # integrate: CB_GIT_REMOTE non-empty after sourcing run-env.sh (D2 logic)
+    integrate = bool(env.get("CB_GIT_REMOTE", "").strip())
+    try:    max_ticks    = int(env.get("CB_MAX_TICKS",    "1800"))
+    except Exception: max_ticks    = 1800
+    try:    max_parallel = int(env.get("CB_MAX_PARALLEL", "4"))
+    except Exception: max_parallel = 4
+    # running: launcher.pid present and process alive
+    pid_file = os.path.join(RUN, "launcher.pid")
+    running = False
+    try:
+        pid = int(open(pid_file).read().strip())
+        os.kill(pid, 0)
+        running = True
+    except Exception:
+        pass
+    return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel, running=running)
+
 def build_state():
     issues = []
     if REPO:
@@ -101,7 +143,8 @@ def build_state():
                  killed=os.path.exists(os.path.join(RUN,"kill_switch")))
     return dict(board=board, agents=build_agents(by_n),
                 budget=dict(spent=budget.get("spent_usd",0), cap=cap, runs=budget.get("runs",[])),
-                flags=flags, autonomy=dict(repo=REPO))
+                flags=flags, autonomy=dict(repo=REPO),
+                loop=build_loop_info())
 
 def build_comments(n):
     """Comments for issue n: last 50, via gh CLI."""
@@ -204,8 +247,35 @@ def do_command(body):
         if os.path.exists(ks):
             return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
         os.makedirs(RUN,exist_ok=True)
-        subprocess.Popen(["bash", os.path.join(CB_HOME,"crewboss-launcher-gh.sh"),"run"],
-                         env=os.environ, stdout=open(os.path.join(RUN,"launcher.out"),"a"),
+        # Build full env from run-env.sh so the loop gets the complete contract even when
+        # the daemon was restarted with an empty env (e.g. after deploy-runtime.sh — issue #148).
+        # Never pass the daemon's os.environ directly — it is empty post-deploy, giving the
+        # launcher 120 ticks / no integration (finding #1+#2/#142).  set -a auto-exports
+        # everything sourced from run-env.sh including ~/.crewboss.env (CLAUDE_CODE_OAUTH_TOKEN).
+        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        seed_env = {
+            "HOME": home,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+        }
+        try:
+            env_raw = subprocess.run(
+                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
+                capture_output=True, text=True, env=seed_env, timeout=15
+            ).stdout
+            launch_env = {}
+            for line in env_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k and k.isidentifier():
+                        launch_env[k] = v
+            if not launch_env:
+                launch_env = dict(seed_env)
+        except Exception:
+            launch_env = dict(seed_env)
+        subprocess.Popen(["bash", os.path.join(CB_HOME, "crewboss-launcher-gh.sh"), "run"],
+                         env=launch_env,
+                         stdout=open(os.path.join(RUN,"launcher.out"),"a"),
                          stderr=subprocess.STDOUT)
         return {"ok":True,"msg":"launcher started"}
     elif a=="approve" and n.isdigit():

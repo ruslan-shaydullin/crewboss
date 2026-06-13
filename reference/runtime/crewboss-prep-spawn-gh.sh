@@ -10,6 +10,13 @@ ID="$1"; ROLE="$2"
 PR_REPO=$(bash "$BOARD" get "$ID" pr_repo)
 [ -n "$PR_REPO" ] || { echo "adapter-gh: #$ID has no pr_repo" >&2; exit 2; }
 GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
+# Inline git credential helper (issue #149 — token hygiene).
+# Registered via GIT_CONFIG_* (highest git precedence). Inline function → no file path →
+# valid in both host and jail namespaces. nsjail keep_env (-e) + --env GH_TOKEN carry both.
+# shellcheck disable=SC2016
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
 if [ "$ROLE" = "tech-lead" ]; then
@@ -58,29 +65,30 @@ rm -rf "$WA" 2>/dev/null || sudo rm -rf "$WA" 2>/dev/null || true
 mkdir -p "$WA"
 PF="$RUN/work/$ID/task.prompt"; printf '%s\n' "$PROMPT" > "$PF"
 
-# Shared local mirror cache: clone/refresh ONCE from GitHub (under flock), then every leaf
-# clones from disk — no concurrent network clones (which throttle on a private repo).
+# Shared local mirror cache: refreshed from GitHub on every dispatch (under flock); the local
+# clone is also taken under the same lock so no leaf ever clones from a mid-fetch cache.
 CACHE_DIR="$CB_HOME/repo-cache"; mkdir -p "$CACHE_DIR"
 CACHE="$CACHE_DIR/$(printf '%s' "$PR_REPO" | tr '/' '_').git"
-# Build the cache ONCE per run (under flock); then it is READ-ONLY — never refreshed mid-run.
-# Refreshing a mirror while a sibling leaf clones --local from it corrupts that clone, so we
-# don't. The cache is (re)warmed at run start; leaves see main as of run start. Good enough.
 (
   flock 9
   if [ ! -d "$CACHE" ]; then
     mc=0
-    until git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/$PR_REPO.git" "$CACHE.tmp" >/dev/null 2>&1; do
+    until git clone --mirror "https://github.com/$PR_REPO.git" "$CACHE.tmp" >/dev/null 2>&1; do
       mc=$((mc+1)); [ "$mc" -ge 3 ] && { echo "adapter-gh: cache mirror clone failed for $PR_REPO" >&2; exit 2; }
       rm -rf "$CACHE.tmp"; sleep $((mc*3))
     done
     mv "$CACHE.tmp" "$CACHE"   # atomic publish: a half-built cache is never visible to readers
+  else
+    git --git-dir "$CACHE" fetch --prune origin '+refs/heads/*:refs/heads/*' >/dev/null 2>&1 \
+      || { echo "adapter-gh: cache refresh failed for $PR_REPO" >&2; exit 2; }
   fi
+  git clone --local "$CACHE" "$WA/work" >/dev/null 2>&1 \
+    || { echo "adapter-gh: local clone from cache failed" >&2; exit 2; }
 ) 9>"$CACHE_DIR/.lock" || exit 2
-git clone --local "$CACHE" "$WA/work" >/dev/null 2>&1 \
-  || { echo "adapter-gh: local clone from cache failed" >&2; exit 2; }
 [ -e "$WA/work/.git" ] || { echo "adapter-gh: work tree has no .git — empty clone" >&2; exit 2; }
 cd "$WA/work"
-git remote set-url --push origin "https://x-access-token:${GH_TOKEN}@github.com/$PR_REPO.git"
+# Push URL token-free; credential helper provides GH_TOKEN at push time.
+git remote set-url --push origin "https://github.com/$PR_REPO.git"
 if [ -n "${CB:-}" ]; then
   # Ensure charter/C exists on origin (create off origin/main once, serialised per charter).
   mkdir -p "$RUN"
@@ -88,11 +96,36 @@ if [ -n "${CB:-}" ]; then
     if ! git ls-remote --exit-code --heads origin "$CB" >/dev/null 2>&1; then
       main_sha=$(git rev-parse "origin/main" 2>/dev/null \
                  || git rev-parse "origin/master" 2>/dev/null || true)
-      [ -n "$main_sha" ] && git push -q origin "$main_sha:refs/heads/$CB" 2>/dev/null || true
+      [ -n "$main_sha" ] && git push -q origin "$main_sha:refs/heads/$CB" 2>/dev/null \
+        && git update-ref "refs/remotes/origin/$CB" "$main_sha" \
+        || true   # tolerate: a sibling may have concurrently created it
     fi
-  ) 9>"$RUN/charter-${CHARTER}.lock"
-  git fetch -q origin "$CB" 2>/dev/null || true
-  git checkout -q -b "$BRANCH" "origin/$CB"
+    # Freshness guard: if charter/C is behind main with no own commits → fast-forward push;
+    # if it has own commits and is stale → loud dispatch refusal.
+    if git rev-parse --verify -q "refs/remotes/origin/$CB" >/dev/null 2>&1; then
+      behind=$(git rev-list --count "origin/$CB..origin/main" 2>/dev/null || echo 0)
+      if [ "$behind" -gt 0 ]; then
+        own=$(git rev-list --count "origin/main..origin/$CB" 2>/dev/null || echo 0)
+        if [ "$own" -eq 0 ]; then
+          main_sha=$(git rev-parse "origin/main" 2>/dev/null \
+                     || git rev-parse "origin/master" 2>/dev/null || true)
+          git push -q origin "$main_sha:refs/heads/$CB" 2>/dev/null \
+            && git update-ref "refs/remotes/origin/$CB" "$main_sha" \
+            || { echo "adapter-gh: ff push of $CB failed" >&2; exit 2; }
+        else
+          echo "adapter-gh: $CB is behind origin/main by $behind commits with $own own commits — stale base, dispatch refused" >&2
+          exit 2
+        fi
+      fi
+    fi
+  ) 9>"$RUN/charter-${CHARTER}.lock" || exit 2
+  if ! git rev-parse --verify -q "refs/remotes/origin/$CB" >/dev/null 2>&1; then
+    git fetch -q origin "$CB" 2>/dev/null \
+      || { echo "adapter-gh: fetch $CB failed" >&2; exit 2; }
+  fi
+  if ! git checkout -q -b "$BRANCH" "origin/$CB"; then
+    echo "adapter-gh: $CB missing after create attempt" >&2; exit 2
+  fi
 else
   git checkout -q -b "$BRANCH"
 fi

@@ -56,12 +56,15 @@ setup_remote(){
   rm -rf "$tmp"
 }
 
-# Create charter/N branch in the remote (one commit ahead of main)
+# Create charter/N branch in the remote (one commit ahead of main, derived from main)
+# Ancestor-check (#156): charter/C must have main as an ancestor; explicitly checkout
+# main before branching so the charter branch is not an orphan.
 setup_charter_branch(){
   local cid="$1"
   local tmp; tmp="$(mktemp -d)"
   git clone -q "$REMOTE" "$tmp" 2>/dev/null
   git -C "$tmp" config user.email t@t; git -C "$tmp" config user.name T
+  git -C "$tmp" checkout -q main 2>/dev/null            # base branch on main (not orphan)
   git -C "$tmp" checkout -q -b "charter/$cid" 2>/dev/null
   printf 'charter %s\n' "$cid" > "$tmp/charter-$cid.txt"
   git -C "$tmp" add -A; git -C "$tmp" commit -qm "charter $cid setup" 2>/dev/null

@@ -22,10 +22,26 @@ MANIFEST="${MANIFEST:-$REPO_ROOT/reference/runtime-manifest.tsv}"
 CB_HOST="${CB_HOST:-}"
 CB_REMOTE_HOME="${CB_REMOTE_HOME:-~/cbnet}"
 CB_SSH_OPTS="${CB_SSH_OPTS:-}"
+SUBCMD="${1:-}"
 
 if [ -z "$CB_HOST" ]; then
   printf 'ERROR: CB_HOST is not set (e.g. CB_HOST=ec2-user@1.2.3.4)\n' >&2
   exit 1
+fi
+
+# ── verify step: ssh-check every canonical file on the box via crewboss-doctor ─
+# Reuses drift logic from crewboss-doctor.sh (already deployed on the box).
+# Does not duplicate sha-check code here.
+do_verify() {
+  printf '=== deploy-runtime: verify — checking %s against manifest ===\n' "$CB_HOST"
+  # shellcheck disable=SC2086,SC2029
+  ssh $CB_SSH_OPTS "$CB_HOST" \
+    "CB_HOME='$CB_REMOTE_HOME' bash '$CB_REMOTE_HOME/crewboss-doctor.sh'"
+}
+
+if [ "$SUBCMD" = "verify" ]; then
+  do_verify
+  exit $?
 fi
 
 if [ ! -f "$MANIFEST" ]; then
@@ -75,6 +91,10 @@ printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
 ssh $CB_SSH_OPTS "$CB_HOST" "
   CB_HOME='$CB_REMOTE_HOME'
+  # Source operator secrets from ~/.crewboss.env so CB_REPO and CB_API_TOKEN reach the
+  # daemon (without this, api.py starts with empty TOKEN → auth=OFF — issue #148).
+  [ -f \"\$HOME/.crewboss.env\" ] && . \"\$HOME/.crewboss.env\"
+  export CB_HOME CB_REPO CB_API_TOKEN
   API_PID=\"\$CB_HOME/run/api.pid\"
   mkdir -p \"\$CB_HOME/run\"
   if [ -f \"\$API_PID\" ]; then
@@ -82,10 +102,20 @@ ssh $CB_SSH_OPTS "$CB_HOST" "
     rm -f \"\$API_PID\"
     sleep 0.3
   fi
-  nohup python3 \"\$CB_HOME/crewboss-api.py\" --port 8787 \
+  nohup env CB_HOME=\"\$CB_HOME\" CB_REPO=\"\$CB_REPO\" CB_API_TOKEN=\"\$CB_API_TOKEN\" \
+    python3 \"\$CB_HOME/crewboss-api.py\" --port 8787 \
     > \"\$CB_HOME/run/api.out\" 2>&1 &
   echo \$! > \"\$API_PID\"
-  echo 'API restarted'
+  echo \"API restarted, auth=\${CB_API_TOKEN:+on}\"
 "
 
-printf '=== deploy complete: %d files deployed ===\n' "$deploy_count"
+# ── Verify: post-deploy drift check — deploy is only complete when box matches ─
+verify_rc=0
+do_verify || verify_rc=$?
+if [ "$verify_rc" -ne 0 ]; then
+  printf 'ERROR: verify failed — %s did not reach clean state after deploy\n' \
+    "$CB_HOST" >&2
+  exit 1
+fi
+
+printf '=== deploy complete: %d files deployed, verify ok ===\n' "$deploy_count"

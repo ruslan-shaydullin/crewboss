@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 /** Check whether a text contains a valid ## Acceptance (machine) block.
@@ -216,6 +216,7 @@ function Hero({ state }: { state: State | null }) {
         <div className="stat-budget">${spent.toFixed(2)} <span className="muted">/ ${b.cap.toFixed(0)}</span></div>
         <div className="bar"><div className="fill" style={{ width: pct + '%' }} /></div>
       </div>
+      {state?.loop && <LoopBadge loop={state.loop} />}
     </div>
   )
 }
@@ -225,6 +226,21 @@ function Stat({ n, label, live, accent }: { n: number; label: string; live?: boo
     <div className="stat">
       <div className={'stat-n a-' + accent}>{shown}{live && <span className="stat-pulse" />}</div>
       <div className="stat-label">{label}</div>
+    </div>
+  )
+}
+
+function LoopBadge({ loop }: { loop: LoopInfo }) {
+  return (
+    <div className="loop-badge" data-testid="loop-badge" data-integrate={String(loop.integrate)}>
+      <span className={'loop-integrate' + (loop.integrate ? ' on' : ' off')}>
+        {loop.integrate ? 'integration ON' : 'integration OFF'}
+      </span>
+      <span className="loop-sep">·</span>
+      <span className="loop-ticks" title="CB_MAX_TICKS">ticks:{loop.max_ticks}</span>
+      <span className="loop-sep">·</span>
+      <span className="loop-parallel" title="CB_MAX_PARALLEL">×{loop.max_parallel}</span>
+      {loop.running && <><span className="loop-sep">·</span><span className="loop-running">running</span></>}
     </div>
   )
 }

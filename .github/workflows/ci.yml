@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  freshness:
+    if: github.event_name == 'pull_request' && startsWith(github.base_ref, 'charter/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check branch is not stale behind main
+        run: bash reference/bin/check-freshness.sh
+        env:
+          FRESHNESS_THRESHOLD: '0'
+
   engine:
     runs-on: ubuntu-latest
     steps:

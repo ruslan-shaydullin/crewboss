@@ -37,6 +37,7 @@
   .btn.sm{padding:4px 9px;font-size:12px;border-radius:8px}
   .flag{font-size:12px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
   .flag.on{color:#fca5a5;border-color:#5b2a31;background:#2a161a}
+  .flag.int-on{color:#34d399;border-color:#0a3828;background:#0a2820}
   /* board */
   .charter{margin:16px 0 8px;display:flex;align-items:center;gap:9px}
   .charter .ttl{font-weight:700}
@@ -77,6 +78,7 @@
     <span class="repo" id="repo">—</span>
     <span class="flag" id="fl-pause">pause off</span>
     <span class="flag" id="fl-kill">kill off</span>
+    <span class="flag" id="fl-loop" title="Loop mode: integration, ticks, parallel">loop —</span>
     <div class="spacer"></div>
     <div class="budget">
       <div class="lbl"><span>pool</span><span id="bud-lbl">$0 / $0</span></div>
@@ -125,6 +127,11 @@ function render(s){
   $("bud-fill").style.width = b.cap>0 ? Math.min(100, 100*b.spent/b.cap)+"%" : "0%";
   $("fl-pause").className="flag"+(s.flags?.paused?" on":""); $("fl-pause").textContent="pause "+(s.flags?.paused?"ON":"off");
   $("fl-kill").className="flag"+(s.flags?.killed?" on":""); $("fl-kill").textContent="kill "+(s.flags?.killed?"ON":"off");
+  const loop=s.loop; if(loop){
+    const intOn=loop.integrate;
+    $("fl-loop").className="flag"+(intOn?" int-on":"");
+    $("fl-loop").textContent=(intOn?"↗ integration ON":"✗ integration OFF")+" · ticks:"+loop.max_ticks+" · ×"+loop.max_parallel+(loop.running?" · running":"");
+  }
   $("b-pause").textContent = s.flags?.paused ? "▶ Resume" : "⏸ Pause";
   $("b-kill").textContent  = s.flags?.killed ? "✓ Un-kill" : "⛔ Kill";
 

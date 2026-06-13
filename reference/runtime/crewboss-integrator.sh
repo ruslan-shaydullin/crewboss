@@ -112,12 +112,12 @@ cmd_gate_charter() {
     tmpdir="$(mktemp -d)"
     local branch="charter/$charter_id"
     git clone -q "$remote" "$tmpdir" 2>/dev/null || {
-      log "gate-charter #$charter_id: clone from $remote failed"
+      log "gate-charter #$charter_id: clone failed (charter $charter_id)"
       rm -rf "$tmpdir"; exit 1
     }
     git -C "$tmpdir" fetch -q origin "$branch" 2>/dev/null && \
       git -C "$tmpdir" checkout -q "FETCH_HEAD" -- 2>/dev/null || {
-      log "gate-charter #$charter_id: cannot checkout branch $branch from $remote"
+      log "gate-charter #$charter_id: cannot checkout branch $branch"
       rm -rf "$tmpdir"; exit 1
     }
     scan_dir="$tmpdir"
@@ -165,7 +165,7 @@ cmd_try_merge() {
   local tmpdir; tmpdir="$(mktemp -d)"
 
   git clone -q "$remote" "$tmpdir" 2>/dev/null || {
-    log "try-merge: clone failed ($remote)"; rm -rf "$tmpdir"; exit 2
+    log "try-merge: clone failed"; rm -rf "$tmpdir"; exit 2
   }
   git -C "$tmpdir" config user.email "integrator@crewboss" 2>/dev/null
   git -C "$tmpdir" config user.name  "crewboss-integrator"  2>/dev/null
