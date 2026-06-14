@@ -406,6 +406,46 @@ if grep -q "idle — run complete" "$LOGFILE_D"; then ok "RED-d: loop exited cle
 if grep -q "max ticks" "$LOGFILE_D"; then ko "RED-d: loop hit max-ticks (escalation did not terminate busy-loop)"; else ok "RED-d: loop did NOT hit max-ticks"; fi
 
 # =============================================================================
+# RED-e (#208): verify-red confirmed → needs-rework → RE-DISPATCHED (term cleared) + reason in comment
+# =============================================================================
+echo "== RED-e: verify-red escalation clears term → leaf re-dispatched via rework path; comment carries reason =="
+CBHOME_E="$ROOT/cbhome_e"; LOGFILE_E="$ROOT/loop_e.log"
+reset_sandbox "$CBHOME_E"
+# charter/5 with a RED ALLOW-named test (acceptance-block exit 1) → merged tree deterministically RED.
+WE="$(mktemp -d)"; git clone -q "$REMOTE" "$WE" 2>/dev/null
+git -C "$WE" config user.email t@t; git -C "$WE" config user.name T
+git -C "$WE" checkout -q -b cb5e origin/main 2>/dev/null
+mkdir -p "$WE/reference/tests"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WE/reference/tests/acceptance-block.test.sh"
+chmod +x "$WE/reference/tests/acceptance-block.test.sh"
+git -C "$WE" add -A; git -C "$WE" commit -qm "cb5 red" 2>/dev/null
+git -C "$WE" push -q origin cb5e:refs/heads/charter/5 2>/dev/null
+printf 'leaf\n' > "$WE/leaf.txt"; git -C "$WE" add -A; git -C "$WE" commit -qm leaf 2>/dev/null
+git -C "$WE" push -q origin cb5e:refs/heads/leaf/42 2>/dev/null
+rm -rf "$WE"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:review"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+touch "$PRDIR/20"; printf 'charter/5' > "$PRDIR/base-20"; printf 'leaf/42' > "$PRDIR/head-20"
+# term=1 set as launcher does on done->review (this is the bug surface: bg-spawn skips term!="")
+mkdir -p "$CBHOME_E/run/work/20"; printf '1' > "$CBHOME_E/run/work/20/term"
+# CONFIRM_N=1 → single red is confirmed (vm_exit=1); CAP=1 → first red escalates needs-rework (re-dispatch), second → blocked.
+run_loop "$CBHOME_E" "$LOGFILE_E" "CB_VERIFY_CONFIRM_N=1" "CB_REWORK_CAP=1" "CB_MAX_TICKS=30"
+# (а) escalation routed to needs-rework at least once
+if grep -q "escalating to needs-rework" "$LOGFILE_E"; then ok "RED-e: verify-red escalated to needs-rework"; else ko "RED-e: no needs-rework escalation logged"; fi
+# (б) THE term-clear proof: leaf re-dispatched via rework path (RED before fix: term=1 blocks bg-spawn :631)
+if grep -qE "claim #20 state=needs-rework -> rework path" "$LOGFILE_E"; then ok "RED-e: #20 RE-DISPATCHED via rework path (term cleared)"; else ko "RED-e: #20 NOT re-dispatched — term flag still blocks bg-spawn (central #196 bug)"; fi
+# (в) RED-feedback: needs-rework comment carries the failing test name (not generic)
+if has_comment 20 "acceptance-block"; then ok "RED-e: needs-rework comment carries real RED reason (acceptance-block)"; else ko "RED-e: comment lacks failing-test name (blind rework, I-C broken)"; fi
+# (г) green-before-merge (I5): RED leaf never merged
+if [ -f "$PRDIR/merged-20" ]; then ko "RED-e: #20 merged despite RED (I5 broken)"; else ok "RED-e: #20 not merged (I5 intact)"; fi
+# (д) finiteness (I4): loop terminates (eventually blocked at cap → idle), not max-ticks
+if grep -q "max ticks" "$LOGFILE_E"; then ko "RED-e: loop hit max-ticks (no convergence)"; else ok "RED-e: loop did not hit max-ticks (finite)"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
