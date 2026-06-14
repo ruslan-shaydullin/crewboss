@@ -420,7 +420,7 @@ cat > "$BOARD_STATE" <<'JSON'
 ]
 JSON
 # CB_SPAWN=wedge (overrides run_loop default via env); tiny timeout; retry-cap=1 → one timeout → blocked
-run_loop "$CBHOME_F" "$LOGFILE_F" "CB_SPAWN=$WEDGE" "CB_SPAWN_TIMEOUT=3" "CB_RETRY_CAP=1" "CB_MAX_TICKS=15"
+run_loop "$CBHOME_F" "$LOGFILE_F" "CB_SPAWN=$WEDGE" "CB_POLL=1" "CB_SPAWN_TIMEOUT=2" "CB_RETRY_CAP=1" "CB_MAX_TICKS=10"
 if grep -qE "#30 spawn timeout .*kill -9" "$LOGFILE_F"; then ok "RED-f: wedged spawn killed by wall-clock timeout"; else ko "RED-f: no spawn-timeout kill logged (wedge pinned the loop)"; fi
 if has_label 30 "status:blocked"; then ok "RED-f: #30 routed to blocked (retry-cap after timeout)"; else ko "RED-f: #30 not routed after timeout"; fi
 if grep -q "idle — run complete" "$LOGFILE_F"; then ok "RED-f: loop terminated cleanly (idle — run complete) — not hung"; else ko "RED-f: loop did not reach idle (hung)"; fi
