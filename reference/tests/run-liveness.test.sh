@@ -406,6 +406,27 @@ if grep -q "idle — run complete" "$LOGFILE_D"; then ok "RED-d: loop exited cle
 if grep -q "max ticks" "$LOGFILE_D"; then ko "RED-d: loop hit max-ticks (escalation did not terminate busy-loop)"; else ok "RED-d: loop did NOT hit max-ticks"; fi
 
 # =============================================================================
+# RED-f (#212): wedged spawn (alive past CB_SPAWN_TIMEOUT) → wall-clock kill → routed → loop terminates
+# =============================================================================
+echo "== RED-f: hung spawn killed by per-spawn wall-timeout; loop does not hang =="
+CBHOME_F="$ROOT/cbhome_f"; LOGFILE_F="$ROOT/loop_f.log"
+reset_sandbox "$CBHOME_F"
+# wedged spawn stub: sleeps far longer than the timeout, never writes status.json
+WEDGE="$ROOT/wedge-spawn.sh"; printf '#!/usr/bin/env bash\nsleep 120\n' > "$WEDGE"; chmod +x "$WEDGE"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":30,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+# CB_SPAWN=wedge (overrides run_loop default via env); tiny timeout; retry-cap=1 → one timeout → blocked
+run_loop "$CBHOME_F" "$LOGFILE_F" "CB_SPAWN=$WEDGE" "CB_SPAWN_TIMEOUT=3" "CB_RETRY_CAP=1" "CB_MAX_TICKS=15"
+if grep -qE "#30 spawn timeout .*kill -9" "$LOGFILE_F"; then ok "RED-f: wedged spawn killed by wall-clock timeout"; else ko "RED-f: no spawn-timeout kill logged (wedge pinned the loop)"; fi
+if has_label 30 "status:blocked"; then ok "RED-f: #30 routed to blocked (retry-cap after timeout)"; else ko "RED-f: #30 not routed after timeout"; fi
+if grep -q "idle — run complete" "$LOGFILE_F"; then ok "RED-f: loop terminated cleanly (idle — run complete) — not hung"; else ko "RED-f: loop did not reach idle (hung)"; fi
+if grep -q "max ticks" "$LOGFILE_F"; then ko "RED-f: loop hit max-ticks (timeout did not unstick it)"; else ok "RED-f: loop did NOT hit max-ticks"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

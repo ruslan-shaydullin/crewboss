@@ -17,6 +17,7 @@ set -uo pipefail
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"; STATE="$RUN/state"; LOCK="$RUN/launcher.lock"
 RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
+# CB_SPAWN_TIMEOUT — per-spawn wall-clock kill (#212 I4 hang-protection); default 1800s (<< nsjail 3600).
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
 SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
@@ -581,7 +582,22 @@ cmd_run(){
       # route finished background spawns (by status.json phase; phase=unknown -> treat as crash/fail)
       for d in "$STATE"/*/; do [ -e "$d" ] || continue; id=$(basename "$d"); pid=$(sget "$id" pid)
         { [ -n "$pid" ] && [ "$pid" != PENDING ]; } || continue
-        kill -0 "$pid" 2>/dev/null && continue          # still running
+        if kill -0 "$pid" 2>/dev/null; then
+          # [#212 I4 hang-protection] kill a spawn alive past CB_SPAWN_TIMEOUT (wall-clock), route like crash
+          _st=$(sget "$id" starttime)
+          if [ -n "$_st" ]; then
+            _ste=$(date -u -d "$_st" +%s 2>/dev/null || echo 0)
+            _age=$(( $(date -u +%s) - _ste ))
+            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "${CB_SPAWN_TIMEOUT:-1800}" ]; then
+              kill -9 "$pid" 2>/dev/null
+              prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${CB_SPAWN_TIMEOUT:-1800}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + blocked"
+              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + requeue"; fi
+              sset "$id" pid ""
+            fi
+          fi
+          continue          # still running (or just timed-out+routed)
+        fi
         # charter planning task (tech-lead): route by the charter's own label, not by review.
         if [ "$(sget "$id" kind)" = "charter" ]; then
           cst=$(board get "$id" state)
