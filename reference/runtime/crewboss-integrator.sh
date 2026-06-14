@@ -370,7 +370,12 @@ cmd_verify_merged() {
   #        to 124 (timeout convention) → infra (exit 2).
   #    Tests run from the clone root (reference/tests/ and reference/bin/ come from
   #    the clone, not from ~/cbnet box-deploy — HD-2 fresh-clone requirement).
+  #    I2 fix (#194): per-leaf ALLOW filter — only leaf-unit-safe tests run here.
+  #    Default-exclude (fail-safe/fail-closed): any test NOT in ALLOW is skipped.
+  #    Full suite (including EXCLUDED) still runs in GHA (ci.yml:21-33).
+  #    Manifest: reference/tests/per-leaf-manifest (ALLOW/EXCLUDED classification).
   local suite_rc=0
+  _pl_manifest="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/per-leaf-manifest"
 
   # Start engine run in background subshell
   (
@@ -378,6 +383,10 @@ cmd_verify_merged() {
     shopt -s nullglob
     fail=0
     for t in reference/tests/*.test.sh; do
+      _base="$(basename "$t" .test.sh)"
+      # Only run tests explicitly classified as ALLOW in the manifest.
+      # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
+      grep -qE "^ALLOW[[:space:]]+${_base}$" "$_pl_manifest" 2>/dev/null || continue
       bash "$t" || fail=1
     done
     exit "$fail"
@@ -400,35 +409,39 @@ cmd_verify_merged() {
   rm -rf "$merged_dir"
   _BMT_DIR=""
 
-  # 3. Classify result and write verdict.
-  local verdict
+  # 3. Classify + single-counter N-confirmation (issue #195 / I3 anti-poison).
+  #    rc=0 → pass (cache now, reset red-counter).
+  #    rc=1 → real-red: bump per-leaf red-counter (ONE source of truth, shared with
+  #           L3 #196), keyed same as cache (${leaf_sha}_${base_sha}); <N → retryable
+  #           (exit 3, NOT cached); >=N → confirmed terminal red (exit 1, cached fail).
+  #    else → infra (exit 2, not cached).
+  local _redcount_file="" _confirm_n="${CB_VERIFY_CONFIRM_N:-2}" _rn=0
+  [ -n "$_cache_file" ] && _redcount_file="${_cache_file}.redcount"
+
   if [ "$suite_rc" -eq 0 ]; then
-    verdict="pass"
+    [ -n "$verdict_file" ] && printf 'pass' > "$verdict_file"
+    [ -n "$_cache_file" ] && printf 'pass' > "$_cache_file"
+    [ -n "$_redcount_file" ] && rm -f "$_redcount_file"
+    log "verify-merged: PASS (engine green on merged tree)"
+    exit 0
   elif [ "$suite_rc" -eq 1 ]; then
-    verdict="fail"
+    [ -n "$_redcount_file" ] && [ -f "$_redcount_file" ] && _rn="$(cat "$_redcount_file" 2>/dev/null || echo 0)"
+    _rn=$((_rn + 1))
+    [ -n "$_redcount_file" ] && printf '%s' "$_rn" > "$_redcount_file"
+    if [ "$_rn" -ge "$_confirm_n" ]; then
+      [ -n "$verdict_file" ] && printf 'fail' > "$verdict_file"
+      [ -n "$_cache_file" ] && printf 'fail' > "$_cache_file"
+      log "verify-merged: FAIL (engine RED confirmed ${_rn}/${_confirm_n} on merged tree)"
+      exit 1
+    fi
+    [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+    log "verify-merged: RETRY (engine RED ${_rn}/${_confirm_n} — not yet confirmed, retryable)"
+    exit 3
   else
-    # exit 124 = timeout (infra); any other non-0/1 also treated as infra
-    verdict="infra"
+    [ -n "$verdict_file" ] && printf 'infra' > "$verdict_file"
+    log "verify-merged: INFRA (timeout or harness error; suite_rc=$suite_rc)"
+    exit 2
   fi
-
-  [ -n "$verdict_file" ] && printf '%s' "$verdict" > "$verdict_file"
-
-  # Write verdict to cache (only pass/fail; infra is never cached — must retry).
-  if [ -n "$_cache_file" ] && [ "$verdict" != "infra" ]; then
-    printf '%s' "$verdict" > "$_cache_file"
-  fi
-
-  case "$verdict" in
-    pass)
-      log "verify-merged: PASS (engine green on merged tree)"
-      exit 0 ;;
-    fail)
-      log "verify-merged: FAIL (engine RED on merged tree)"
-      exit 1 ;;
-    infra)
-      log "verify-merged: INFRA (timeout or harness error; suite_rc=$suite_rc)"
-      exit 2 ;;
-  esac
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────

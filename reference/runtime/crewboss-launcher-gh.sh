@@ -267,8 +267,21 @@ _integrator_cycle(){
       bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
            --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null || vm_exit=$?
       if [ "$vm_exit" -eq 1 ]; then
-        # Engine RED on merged tree — do NOT merge; leave leaf in status:review (retryable).
-        log "integrator: #$rid PR #$pr_num verify-merged FAIL (engine red on merged tree) — staying in review"
+        # Confirmed terminal RED (#195: red-counter >= N) — ESCALATE, never merge (I5). [#196 L3]
+        # rework-cap is a SEPARATE counter (number of reworks), not the L2 red-counter.
+        local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
+        if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked"
+          board route "$rid" blocked "verify-merged confirmed engine RED after ${_rwk} reworks" >/dev/null 2>&1 || true
+        else
+          _rwk=$((_rwk + 1)); sset "$rid" rework_n "$_rwk"
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — escalating to needs-rework (rework ${_rwk}/${CB_REWORK_CAP:-2})"
+          board route "$rid" needs-rework "verify-merged confirmed engine RED on merged tree" >/dev/null 2>&1 || true
+        fi
+        continue
+      elif [ "$vm_exit" -eq 3 ]; then
+        # Retryable RED (#195: red-counter < N, not yet confirmed) — stay in review, retry. [#196]
+        log "integrator: #$rid PR #$pr_num verify-merged retryable red (exit 3, <N) — staying in review, retry next tick"
         continue
       elif [ "$vm_exit" -eq 2 ]; then
         # Infra error — log and retry next tick (same as try-merge infra). [F6]
