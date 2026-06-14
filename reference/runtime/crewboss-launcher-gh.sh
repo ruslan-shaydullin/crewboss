@@ -274,12 +274,14 @@ _integrator_cycle(){
         local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
         if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
           log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked"
-          board route "$rid" blocked "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
         else
           _rwk=$((_rwk + 1)); sset "$rid" rework_n "$_rwk"
           sset "$rid" term ""   # [#208] clear terminal flag → bg-spawn re-dispatches (mirror conflict path :337)
           log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — escalating to needs-rework (rework ${_rwk}/${CB_REWORK_CAP:-2}; ${_vmreason:-RED})"
-          board route "$rid" needs-rework "verify-merged confirmed engine RED — failing: ${_vmreason:-engine RED on merged tree}" >/dev/null 2>&1 || true
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-rework >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED — failing: ${_vmreason:-engine RED on merged tree}" >/dev/null 2>&1 || true
         fi
         continue
       elif [ "$vm_exit" -eq 3 ]; then
