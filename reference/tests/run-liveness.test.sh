@@ -427,6 +427,39 @@ if grep -q "idle — run complete" "$LOGFILE_F"; then ok "RED-f: loop terminated
 if grep -q "max ticks" "$LOGFILE_F"; then ko "RED-f: loop hit max-ticks (timeout did not unstick it)"; else ok "RED-f: loop did NOT hit max-ticks"; fi
 
 # =============================================================================
+# RED-e (#208): verify-red escalation clears term → re-dispatch via rework path; converges to blocked at cap
+# =============================================================================
+echo "== RED-e: term-clear → re-dispatch (rework path) + reason in comment; converges to blocked (finite) =="
+CBHOME_E="$ROOT/cbhome_e"; LOGFILE_E="$ROOT/loop_e.log"
+reset_sandbox "$CBHOME_E"
+WE="$(mktemp -d)"; git clone -q "$REMOTE" "$WE" 2>/dev/null
+git -C "$WE" config user.email t@t; git -C "$WE" config user.name T
+git -C "$WE" checkout -q -b cb5e origin/main 2>/dev/null
+mkdir -p "$WE/reference/tests"; printf '#!/usr/bin/env bash\nexit 1\n' > "$WE/reference/tests/acceptance-block.test.sh"; chmod +x "$WE/reference/tests/acceptance-block.test.sh"
+git -C "$WE" add -A; git -C "$WE" commit -qm "cb5 red" 2>/dev/null
+git -C "$WE" push -q origin cb5e:refs/heads/charter/5 2>/dev/null
+printf 'leaf\n' > "$WE/leaf.txt"; git -C "$WE" add -A; git -C "$WE" commit -qm leaf 2>/dev/null
+git -C "$WE" push -q origin cb5e:refs/heads/leaf/20-1700000000 2>/dev/null
+rm -rf "$WE"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:review"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+touch "$PRDIR/20"; printf 'charter/5' > "$PRDIR/base-20"; printf 'leaf/20-1700000000' > "$PRDIR/head-20"
+mkdir -p "$CBHOME_E/run/state/20"; printf '1' > "$CBHOME_E/run/state/20/term"   # term set (done->review), the bug surface
+# Productive rework stub = SPAWN_STUB (writes status.json done + re-pushes leaf). CONFIRM_N=1, CAP=2 → converges to blocked.
+# CB_SPAWN_TIMEOUT backstop (#212) so no path can hang the test.
+run_loop "$CBHOME_E" "$LOGFILE_E" "CB_REWORK_SPAWN=$SPAWN_STUB" "CB_VERIFY_CONFIRM_N=1" "CB_REWORK_CAP=2" "CB_SPAWN_TIMEOUT=20" "CB_MAX_TICKS=25"
+if grep -q "escalating to needs-rework" "$LOGFILE_E"; then ok "RED-e: verify-red escalated to needs-rework"; else ko "RED-e: no needs-rework escalation"; fi
+if grep -qE "claim #20 state=needs-rework -> rework path" "$LOGFILE_E"; then ok "RED-e: #20 RE-DISPATCHED via rework path (term cleared)"; else ko "RED-e: #20 NOT re-dispatched (term blocks bg-spawn — #196 seam)"; fi
+if has_comment 20 "acceptance-block"; then ok "RED-e: needs-rework comment carries RED reason (acceptance-block)"; else ko "RED-e: comment lacks failing-test name (blind rework)"; fi
+if [ -f "$PRDIR/merged-20" ]; then ko "RED-e: #20 merged despite RED (I5 broken)"; else ok "RED-e: #20 not merged (I5)"; fi
+if has_label 20 "status:blocked"; then ok "RED-e: converged to status:blocked at rework-cap (I4 finite)"; else ko "RED-e: did not converge to blocked (cap not reached)"; fi
+if grep -q "max ticks" "$LOGFILE_E"; then ko "RED-e: loop hit max-ticks (no convergence)"; else ok "RED-e: loop did NOT hit max-ticks (converged finitely)"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

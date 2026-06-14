@@ -376,6 +376,7 @@ cmd_verify_merged() {
   #    Manifest: reference/tests/per-leaf-manifest (ALLOW/EXCLUDED classification).
   local suite_rc=0
   _pl_manifest="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/per-leaf-manifest"
+  local _reason_file; _reason_file="$(mktemp 2>/dev/null || echo "/tmp/cb-reason.$$")"
 
   # Start engine run in background subshell
   (
@@ -387,7 +388,7 @@ cmd_verify_merged() {
       # Only run tests explicitly classified as ALLOW in the manifest.
       # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
       grep -qE "^ALLOW[[:space:]]+${_base}$" "$_pl_manifest" 2>/dev/null || continue
-      bash "$t" || fail=1
+      if ! bash "$t" >/dev/null 2>&1; then fail=1; printf '%s\n' "$_base" >> "$_reason_file"; fi
     done
     exit "$fail"
   ) &
@@ -431,7 +432,11 @@ cmd_verify_merged() {
     if [ "$_rn" -ge "$_confirm_n" ]; then
       [ -n "$verdict_file" ] && printf 'fail' > "$verdict_file"
       [ -n "$_cache_file" ] && printf 'fail' > "$_cache_file"
-      log "verify-merged: FAIL (engine RED confirmed ${_rn}/${_confirm_n} on merged tree)"
+      local _reason; _reason="$(sort -u "$_reason_file" 2>/dev/null | paste -sd, - 2>/dev/null)"
+      [ -n "$_cache_file" ] && printf '%s' "${_reason:-unknown}" > "${_cache_file}.reason"
+      rm -f "$_reason_file" 2>/dev/null
+      printf 'RED_REASON: %s\n' "${_reason:-unknown}"
+      log "verify-merged: FAIL (engine RED confirmed ${_rn}/${_confirm_n} on merged tree; failing: ${_reason:-unknown})"
       exit 1
     fi
     [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
