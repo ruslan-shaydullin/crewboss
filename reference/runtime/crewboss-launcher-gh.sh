@@ -265,19 +265,23 @@ _integrator_cycle(){
     elif [ "$try_exit" -eq 0 ]; then
       # Clean merge: run verify-merged (engine suite on merged tree) before merging. [#176]
       local vm_exit=0
-      bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
-           --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null || vm_exit=$?
+      local vm_out=""
+      vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
+           --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null) || vm_exit=$?
+      local _vmreason; _vmreason="$(printf '%s\n' "$vm_out" | sed -n 's/^RED_REASON: //p' | head -1)"
       if [ "$vm_exit" -eq 1 ]; then
-        # Confirmed terminal RED (#195: red-counter >= N) — ESCALATE, never merge (I5). [#196 L3]
-        # rework-cap is a SEPARATE counter (number of reworks), not the L2 red-counter.
+        # [#208] confirmed terminal RED → escalate; clear term + remove review EXPLICITLY (board route
+        # does NOT remove status:review → busy-loop, latent #196 bug); carry the RED reason into the comment.
         local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
         if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
-          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked"
-          board route "$rid" blocked "verify-merged confirmed engine RED after ${_rwk} reworks" >/dev/null 2>&1 || true
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked (${_vmreason:-RED})"
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
         else
-          _rwk=$((_rwk + 1)); sset "$rid" rework_n "$_rwk"
-          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — escalating to needs-rework (rework ${_rwk}/${CB_REWORK_CAP:-2})"
-          board route "$rid" needs-rework "verify-merged confirmed engine RED on merged tree" >/dev/null 2>&1 || true
+          _rwk=$((_rwk + 1)); sset "$rid" rework_n "$_rwk"; sset "$rid" term ""
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — escalating to needs-rework (rework ${_rwk}/${CB_REWORK_CAP:-2}; ${_vmreason:-RED})"
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-rework >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED — failing: ${_vmreason:-engine RED on merged tree}" >/dev/null 2>&1 || true
         fi
         continue
       elif [ "$vm_exit" -eq 3 ]; then

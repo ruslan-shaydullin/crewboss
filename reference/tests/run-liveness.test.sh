@@ -427,6 +427,22 @@ if grep -q "idle — run complete" "$LOGFILE_F"; then ok "RED-f: loop terminated
 if grep -q "max ticks" "$LOGFILE_F"; then ko "RED-f: loop hit max-ticks (timeout did not unstick it)"; else ok "RED-f: loop did NOT hit max-ticks"; fi
 
 # =============================================================================
+# RED-e (#208): verify-red escalation clears term → re-dispatch via rework path; converges to blocked at cap
+# =============================================================================
+echo "== RED-e: #208 escalation contract — needs-rework branch clears term, removes review, carries RED reason =="
+# The full live verify-red -> escalate -> re-dispatch -> converge loop is covered BEHAVIORALLY by RED-d
+# (escalation->blocked, review removed, NOT merged, idle-exit -- all LIVE) and by RED-a (rework re-dispatch
+# via the conflict path -- LIVE); #212 backstops any hang. Running verify-red->needs-rework->re-dispatch
+# end-to-end in CI is non-deterministic (a real engine-suite per tick), so the needs-rework-SPECIFIC
+# contract is source-locked here as a regression guard and validated LIVE on the box at charter finale.
+LSRC="$HERE/../runtime/crewboss-launcher-gh.sh"
+ISRC="$HERE/../runtime/crewboss-integrator.sh"
+if grep -q 'sset "$rid" term ""' "$LSRC"; then ok "RED-e: escalation clears term flag (re-dispatch unblocked -- central #196 fix)"; else ko "RED-e: escalation does NOT clear term (re-dispatch stays blocked)"; fi
+if grep -qE -- '--remove-label status:review --add-label status:needs-rework' "$LSRC"; then ok "RED-e: escalation removes status:review explicitly (board route alone does not)"; else ko "RED-e: escalation does not explicitly remove status:review (stale-guard busy-loop)"; fi
+if grep -qE 'failing: \$\{_vmreason' "$LSRC"; then ok "RED-e: needs-rework comment carries verify-merged RED reason (no blind rework)"; else ko "RED-e: RED reason not carried into needs-rework comment"; fi
+if grep -qE "printf 'RED_REASON: %s" "$ISRC"; then ok "RED-e: integrator emits RED_REASON for the launcher to capture"; else ko "RED-e: integrator does not emit RED_REASON"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
