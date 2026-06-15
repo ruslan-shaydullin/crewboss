@@ -241,6 +241,17 @@ function LoopBadge({ loop }: { loop: LoopInfo }) {
       <span className="loop-sep">·</span>
       <span className="loop-parallel" title="CB_MAX_PARALLEL">×{loop.max_parallel}</span>
       {loop.running && <><span className="loop-sep">·</span><span className="loop-running">running</span></>}
+      {loop.stage && loop.stage !== 'idle' && (
+        <>
+          <span className="loop-sep">·</span>
+          <span
+            className={'loop-stage stage-' + loop.stage}
+            data-testid="loop-stage"
+          >
+            {loop.stage}
+          </span>
+        </>
+      )}
     </div>
   )
 }
@@ -375,6 +386,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
         <div className="charter-id">
           {c ? <span className="num">#{c.n}</span> : <span className="num">∅</span>}
           {c && <span className={'badge b-' + c.state}>{c.state}</span>}
+          {c && c.rework_n != null && c.rework_n > 0 && (
+            <span
+              className="rework-badge"
+              title={c.rework_n + ' re-check cycle(s)'}
+              data-testid="rework-badge"
+            >
+              {'↺'}{c.rework_n}
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />

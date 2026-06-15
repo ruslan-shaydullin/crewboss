@@ -364,6 +364,22 @@ body {
 .chip-edit-btn { background:none; border:none; color:var(--mut); cursor:pointer; padding:0 0 0 5px; font-size:11px; opacity:0; transition:opacity .12s; vertical-align:middle; line-height:1 }
 .chip:hover .chip-edit-btn { opacity:1 }
 .chip-edit-btn:hover { color:var(--ink) }
+/* loop stage pill */
+.loop-stage { padding: 1px 6px; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+.stage-planning   { background: rgba(224,182,74,.25); color: #e0b64a; }
+.stage-executing  { background: rgba(91,156,240,.25); color: #5b9cf0; }
+.stage-reviewing  { background: rgba(179,155,255,.25); color: #b39bff; }
+.stage-integrating{ background: rgba(179,155,255,.25); color: #b39bff; }
+.stage-finale     { background: rgba(70,206,142,.25); color: #46ce8e; }
+.stage-running    { background: rgba(255,255,255,.1);  color: #aaa; }
+
+/* charter rework badge */
+.rework-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 5px; border-radius: 4px; font-size: .72rem; font-weight: 600;
+  background: rgba(240,103,106,.2); color: #f0676a;
+}
+
 /* ── prefers-reduced-motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
