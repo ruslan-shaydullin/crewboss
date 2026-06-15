@@ -155,7 +155,7 @@ claim_and_spawn(){ # id
 # Idempotent: merged/closed leaves not re-processed.  All errors logged, non-fatal.
 _integrator_cycle(){
   if [ -z "$GIT_REMOTE" ]; then
-    [ -n "${_REMOTE_DISABLED_LOGGED:-}" ] || log "integrator+finale DISABLED: CB_GIT_REMOTE not set"
+    [ -n "${_REMOTE_DISABLED_LOGGED:-}" ] || log "integrator+finale DISABLED: CB_GIT_REMOTE not set — verify-merged + rework/escalation trigger ALSO held (verify-red will NOT route leaves to needs-rework until a remote is set)"
     export _REMOTE_DISABLED_LOGGED=1
     return 0
   fi
