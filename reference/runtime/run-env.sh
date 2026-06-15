@@ -25,6 +25,7 @@ GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null)}"
 export GH_TOKEN
 
 # D2: интеграция ВКЛ по умолчанию; CB_NO_INTEGRATE=1 → пусто → лаунчер громко дизейблит
+# integrator+finale И rework/escalation trigger (off-mode != off-escalation, #207)
 # Token-free URL: GH_TOKEN lives only in env; credential-helper provides it at git call time.
 if [ "${CB_NO_INTEGRATE:-}" = "1" ]; then
   export CB_GIT_REMOTE=""
