@@ -206,6 +206,38 @@ else
 fi
 
 # =============================================================================
+# Case D (#207): real launcher loudly logs the rework/escalation consequence of off-mode
+#   [GROUND] runs the REAL launcher one tick with CB_NO_INTEGRATE=1 (empty remote) and
+#   asserts the log NAMES the rework/escalation consequence — not just "integrator disabled".
+# =============================================================================
+echo "=== Case D: CB_NO_INTEGRATE=1 -> launcher loudly logs rework/escalation held (#207) ==="
+FAKE_HOME_D="$ROOT/fh_d"; mkdir -p "$FAKE_HOME_D/cbnet/run"
+cp "$FAKE_HOME/.crewboss.env" "$FAKE_HOME_D/.crewboss.env"
+cp "$RUNTIME/crewboss-launcher-gh.sh" "$FAKE_HOME_D/cbnet/crewboss-launcher-gh.sh"
+cp "$RUNTIME/../../proto/r6/board-gh.sh"   "$FAKE_HOME_D/cbnet/board-gh.sh"
+cp "$RUNTIME/../../proto/r6/launchable.sh" "$FAKE_HOME_D/cbnet/launchable.sh"
+chmod +x "$FAKE_HOME_D"/cbnet/*.sh
+cat > "$BIN/gh" <<'GHD207'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "auth token") echo FAKETOKEN ;;
+  "issue list") echo "[]" ;;
+  *) echo "{}" ;;
+esac
+exit 0
+GHD207
+chmod +x "$BIN/gh"
+LOG_D="$FAKE_HOME_D/cbnet/run/launcher.out"; rm -f "$LOG_D"
+HOME="$FAKE_HOME_D" CB_NO_INTEGRATE=1 CB_MAX_TICKS=1 CB_POLL=0 PATH="$BIN:$PATH" \
+  bash "$RUNTIME/run-charter.sh" >/dev/null 2>&1 || true
+sleep 1
+if grep -qiE 'rework|escal' "$LOG_D" 2>/dev/null; then
+  ok "Case D: launcher loudly names the rework/escalation consequence of CB_NO_INTEGRATE (not silent)"
+else
+  no "Case D: launcher did NOT name the rework/escalation consequence (silent off-mode — E7); log: $(cat "$LOG_D" 2>/dev/null | tr '\n' '|')"
+fi
+
+# =============================================================================
 echo
 printf '=== SUMMARY: %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -10,6 +10,11 @@ ID="$1"; OLD="${CB_OLD_BRANCH:-}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
 URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"
 BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"
+# Carry the latest gate feedback (verify-merged RED reason) into the prompt so rework is targeted, not blind.
+REDREASON="$(gh issue view "$ID" -R "$CB_REPO" --json comments --jq '[.comments[].body | select(test("verify-merged confirmed engine RED"))] | last // ""' 2>/dev/null)"
+FEEDBACK=""; [ -n "$REDREASON" ] && FEEDBACK="
+
+Most recent gate feedback to address specifically: $REDREASON"
 C="$(printf '%s' "$BODY" | grep -oiE 'charter:[[:space:]]*#?[0-9]+' | head -1 | grep -oE '[0-9]+')"
 [ -n "$C" ] || { echo "rework #$ID: no 'Charter: #N' in body" >&2; exit 2; }
 WA="$RUN/work/$ID/repo"
@@ -23,27 +28,27 @@ git checkout -q -b "rework/$ID-$TS" "origin/charter/$C" || { echo "rework: no ch
 
 if [ -n "$OLD" ]; then
   PROMPT="You are reworking issue #$ID onto the charter integration branch charter/$C in repo $CB_REPO.
-You are ALREADY on branch rework/$ID-$TS, based on origin/charter/$C — sibling leaves of charter #$C are ALREADY merged here (their code is in ui/app/src/App.tsx, styles.css, api.ts, etc).
+You are ALREADY on branch rework/$ID-$TS, based on origin/charter/$C — sibling leaves of charter #$C are ALREADY merged here (their changes are already present on this branch).
 Your earlier work for this issue is on origin/$OLD. Do this, in order:
 1. git merge --no-edit origin/$OLD
 2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
-3. Verify green: (cd ui/app && npm ci && npx tsc --noEmit && npm run build) — all must pass; fix until green.
+3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
 4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
 5. gh pr create --base charter/$C --title \"rework(#$ID): rebase onto charter/$C\" --body \"Closes #$ID — reworked onto integration branch, conflicts resolved as additive union.\"
 Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/$C.
 
 Issue #$ID:
-$BODY"
+$BODY$FEEDBACK"
 else
   PROMPT="You are fixing issue #$ID on the charter integration branch charter/$C in repo $CB_REPO.
-You are ALREADY on branch rework/$ID-$TS, based on origin/charter/$C. Implement the fix described below in the existing code (the New Issue / charter creation modal lives in ui/app/src/App.tsx).
-Verify green: (cd ui/app && npm ci && npx tsc --noEmit && npm run build) — all must pass.
+You are ALREADY on branch rework/$ID-$TS, based on origin/charter/$C. Implement the fix described below in the existing code on this branch.
+Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass.
 git add -A && git commit -m \"fix(#$ID): ...\"; git push -u origin HEAD
-gh pr create --base charter/$C --title \"fix(#$ID): modal close + confirm\" --body \"Closes #$ID\"
+gh pr create --base charter/$C --title \"fix(#$ID): rework onto charter/$C\" --body \"Closes #$ID\"
 STOP at the PR. Do NOT merge. base MUST be charter/$C.
 
 Issue #$ID:
-$BODY"
+$BODY$FEEDBACK"
 fi
 
 PF="$RUN/work/$ID/task.prompt"; printf '%s' "$PROMPT" > "$PF"
