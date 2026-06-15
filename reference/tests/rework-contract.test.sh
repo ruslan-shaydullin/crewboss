@@ -418,6 +418,9 @@ case "$obj $verb" in
 Charter: #5"
     if [ "$jqf" = ".body" ]; then
       printf '%s\n' "$body"
+    elif printf '%s' "$jqf" | grep -q comments; then
+      # #209: serve the latest verify-merged RED reason as a fabricated comment fixture
+      printf '{"comments":[{"body":"%s"}]}\n' "${CB_FIXTURE_COMMENT:-}" | jq -r "$jqf"
     else
       printf '{"body":"task for issue Charter: #5"}\n'
     fi
@@ -517,6 +520,48 @@ if [ -f "$PROMPT_B3" ]; then
     || ok "RED-b5: \$2 (executor) NOT used as old branch — CB_OLD_BRANCH correctly used"
 else
   ko "RED-b5: task.prompt not created"
+fi
+
+# ── B6 (#209): fresh-fix prompt verifies via the GENERIC engine ALLOW-suite, not the ui/npm hardcode ──
+#    (the npm hardcode is what HUNG rework on a clean/non-ui tree — E-finding root)
+rm -rf "$CB_RUN_B"
+PATH="$BIN:$PATH" \
+  CB_HOME="$CBHOME_B" \
+  CB_REPO="test/repo" \
+  CB_OLD_BRANCH="" \
+  bash "$REWORK_PREP" 11 executor 2>/dev/null
+PROMPT_B6="$CB_RUN_B/work/11/task.prompt"
+if [ -f "$PROMPT_B6" ]; then
+  grep -qE "npm ci|npm run build" "$PROMPT_B6" \
+    && ko "RED-b6: prompt STILL hardcodes npm verify (hangs on non-ui/clean tree)" \
+    || ok "RED-b6: prompt does NOT hardcode npm verify"
+  grep -q "App.tsx" "$PROMPT_B6" \
+    && ko "RED-b6: prompt STILL hardcodes ui/app/src/App.tsx" \
+    || ok "RED-b6: prompt does NOT hardcode App.tsx (generic)"
+  { grep -q "per-leaf-manifest" "$PROMPT_B6" && grep -q "ALLOW" "$PROMPT_B6"; } \
+    && ok "RED-b6: prompt verifies via the ALLOW-filtered engine suite (gate-equivalent)" \
+    || ko "RED-b6: prompt does not reference the ALLOW engine suite"
+else
+  ko "RED-b6: task.prompt not created"
+  ko "RED-b6: task.prompt not created"
+  ko "RED-b6: task.prompt not created"
+fi
+
+# ── B7 (#209): the latest verify-merged RED reason is carried into the rework prompt (targeted, not blind) ──
+rm -rf "$CB_RUN_B"
+PATH="$BIN:$PATH" \
+  CB_HOME="$CBHOME_B" \
+  CB_REPO="test/repo" \
+  CB_OLD_BRANCH="" \
+  CB_FIXTURE_COMMENT="verify-merged confirmed engine RED — failing: acceptance-block" \
+  bash "$REWORK_PREP" 11 executor 2>/dev/null
+PROMPT_B7="$CB_RUN_B/work/11/task.prompt"
+if [ -f "$PROMPT_B7" ]; then
+  grep -q "acceptance-block" "$PROMPT_B7" \
+    && ok "RED-b7: rework prompt carries the named failing test from gate feedback (not blind)" \
+    || ko "RED-b7: prompt lacks the RED reason from comments (blind rework)"
+else
+  ko "RED-b7: task.prompt not created"
 fi
 
 # =============================================================================
