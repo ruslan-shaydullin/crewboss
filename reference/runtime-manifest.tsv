@@ -45,7 +45,7 @@ proto/seccomp/find-unknown.sh	27ee5f89f1ec581678d3bd9f95f8019380c66e3f605d868c8e
 proto/seccomp/gen-names.sh	6c008e53393bab22882baca9ab8c75dc085b2795ef488cb0d668c6d7d85435df	canonical	Generates kafel-compatible syscall name list from union + essentials
 proto/seccomp/gen-policy.sh	75e4674a619db75ea035829fb7fad521362973707b2165fd3c66926e42524db3	canonical	Builds kafel allowlist from union list + benign essentials (ausyscall auto-map for unknowns)
 proto/net/jail-test.sh	98d17935222badb953303faeb7705424cb64db05169dc1b418cab2bf8f33299e	canonical	Inside-jail R3b network test payload (brings up bridge, runs curl tests)
-reference/launcher/labels-setup.sh	525670fba6c8c49c4247f89ae4816a5ea89c0a990feae2c6e77a60978be535d2	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit)
+reference/launcher/labels-setup.sh	017ee67f85dffc1112aef531cb75bc777a39bfe5f5b4dcb0f42213eee6dcc238	canonical	Creates crewboss board-orchestration labels in repo (idempotent; gh label create/edit)
 reference/launcher/launchable.sh	c8886068ed490b537265f6d9ef2b93090a3f7b1e134cbd912bd08a94b37b845f	canonical	Launchable leaf predicate (Arch-2): type:agent, no hold, charter approved, deps closed; --charter N scope filter (#70); acceptance-block gate (#90); #87 documents needs-rework intentionally launchable (re-dispatch contract)
 proto/provision/provision-template.sh	5432b0b89bc4fe4027cf1872eeb3555e89b68e324a756942b6c91ed701543cfb	canonical	Provision script template (__RUNTIME_PLACEHOLDER__ injected by build-provision.sh)
 proto/provision/provision.sh	e62fdfe40477f02a95d581ded3cf4397300515d34f8ee2206b4e842bc5d34369	canonical	Full self-contained installer (assembled by build-provision.sh; bootstrap from bare box)
@@ -54,7 +54,7 @@ proto/r5/redact.pl	c67e6f8fe6f9350e98194dfc85244000763323645adfc2531bbe740d1f10f
 reference/runtime/rework-prep.sh	2b2dcdd8e373b06f556294abad8e58ca0bf307539e0c9c5ac1d00aa9b7532a30	canonical	Rework dispatch: integrate or fresh-fix a leaf issue onto charter/C; box-only → reference/runtime/ via #65; #86 CB_REPO param + charter from body
 ui/server/run-api-test2.sh	e082f53454088200e460f49a8235ad4ce52e38956d0e67c89e72212d79b71ba5	canonical	API integration test (health endpoint, state, command dispatch, query-token auth)
 proto/r6/run-board-gh-test.sh	4aae5f3f60a6384808e535af6d5226c0a684e71d235f2073be659ee6411847b8	canonical	board-gh.sh deterministic test (stubs gh, validates state machine); R6
-reference/runtime/run-charter.sh	de4f1eb90b8da835fe315d2097e642653c7eaf26ba06c8c6f2d0ebfb80e8bf2e	canonical	Charter launcher wrapper (sources run-env.sh for full env contract, starts crewboss-launcher-gh.sh run); box-only → reference/runtime/ via #65; #147 sources run-env.sh
+reference/runtime/run-charter.sh	6fa9418148189331fbe497be0d6bbca3693bf4030a1ea2d01f2da1bef4a4115e	canonical	Charter launcher wrapper (sources run-env.sh for full env contract, starts crewboss-launcher-gh.sh run); box-only → reference/runtime/ via #65; #147 sources run-env.sh
 proto/r10/run-flags-test.sh	821c0e91a5c6907a6f1df35d40d01ac622ad4850d63c39061cbcad56bcc66e19	canonical	Kill-switch + pause flag-file test (stub spawn, real gh board); R10
 proto/r6/run-gh-e2e.sh	f04362e3c2eff81cda7f02896db1779f901197f5bac698a0883009d40402967f	canonical	R6 GitHub e2e capstone (real issue → real PR via jail+proxy+agent); R6
 proto/r8/run-gov-e2e.sh	b099bda14332cc5e12057672075082b13b076dd817aa1206277dbe7b0e0e66d7	canonical	Governance e2e (live executor in hardened jail, gate wired, self-merge attempt blocked); R8

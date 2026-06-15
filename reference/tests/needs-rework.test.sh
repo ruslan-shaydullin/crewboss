@@ -94,8 +94,12 @@ case "$obj $verb" in
     echo "comment #$n: $body" >> "$GH_LOG" ;;
 
   "label create")
-    # no-op in tests (ensure_label calls this; silently ignore)
-    ;;
+    # #205: model real gh — create succeeds once, fails if the label already exists
+    name="$1"; LF="${LABELS_FILE:-${GH_LOG}.labels}"
+    if [ -f "$LF" ] && grep -qx -- "$name" "$LF"; then exit 1; fi
+    printf '%s\n' "$name" >> "$LF" ;;
+  "label edit")
+    : ;;
 
   *)
     echo "stub gh UNHANDLED: $obj $verb $*" >> "$GH_LOG" ;;
@@ -365,6 +369,23 @@ prio_state=$(board_get_state 12)
 [ "$prio_state" = "review" ] \
   && ok "RED-d(2): priority — review+needs-rework → state='review'" \
   || ko "RED-d(2): priority — expected 'review', got '$prio_state'"
+
+# ── INIT-e (#205): labels-setup creates status:needs-rework idempotently + is invoked at Run ──
+#    [GROUND] runs the REAL run-charter.sh in a sandbox HOME — proves the label exists after bootstrap.
+FAKE_HOME="$ROOT/fake_home_e"; mkdir -p "$FAKE_HOME/cbnet/run"
+cp "$HERE/../launcher/labels-setup.sh" "$FAKE_HOME/cbnet/labels-setup.sh"
+printf 'GH_TOKEN=testtoken\n' > "$FAKE_HOME/.crewboss.env"
+printf '#!/usr/bin/env bash\necho "[launcher stub]"\n' > "$FAKE_HOME/cbnet/crewboss-launcher-gh.sh"
+chmod +x "$FAKE_HOME/cbnet/crewboss-launcher-gh.sh"
+export LABELS_FILE="$SANDBOX/init_labels"; rm -f "$LABELS_FILE"
+HOME="$FAKE_HOME" PATH="$BIN:$PATH" CB_REPO="test/repo" bash "$HERE/../runtime/run-charter.sh" >/dev/null 2>&1 || true
+grep -qx "status:needs-rework" "$LABELS_FILE" 2>/dev/null \
+  && ok "INIT-e: run-charter invokes labels-setup at bootstrap; status:needs-rework created" \
+  || ko "INIT-e: status:needs-rework NOT created by run-charter bootstrap (rework axis hollow)"
+HOME="$FAKE_HOME" PATH="$BIN:$PATH" CB_REPO="test/repo" bash "$FAKE_HOME/cbnet/labels-setup.sh" >/dev/null 2>&1 \
+  && ok "INIT-e: labels-setup is idempotent (2nd run exits 0; create-fails->edit-succeeds)" \
+  || ko "INIT-e: labels-setup NOT idempotent (2nd run failed on existing label)"
+unset LABELS_FILE
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo
