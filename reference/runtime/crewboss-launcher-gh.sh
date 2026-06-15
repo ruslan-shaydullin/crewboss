@@ -521,6 +521,22 @@ _charter_finale_cycle(){
       continue
     fi
 
+    # ── #206 Part A: persist the regenerated manifest sha-lock as a COMMIT on ──
+    # charter/C BEFORE the PR is created. The full suite just passed on this tree
+    # (gate green), so refreshing the sha-lock is sound (manifest==verified tree).
+    # The subsequent human charter→main merge carries the fresh manifest onto
+    # canon, keeping doctor's deploy-vs-manifest integrity true at the canon
+    # boundary. Infra (clone/push) → defer the PR to the next tick so main never
+    # receives a stale manifest. No-op (no commit) when already fresh.
+    local regen_out regen_rc=0
+    regen_out=$(bash "$INTEGRATOR_SCRIPT" regen-persist "$cid" \
+                  --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>&1) || regen_rc=$?
+    if [ "$regen_rc" -ne 0 ]; then
+      log "charter-finale: #$cid regen-persist infra (rc=$regen_rc) — PR deferred to next tick: $regen_out"
+      continue
+    fi
+    [ -n "$regen_out" ] && log "charter-finale: #$cid regen-persist: $regen_out"
+
     log "charter-finale: #$cid gate green — creating draft PR $branch → main"
 
     # Create draft PR
