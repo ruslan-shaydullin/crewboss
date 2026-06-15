@@ -550,6 +550,21 @@ _charter_finale_cycle(){
   done
 }
 
+# re-dispatch <leaf-id> — operator command AND the I-D idempotent re-dispatch primitive:
+# atomically clear launcher-local run-state, remove the poisoned work tree, and re-queue the
+# leaf as launchable (status:needs-rework). Deliberate operator action — never auto-fired.
+cmd_redispatch(){
+  local id="${1:-}"
+  [ -n "$id" ] || { echo "usage: $0 re-dispatch <leaf-id>" >&2; return 64; }
+  local sd="$STATE/$id" wd="$RUN/work/$id" k
+  for k in pid term tries pr_head stale_ticks rework_n; do rm -f "$sd/$k" 2>/dev/null || true; done
+  rm -rf "$wd" 2>/dev/null || sudo rm -rf "$wd" 2>/dev/null || true
+  gh issue edit "$id" -R "$CB_REPO" \
+    --remove-label status:review --remove-label status:blocked --remove-label status:in-progress \
+    --add-label status:needs-rework >/dev/null 2>&1 || true
+  log "re-dispatch #$id: run-state cleared, work tree removed, routed status:needs-rework (re-launchable)"
+}
+
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
@@ -688,5 +703,6 @@ case "${1:-once}" in
   reconcile) ( flock -n 9 || { log locked; exit 1; }; reconcile ) 9>"$LOCK" ;;
   once) cmd_once ;;
   run)  cmd_run ;;
-  *) echo "usage: $0 {once|run|reconcile}"; exit 64 ;;
+  re-dispatch) cmd_redispatch "${2:-}" ;;
+  *) echo "usage: $0 {once|run|reconcile|re-dispatch <leaf-id>}"; exit 64 ;;
 esac
