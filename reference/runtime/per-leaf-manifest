@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=11, EXCLUDED=35, union=46  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=11, EXCLUDED=36, union=47  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -41,7 +41,7 @@ ALLOW runtime-manifest
 ALLOW spawn-unit
 ALLOW token-hygiene
 
-# ── EXCLUDED (35 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
+# ── EXCLUDED (36 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness
 EXCLUDED charter-branch
 EXCLUDED charter-finale
@@ -70,6 +70,7 @@ EXCLUDED launcher-integration
 EXCLUDED leaf-verifier
 EXCLUDED leaf-verifier-cache
 EXCLUDED needs-rework
+EXCLUDED plan-spawn
 EXCLUDED provision-build
 EXCLUDED rework-contract
 EXCLUDED run-env-contract
