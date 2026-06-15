@@ -382,6 +382,15 @@ cmd_verify_merged() {
   (
     cd "$merged_dir"
     shopt -s nullglob
+    # #206 Part A: in-clone sha-lock regen (EPHEMERAL, verdict-only). Refreshes
+    # runtime-manifest.tsv to match the merged tree so runtime-manifest (now an
+    # ALLOW test, #206 Part B) does NOT false-RED on benign sha-drift while still
+    # catching structural breaks (missing row / removed runtime file / wrong
+    # status — Test 2/4). This is NOT a persistence path: merged_dir is discarded
+    # below (rm -rf). Persistence is EXCLUSIVELY the charter-finale regen-persist
+    # commit (#206 Part A). No-op when the tool/manifest is absent (fixtures).
+    [ -f reference/bin/regen-manifest.sh ] && \
+      bash reference/bin/regen-manifest.sh >/dev/null 2>&1 || true
     fail=0
     for t in reference/tests/*.test.sh; do
       _base="$(basename "$t" .test.sh)"
@@ -449,14 +458,87 @@ cmd_verify_merged() {
   fi
 }
 
+# ── subcommand: regen-persist ─────────────────────────────────────────────────
+# regen-persist <charter-id> --remote URL [--repo OWNER/REPO]
+#
+# #206 Part A — the COMMIT-PRODUCING persist point for the manifest sha-lock.
+# Called by the launcher charter-finale AFTER the full engine suite is green on
+# charter/<C> (the tree that becomes canon) and BEFORE the charter->main PR is
+# created. Clones charter/<C>, regenerates the sha-lock against that tree, and —
+# only if a row actually drifted — commits and pushes the refreshed manifest to
+# charter/<C>. The subsequent human charter->main merge then carries the
+# regenerated manifest onto canon (main), so doctor's deploy-vs-manifest integrity
+# property holds at the canon boundary.
+#
+# Why the finale, not a per-leaf push: pushing a regen commit to every leaf PR
+# head re-triggers CI and RACES when sibling leaves integrate concurrently (the
+# base moves under each leaf). The integrity guarantee is a property of MAIN, so
+# the regen is persisted exactly once, at the charter->main boundary.
+#
+# Idempotent: a no-op (no commit, no push) when the manifest is already fresh —
+# so it is safe to call every finale tick without churning charter/<C>.
+#
+# Exit: 0 = success (committed+pushed a refresh, OR clean no-op: already fresh /
+#           manifest absent in fixtures).
+#       2 = infra (clone / fetch / push failed) — caller should retry next tick
+#           and NOT create the PR (canon would carry a stale manifest otherwise).
+cmd_regen_persist() {
+  local cid="${1:-}"; shift || true
+  [ -n "$cid" ] || { log "regen-persist: missing charter id"; exit 2; }
+  local remote="" repo="${CB_REPO:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --remote) remote="$2"; shift ;;
+      --repo)   repo="$2"; shift ;;
+    esac; shift
+  done
+  [ -n "$remote" ] || { log "regen-persist: --remote is required"; exit 2; }
+
+  local branch="charter/$cid"
+  local tmpdir; tmpdir="$(mktemp -d)"
+
+  git clone -q "$remote" "$tmpdir" 2>/dev/null || {
+    log "regen-persist #$cid: clone failed"; rm -rf "$tmpdir"; exit 2; }
+  git -C "$tmpdir" config user.email "integrator@crewboss" 2>/dev/null
+  git -C "$tmpdir" config user.name  "crewboss-integrator"  2>/dev/null
+  git -C "$tmpdir" fetch -q origin "$branch" 2>/dev/null \
+    && git -C "$tmpdir" checkout -q -B "$branch" FETCH_HEAD 2>/dev/null || {
+    log "regen-persist #$cid: cannot checkout $branch"; rm -rf "$tmpdir"; exit 2; }
+
+  # Regen against the checked-out charter/<C> tree.
+  if [ -f "$tmpdir/reference/bin/regen-manifest.sh" ]; then
+    ( cd "$tmpdir" && bash reference/bin/regen-manifest.sh ) >/dev/null 2>&1 || true
+  fi
+
+  # Idempotent: nothing drifted → clean no-op (no commit, no push).
+  if git -C "$tmpdir" diff --quiet -- reference/runtime-manifest.tsv 2>/dev/null; then
+    log "regen-persist #$cid: manifest already fresh — no-op"
+    rm -rf "$tmpdir"; exit 0
+  fi
+
+  git -C "$tmpdir" add reference/runtime-manifest.tsv 2>/dev/null
+  git -C "$tmpdir" commit -q \
+    -m "chore(manifest): regen sha-lock at charter-#${cid} finale" 2>/dev/null || {
+    log "regen-persist #$cid: commit failed"; rm -rf "$tmpdir"; exit 2; }
+
+  if git -C "$tmpdir" push -q origin "$branch" 2>/dev/null; then
+    log "regen-persist #$cid: pushed refreshed manifest to $branch"
+    rm -rf "$tmpdir"; exit 0
+  else
+    log "regen-persist #$cid: push to $branch failed"
+    rm -rf "$tmpdir"; exit 2
+  fi
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────
 case "${1:-}" in
   close-leaf)    shift; cmd_close_leaf "$@" ;;
   gate-charter)  shift; cmd_gate_charter "$@" ;;
   try-merge)     shift; cmd_try_merge "$@" ;;
   verify-merged) shift; cmd_verify_merged "$@" ;;
+  regen-persist) shift; cmd_regen_persist "$@" ;;
   *)
-    printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged} ...\n' \
+    printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist} ...\n' \
       "$(basename "$0")" >&2
     exit 64 ;;
 esac
