@@ -34,11 +34,16 @@ BOARD='[
  {"number":20,"state":"OPEN","labels":[],"body":"no charter ref"},
  {"number":21,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"**Charter: #1**\n## Acceptance (machine)\n- check: true"},
  {"number":22,"state":"OPEN","labels":[{"name":"type:human-decision"}],"body":"Charter: #1"},
- {"number":23,"state":"OPEN","labels":[],"body":"Charter: #1"}
+ {"number":23,"state":"OPEN","labels":[],"body":"Charter: #1"},
+ {"number":24,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"Charter: #1\nDepends-on: #10 (prose example, not a real dep) | 1 |\n## Acceptance (machine)\n- check: true"}
 ]'
+# #24 leaf/#1: body MENTIONS "Depends-on: #10 ..." in prose (a test-case table), not a
+#  real declaration; #10 is OPEN. Loose parsing would inject a phantom dep on #10 and
+#  block it (the autonomous control-run bug). Strict depNums rejects the non-clean line
+#  -> no phantom dep -> launchable. (A real clean "Depends-on: #10" still blocks — see #11.)
 
 GOT=$(printf '%s' "$BOARD" | bash "$PRED" | sort -n | tr '\n' ' ' | sed 's/ *$//')
-EXP="10 15 17 21"
+EXP="10 15 17 21 24"
 if [ "$GOT" = "$EXP" ]; then
   echo "ok   launchable = [$GOT]"; exit 0
 else
