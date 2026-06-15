@@ -373,6 +373,20 @@ body {
 .stage-finale     { background: rgba(70,206,142,.25); color: #46ce8e; }
 .stage-running    { background: rgba(255,255,255,.1);  color: #aaa; }
 
+/* convergence feed */
+.convergence-section { margin: .5rem 0 .75rem; }
+.conv-feed   { display: flex; flex-direction: column; gap: .5rem; margin-top: .4rem; }
+.conv-event  { padding: .5rem .6rem; border-radius: 6px; background: rgba(255,255,255,.04); }
+.conv-meta   { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .25rem; }
+.conv-author { font-weight: 600; font-size: .78rem; color: #ccc; }
+.conv-ts     { font-size: .72rem; color: #666; }
+.conv-body   { margin: 0; font-size: .76rem; color: #bbb; white-space: pre-wrap; word-break: break-word; }
+.conv-count  { margin-left: .5rem; padding: 1px 6px; border-radius: 4px;
+               background: rgba(240,103,106,.2); color: #f0676a; font-size: .75rem; font-weight: 600; }
+.conv-clean  { margin-left: .5rem; padding: 1px 6px; border-radius: 4px;
+               background: rgba(70,206,142,.15); color: #46ce8e; font-size: .75rem; }
+.conv-empty  { font-size: .8rem; color: #555; padding: .25rem 0; }
+
 /* charter rework badge */
 .rework-badge {
   display: inline-flex; align-items: center; gap: 2px;
