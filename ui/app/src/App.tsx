@@ -255,16 +255,58 @@ function Board({ state, conn, onAction, ask, onOpen }: {
       {!conn && <div className="skel-hint">offline — open ⚙ to set API URL + token, and start the SSH tunnel</div>}
     </section>
   )
+  const milestones = state.board.filter((x) => x.kind === 'milestone')
   const charters = state.board.filter((x) => x.kind === 'charter')
   const leaves = state.board.filter((x) => x.kind === 'leaf')
   const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
   const orphans = leaves.filter((l) => !l.charter || !charters.some((c) => c.n === l.charter))
+  const milestonedCharterNs = new Set(
+    milestones.flatMap((m) => charters.filter((c) => c.milestone === m.n).map((c) => c.n))
+  )
+  const unmilestoned = charters.filter((c) => !milestonedCharterNs.has(c.n))
   if (!state.board.length) return <section className="board"><div className="empty">no issues on the board yet</div></section>
   return (
     <section className="board">
-      {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
+      {milestones.map((m) => (
+        <MilestoneGroup
+          key={m.n}
+          milestone={m}
+          charters={charters.filter((c) => c.milestone === m.n)}
+          leaves={leaves}
+          onAction={onAction}
+          ask={ask}
+          onOpen={onOpen}
+        />
+      ))}
+      {unmilestoned.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
       {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen} />}
     </section>
+  )
+}
+
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen }: {
+  milestone: Task; charters: Task[]; leaves: Task[]
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
+  onOpen: (n: number) => void
+}) {
+  const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
+  return (
+    <div className="milestone-group">
+      <div className="charter-head">
+        <div className="charter-id">
+          <span className="num">#{milestone.n}</span>
+          <span className={'badge b-' + milestone.state}>{milestone.state}</span>
+        </div>
+        <div className="charter-title" onClick={() => onOpen(milestone.n)} style={{ cursor: 'pointer' }}>{milestone.title}</div>
+        <div className="grow" />
+      </div>
+      <div className="milestone-body">
+        {charters.map((c) => (
+          <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />
+        ))}
+      </div>
+    </div>
   )
 }
 

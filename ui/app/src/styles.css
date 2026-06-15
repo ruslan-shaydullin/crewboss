@@ -79,6 +79,12 @@ body {
 .charter { border:1px solid var(--line); border-radius:var(--r); background:linear-gradient(180deg,var(--panel),#08080a);
   box-shadow:var(--shadow); overflow:hidden; transition:border-color .2s }
 .charter:hover { border-color:var(--line2) }
+
+/* milestone groups */
+.milestone-group { border:1px solid rgba(179,155,255,.25); border-left:3px solid var(--review);
+  border-radius:var(--r); background:rgba(179,155,255,.03); margin-bottom:4px; overflow:hidden }
+.milestone-group > .charter-head { padding:14px 18px }
+.milestone-body { display:flex; flex-direction:column; gap:12px; padding:0 12px 12px }
 .charter-head { display:flex; align-items:center; gap:13px; padding:16px 18px }
 .charter-id { display:flex; align-items:center; gap:9px }
 .charter-title { font-weight:640; font-size:15px; letter-spacing:-0.02em }
