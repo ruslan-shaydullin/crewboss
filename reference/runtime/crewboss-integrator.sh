@@ -403,8 +403,17 @@ cmd_verify_merged() {
   ) &
   local suite_pid=$!
 
-  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds
-  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) &
+  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds.
+  # The `>/dev/null 2>&1` on this subshell is LOAD-BEARING: when the timer is
+  # cancelled below, its `sleep` child is orphaned (reparented to init). Without the
+  # redirect that orphan inherits OUR stdout — and when a caller captures verify-merged
+  # via command substitution (the launcher's `vm_out=$(... verify-merged ...)`), the
+  # orphaned sleep holds that pipe open until it finally exits, blocking the caller for
+  # the FULL timeout on EVERY call. That was the root of the launcher verify-merged
+  # "flake" (600 s block → killed/retried under load → false red) AND the O(n²) CI
+  # slowness (launcher-loop tests pay ~600 s per verify-merged). Direct callers
+  # (--verdict-file, no $()) never saw it — hence leaf-verifier passed.
+  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) >/dev/null 2>&1 &
   local timer_pid=$!
 
   wait "$suite_pid" 2>/dev/null || suite_rc=$?
