@@ -72,7 +72,7 @@ def build_agents(by_n, loop_running=False):
         agents.append(dict(task=None, role="launcher", phase="running",
                            title="launcher loop", started="", pid=None))
     for n, item in by_n.items():
-        if item.get("state") == "reviewing":
+        if item.get("state") == "review":
             if not any(a.get("task") == n for a in agents):
                 agents.append(dict(task=n, role="integrator", phase="merging",
                                    title=item.get("title", ""), started="", pid=None))
@@ -133,7 +133,7 @@ def build_loop_info(board=None):
         if os.path.isdir(sdir):
             has_finale = any(e.startswith("finale-") for e in os.listdir(sdir))
         items = list(board) if board else []
-        reviewing = [it for it in items if it.get("state") == "reviewing" and it.get("kind") == "leaf"]
+        reviewing = [it for it in items if it.get("state") == "review" and it.get("kind") == "leaf"]
         in_progress = [it for it in items if it.get("state") == "in-progress"]
         needs_plan = [it for it in items if it.get("kind") == "charter"
                       and it.get("state") in ("needs-plan", "plan-review")]
