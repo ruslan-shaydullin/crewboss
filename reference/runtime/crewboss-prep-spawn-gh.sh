@@ -21,6 +21,7 @@ export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
 # In manifest mode, if the role is an analysis role, build the analyst prompt.
 _IS_ANALYSIS_ROLE=0
+_IS_APPROVAL_ROLE=0
 _IS_MANIFEST_ROLE=0
 _MANIFEST_LOADED=0
 if [ -n "${CB_MANIFEST:-}" ]; then
@@ -41,6 +42,8 @@ if [ -n "${CB_MANIFEST:-}" ]; then
     for _ar in $_ANALYSIS_ROLES; do
       [ "$_ar" = "$ROLE" ] && _IS_ANALYSIS_ROLE=1 && break
     done
+    _APPROVAL_ROLE_ID=$(manifest_policy "$CB_MANIFEST" approval_role 2>/dev/null || true)
+    [ -n "$_APPROVAL_ROLE_ID" ] && [ "$_APPROVAL_ROLE_ID" = "$ROLE" ] && _IS_APPROVAL_ROLE=1
     _MANIFEST_ROLES=$(manifest_roles "$CB_MANIFEST" 2>/dev/null || true)
     if [ -n "$_MANIFEST_ROLES" ]; then
       _MANIFEST_LOADED=1
@@ -82,6 +85,37 @@ The composition block MUST use EXACTLY this format:
 2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
 3. Post the composition block as a comment: gh issue comment $ID -R $(bash "$BOARD" get "$ID" pr_repo) --body '<composition block>'
 4. Move the charter to team-review: gh issue edit $ID -R $(bash "$BOARD" get "$ID" pr_repo) --remove-label status:needs-analysis --add-label status:team-review"
+elif [ "$_IS_APPROVAL_ROLE" = "1" ]; then
+  # Approval-role spawn: CTO (or configured approval_role) reviews and approves/rejects composition.
+  # By analogy with analysis-role: prompt = manifest_role_prompt + composition artifact + outcome instructions.
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+    | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+    2>/dev/null || true)
+  PROMPT="You are the $ROLE for charter #$ID in repo $PR_REPO.
+
+$_ROLE_PROMPT
+
+## Your task: Approve or reject the proposed team composition
+
+The analysis team has proposed the following composition for charter #$ID:
+
+$_COMP_BODY
+
+## Instructions
+
+1. Review the charter issue: gh issue view $ID -R $PR_REPO
+2. Evaluate the composition: roles, scope, leaf assignments, and overall soundness.
+3. Make one of the following decisions:
+
+**To approve** (composition is sound — proceed to planning):
+   gh issue edit $ID -R $PR_REPO --add-label composition:approved --add-label status:needs-plan --remove-label status:team-review
+
+**To reject** (composition needs revision — return to analysis):
+   gh issue comment $ID -R $PR_REPO --body 'Approval rejected: <your explanation>'
+   gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
 elif [ "$ROLE" = "tech-lead" ]; then
   TS=$(date +%s)
   BRANCH="tech-lead/$ID-$TS"
