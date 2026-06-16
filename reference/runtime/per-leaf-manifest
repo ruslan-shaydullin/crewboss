@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=16, EXCLUDED=41, union=57  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=17, EXCLUDED=41, union=58  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -97,3 +97,7 @@ EXCLUDED techlead-manifest-prompt
 EXCLUDED analysis-spawn
 # #138 approval-gate: integration-stub that drives the REAL launcher (heavy/launcher-context).
 EXCLUDED approval-gate
+# #139 launchable-composition: pure-predicate unit test (Layer 1: stdin fixture → launchable.sh;
+#   Layer 2: board-gh.sh + gh stub synchronous). No launcher loop, no background processes,
+#   no timing/poll/sleep. Verdict = f(merged content only). Meets ALLOW criterion.
+ALLOW launchable-composition

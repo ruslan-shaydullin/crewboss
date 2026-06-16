@@ -23,7 +23,7 @@ cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
     gh issue list -R "$REPO" --state all -L 200 --json number,state,labels,body \
-      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ;;
+      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${CB_MANIFEST:+--require-composition} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
     gh issue list -R "$REPO" --state open -L 200 --json number,labels | jq -r '
