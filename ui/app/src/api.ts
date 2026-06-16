@@ -8,7 +8,8 @@ export type Task = {
   pr?: string
   phase?: string | null
   charter?: number | null
-  milestone?: number | null
+  rework_n?: number      // new — present only on charter tasks (#185)
+  milestone?: number | null   // #186 — present only on charter tasks
 }
 export type Agent = {
   task: number | null
@@ -23,6 +24,7 @@ export type LoopInfo = {
   max_ticks: number
   max_parallel: number
   running: boolean
+  stage: string          // new
 }
 export type State = {
   board: Task[]

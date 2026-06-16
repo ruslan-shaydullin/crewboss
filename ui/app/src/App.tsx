@@ -241,6 +241,17 @@ function LoopBadge({ loop }: { loop: LoopInfo }) {
       <span className="loop-sep">·</span>
       <span className="loop-parallel" title="CB_MAX_PARALLEL">×{loop.max_parallel}</span>
       {loop.running && <><span className="loop-sep">·</span><span className="loop-running">running</span></>}
+      {loop.stage && loop.stage !== 'idle' && (
+        <>
+          <span className="loop-sep">·</span>
+          <span
+            className={'loop-stage stage-' + loop.stage}
+            data-testid="loop-stage"
+          >
+            {loop.stage}
+          </span>
+        </>
+      )}
     </div>
   )
 }
@@ -499,6 +510,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
         <div className="charter-id">
           {c ? <span className="num">#{c.n}</span> : <span className="num">∅</span>}
           {c && <span className={'badge b-' + c.state}>{c.state}</span>}
+          {c && c.rework_n != null && c.rework_n > 0 && (
+            <span
+              className="rework-badge"
+              title={c.rework_n + ' re-check cycle(s)'}
+              data-testid="rework-badge"
+            >
+              {'↺'}{c.rework_n}
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
@@ -753,6 +773,15 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const historyComments = comments.filter((c) => HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
   const discussionComments = comments.filter((c) => !HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
 
+  const CONVERGENCE_MARKERS = [
+    'needs-rework', 'verify-merged', 're-check', 'request-changes',
+    'plan failed', 'rework', 'analyst',
+  ]
+  const convComments = comments.filter((c) => {
+    const lower = c.body.toLowerCase()
+    return CONVERGENCE_MARKERS.some((m) => lower.includes(m))
+  })
+
   return (
     <div ref={bgRef} className="drawer-bg" onClick={close}>
       <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -771,6 +800,39 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
           {cost != null && <div><span className="ds-label">cost</span><span className="ds-val">${Number(cost).toFixed(3)}</span></div>}
           {pr && <div><span className="ds-label">pr</span><a className="ds-val pr" href={pr} target="_blank" rel="noreferrer">open ↗</a></div>}
         </div>
+
+        {task?.kind === 'charter' && (
+          <div className="convergence-section" data-testid="convergence-section">
+            <div className="drawer-section">
+              Convergence
+              {(task.rework_n ?? 0) > 0
+                ? <span className="conv-count" data-testid="conv-count">
+                    {'↺'}{task.rework_n} re-check{task.rework_n === 1 ? '' : 's'}
+                  </span>
+                : <span className="conv-clean" data-testid="conv-clean">clean</span>
+              }
+            </div>
+            {convComments.length > 0 ? (
+              <div className="conv-feed" data-testid="conv-feed">
+                {convComments.map((c) => (
+                  <div key={c.id} className="conv-event">
+                    <span className="conv-meta">
+                      <span className="conv-author">{c.author}</span>
+                      <span className="conv-ts">
+                        {new Date(c.created).toLocaleString()}
+                      </span>
+                    </span>
+                    <pre className="conv-body">
+                      {c.body.length > 320 ? c.body.slice(0, 320) + '…' : c.body}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="conv-empty" data-testid="conv-empty">no re-checks yet</div>
+            )}
+          </div>
+        )}
 
         {task && task.state !== 'done' && (
           <div className="drawer-actions">
