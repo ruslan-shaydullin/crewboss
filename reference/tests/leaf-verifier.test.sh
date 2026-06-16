@@ -241,7 +241,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=15 EXCLUDED=40) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=16 EXCLUDED=40) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -259,17 +259,17 @@ else
   _manifest_union="$(grep -E '^(ALLOW|EXCLUDED)[[:space:]]+' "$_MANIFEST" \
     | awk '{print $2}' | sort -u)"
 
-  [ "$_allow_count" -eq 15 ] \
-    && ok "guard: ALLOW count=15" \
-    || ko "guard: ALLOW count expected 15, got $_allow_count"
+  [ "$_allow_count" -eq 16 ] \
+    && ok "guard: ALLOW count=16" \
+    || ko "guard: ALLOW count expected 16, got $_allow_count"
 
   [ "$_excl_count" -eq 40 ] \
     && ok "guard: EXCLUDED count=40" \
     || ko "guard: EXCLUDED count expected 40, got $_excl_count"
 
-  [ "$_actual_count" -eq 55 ] \
-    && ok "guard: actual *.test.sh count=55" \
-    || ko "guard: actual *.test.sh count expected 55, got $_actual_count"
+  [ "$_actual_count" -eq 56 ] \
+    && ok "guard: actual *.test.sh count=56" \
+    || ko "guard: actual *.test.sh count expected 56, got $_actual_count"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"

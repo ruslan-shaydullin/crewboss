@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=15, EXCLUDED=40, union=55  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=16, EXCLUDED=40, union=56  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -28,7 +28,7 @@
 # #206 also adds charter-finale-regen (the A-persistence integration test): heavy
 #   git (clone/merge/push to prove persistence on MAIN) ⇒ EXCLUDED. union 45→46.
 
-# ── ALLOW (13 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
+# ── ALLOW (14 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
 ALLOW acceptance-block
 ALLOW cli-smoke
 ALLOW gate-comment-payload
@@ -46,6 +46,9 @@ ALLOW token-hygiene
 #   Charter:/Depends-on: fields; no launcher loops, no background processes,
 #   no timing/poll/sleep). Meets ALLOW criterion.
 ALLOW leaf-lint
+# #137 role-spawn: spawn-unit stub (no launcher loop, no background processes, no timing);
+#   verdict = pure function of merged prompt content + work-tree agent file.
+ALLOW role-spawn
 # #131 P2/Ф1 manifest pipeline — pure-content tests (no launcher loop/spawn/sleep):
 ALLOW board-states
 ALLOW composition-parse
