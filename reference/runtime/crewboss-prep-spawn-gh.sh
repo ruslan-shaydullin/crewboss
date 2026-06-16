@@ -19,7 +19,61 @@ export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
-if [ "$ROLE" = "tech-lead" ]; then
+# In manifest mode, if the role is an analysis role, build the analyst prompt.
+_IS_ANALYSIS_ROLE=0
+if [ -n "${CB_MANIFEST:-}" ]; then
+  # Load manifest library to check analysis roles
+  _HERE_PREP_CHK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _MLIB_CHK=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _MLIB_CHK="$CB_MANIFEST_LIB"
+  elif [ -f "$_HERE_PREP_CHK/../launcher/manifest.sh" ]; then
+    _MLIB_CHK="$_HERE_PREP_CHK/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _MLIB_CHK="$CB_HOME/manifest.sh"
+  fi
+  if [ -n "$_MLIB_CHK" ] && [ -f "$_MLIB_CHK" ]; then
+    # shellcheck source=../launcher/manifest.sh
+    source "$_MLIB_CHK"
+    _ANALYSIS_ROLES=$(manifest_analysis_roles "$CB_MANIFEST" 2>/dev/null || true)
+    for _ar in $_ANALYSIS_ROLES; do
+      [ "$_ar" = "$ROLE" ] && _IS_ANALYSIS_ROLE=1 && break
+    done
+  fi
+fi
+if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  PROMPT="You are the $ROLE for charter #$ID in repo $(bash "$BOARD" get "$ID" pr_repo).
+
+$_ROLE_PROMPT
+
+## Rubric (objective complexity triggers — apply as a floor, not a vibe)
+\`\`\`json
+$_RUBRIC
+\`\`\`
+
+## Artifact contract
+Produce a machine-readable composition block as a comment on the charter issue, then move the charter to team-review.
+
+The composition block MUST use EXACTLY this format:
+
+## Composition (machine)
+- approach: <one line>
+- role: <role-id>
+- leaf: <leaf-id> -> <role-id>
+- est_cost_usd: <number>
+
+(Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
+
+## Instructions
+1. Study the charter issue: gh issue view $ID -R $(bash "$BOARD" get "$ID" pr_repo)
+2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
+3. Post the composition block as a comment: gh issue comment $ID -R $(bash "$BOARD" get "$ID" pr_repo) --body '<composition block>'
+4. Move the charter to team-review: gh issue edit $ID -R $(bash "$BOARD" get "$ID" pr_repo) --remove-label status:needs-analysis --add-label status:team-review"
+elif [ "$ROLE" = "tech-lead" ]; then
   TS=$(date +%s)
   BRANCH="tech-lead/$ID-$TS"
   # Base tech-lead prompt — phrasing locked (HD-1 / legacy-pin #135); do NOT alter without pin bump.
