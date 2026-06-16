@@ -91,9 +91,12 @@ printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
 ssh $CB_SSH_OPTS "$CB_HOST" "
   CB_HOME='$CB_REMOTE_HOME'
-  # Source operator secrets from ~/.crewboss.env so CB_REPO and CB_API_TOKEN reach the
-  # daemon (without this, api.py starts with empty TOKEN → auth=OFF — issue #148).
-  [ -f \"\$HOME/.crewboss.env\" ] && . \"\$HOME/.crewboss.env\"
+  # Source the FULL env contract (run-env.sh #147) so CB_REPO + CB_API_TOKEN reach the
+  # daemon. run-env.sh sets CB_REPO (default) AND sources ~/.crewboss.env for the token.
+  # Sourcing ONLY ~/.crewboss.env dropped CB_REPO (it isn't defined there) -> the daemon
+  # restarted with empty repo -> empty board after every deploy. (issue #148 + regression.)
+  if [ -f \"\$CB_HOME/run-env.sh\" ]; then . \"\$CB_HOME/run-env.sh\"
+  elif [ -f \"\$HOME/.crewboss.env\" ]; then . \"\$HOME/.crewboss.env\"; fi
   export CB_HOME CB_REPO CB_API_TOKEN
   API_PID=\"\$CB_HOME/run/api.pid\"
   mkdir -p \"\$CB_HOME/run\"
