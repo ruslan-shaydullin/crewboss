@@ -381,6 +381,19 @@ _finale_check_ci(){
   local new_state
   if [ "$checks_rc" -eq 0 ]; then
     new_state="green"
+  elif printf '%s' "$checks_out" | grep -qiE "no checks|0 checks reported" \
+       || [ -z "$(printf '%s' "$checks_out" | tr -d '[:space:]')" ]; then
+    # GHA has NOT registered any checks yet — the poll fired in the same tick the PR
+    # was created (creation→poll race). gh reports "no checks reported on the '<b>'
+    # branch" (exit≠0, no "pending" string). Treat as PENDING, not red: a false-red
+    # here is cached terminal (ci_state=red, lines above short-circuit) and the PR
+    # NEVER promotes even after CI goes green — deterministically breaks every
+    # launcher-created charter finale. (#238 capstone find.) Deadline still bounds it.
+    if [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
+      new_state="timeout"
+    else
+      return 3
+    fi
   elif ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
     new_state="red"
   elif [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
