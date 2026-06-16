@@ -313,6 +313,54 @@ done
   || ko "smoke-parallel: one or more concurrent verify-merged did not return pass"
 
 # =============================================================================
+# Test 9: Hermetic env — verify-merged sanitizes launcher loop-scope (#238)
+#   The launcher exports CREWBOSS_CHARTER (→ CHARTER_SCOPE) to scope its run loop,
+#   and the verify-merged suite subshell inherits it via `vm_out=$(...)`. Engine
+#   tests that read CREWBOSS_CHARTER (launchable, cli-smoke, acceptance-block) would
+#   scope their FIXTURE board to the running charter → empty → false-RED. The suite
+#   subshell MUST unset CREWBOSS_CHARTER/CHARTER_SCOPE so hermetic tests are unperturbed.
+#   Fixture: an ALLOW test (acceptance-block) that FAILS iff either var is set.
+#   With both set in the CALLER env → must STILL verdict=pass (proves sanitisation).
+# =============================================================================
+echo "=== Test 9: Hermetic env (verify-merged unsets CREWBOSS_CHARTER/CHARTER_SCOPE) ==="
+REMOTE9="$ROOT/remote9.git"
+VERDICT9="$ROOT/verdict9.txt"
+{
+  rm -rf "$REMOTE9"
+  git init --bare -q "$REMOTE9"
+  _tmp9="$(mktemp -d)"
+  git clone -q "$REMOTE9" "$_tmp9" 2>/dev/null
+  git -C "$_tmp9" config user.email t@t
+  git -C "$_tmp9" config user.name  T
+  mkdir -p "$_tmp9/reference/tests"
+  # ALLOW test (acceptance-block is in the real per-leaf-manifest ALLOW set) that
+  # exits 1 iff the launcher loop-scope leaked into its environment.
+  printf '#!/usr/bin/env bash\n[ -n "${CREWBOSS_CHARTER:-}" ] && exit 1\n[ -n "${CHARTER_SCOPE:-}" ] && exit 1\nexit 0\n' \
+    > "$_tmp9/reference/tests/acceptance-block.test.sh"
+  chmod +x "$_tmp9/reference/tests/acceptance-block.test.sh"
+  printf 'ALLOW dummy\n' > "$_tmp9/reference/tests/per-leaf-manifest"
+  printf 'base\n' > "$_tmp9/README.md"
+  git -C "$_tmp9" add -A
+  git -C "$_tmp9" commit -qm "base" 2>/dev/null
+  git -C "$_tmp9" push -q origin "HEAD:refs/heads/charter/5" 2>/dev/null
+  printf 'leaf change\n' > "$_tmp9/leaf.txt"
+  git -C "$_tmp9" add -A
+  git -C "$_tmp9" commit -qm "leaf work" 2>/dev/null
+  git -C "$_tmp9" push -q origin "HEAD:refs/heads/leaf/42" 2>/dev/null
+  rm -rf "$_tmp9"
+}
+
+rc=0
+CREWBOSS_CHARTER=999 CHARTER_SCOPE=999 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
+  --remote "$REMOTE9" --verdict-file "$VERDICT9" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] \
+  && ok "hermetic-env: exit 0 — CREWBOSS_CHARTER/CHARTER_SCOPE sanitised in suite subshell" \
+  || ko "hermetic-env: expected exit 0, got $rc (launcher loop-scope leaked into engine tests)"
+[ "$(cat "$VERDICT9" 2>/dev/null)" = "pass" ] \
+  && ok "hermetic-env: verdict=pass" \
+  || ko "hermetic-env: verdict mismatch (got '$(cat "$VERDICT9" 2>/dev/null)')"
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -381,6 +381,15 @@ cmd_verify_merged() {
   # Start engine run in background subshell
   (
     cd "$merged_dir"
+    # Hermetic env (#238 capstone find): the launcher exports its run-loop scope
+    # (CREWBOSS_CHARTER → CHARTER_SCOPE in launchable.sh) and THIS suite subshell
+    # inherits it via the launcher's `vm_out=$(... verify-merged ...)`. Engine tests
+    # that read CREWBOSS_CHARTER (launchable, cli-smoke, acceptance-block) would then
+    # scope their OWN fixture board to the running charter → empty result → false-RED.
+    # Latent because production batches run the launcher UNSCOPED (CHARTER_SCOPE=0, no
+    # filter); a scoped run (CREWBOSS_CHARTER=<C>) exposes it. Strip the loop-scope so
+    # hermetic engine tests run exactly as they do in clean CI.
+    unset CREWBOSS_CHARTER CHARTER_SCOPE
     shopt -s nullglob
     # #206 Part A: in-clone sha-lock regen (EPHEMERAL, verdict-only). Refreshes
     # runtime-manifest.tsv to match the merged tree so runtime-manifest (now an
