@@ -93,6 +93,13 @@ $(bash "$BOARD" get "$ID" prompt)"
   fi
 fi
 TS="${TS:-$(date +%s)}"
+# Default BRANCH for the plan/tech-lead path (decompose-only role: runs gh issue
+# create, pushes no code). It is set explicitly only in the executor branch above,
+# so without this default the git checkout below (line ~131) hits `set -u`:
+# "BRANCH: unbound variable" and the plan spawn dies before Claude. The branch is a
+# throwaway here — the tech-lead never pushes it. (Surfaced by the first end-to-end
+# autonomous control run; the plan path was previously only exercised operator-side.)
+BRANCH="${BRANCH:-task/$ID-$TS}"
 # nsjail writes in-jail files as host-root (uid-map), so a prior run's node_modules is
 # undeletable by us — sudo-fallback the cleanup or the work dir stays poisoned forever.
 WA="$RUN/work/$ID/repo"

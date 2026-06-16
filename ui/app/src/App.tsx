@@ -241,30 +241,156 @@ function LoopBadge({ loop }: { loop: LoopInfo }) {
       <span className="loop-sep">·</span>
       <span className="loop-parallel" title="CB_MAX_PARALLEL">×{loop.max_parallel}</span>
       {loop.running && <><span className="loop-sep">·</span><span className="loop-running">running</span></>}
+      {loop.stage && loop.stage !== 'idle' && (
+        <>
+          <span className="loop-sep">·</span>
+          <span
+            className={'loop-stage stage-' + loop.stage}
+            data-testid="loop-stage"
+          >
+            {loop.stage}
+          </span>
+        </>
+      )}
     </div>
   )
+}
+
+// ── Collapse-state persistence ─────────────────────────────────────────────
+const COLLAPSE_LS_KEY = 'cb_collapse'
+function readCollapseMap(): Record<string, boolean> {
+  try { return JSON.parse(localStorage.getItem(COLLAPSE_LS_KEY) ?? '{}') } catch { return {} }
+}
+function writeCollapseMap(m: Record<string, boolean>) {
+  try { localStorage.setItem(COLLAPSE_LS_KEY, JSON.stringify(m)) } catch {}
 }
 
 function Board({ state, conn, onAction, ask, onOpen }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
 }) {
+  // Collapse state — always call hooks before any early return
+  const [collapseMap, setCollapseMap] = useState<Record<string, boolean>>(readCollapseMap)
+  const getExpanded = (n: number, def: boolean) => {
+    const k = String(n)
+    return k in collapseMap ? collapseMap[k] : def
+  }
+  const doToggle = (n: number, def: boolean) => {
+    setCollapseMap((prev) => {
+      const k = String(n)
+      const cur = k in prev ? prev[k] : def
+      const next = { ...prev, [k]: !cur }
+      writeCollapseMap(next)
+      return next
+    })
+  }
+
   if (!state) return (
     <section className="board">
       <SkeletonBoard />
       {!conn && <div className="skel-hint">offline — open ⚙ to set API URL + token, and start the SSH tunnel</div>}
     </section>
   )
+  const milestones = state.board.filter((x) => x.kind === 'milestone')
   const charters = state.board.filter((x) => x.kind === 'charter')
   const leaves = state.board.filter((x) => x.kind === 'leaf')
   const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
   const orphans = leaves.filter((l) => !l.charter || !charters.some((c) => c.n === l.charter))
+  const milestonedCharterNs = new Set(
+    milestones.flatMap((m) => charters.filter((c) => c.milestone === m.n).map((c) => c.n))
+  )
+  const unmilestoned = charters.filter((c) => !milestonedCharterNs.has(c.n))
   if (!state.board.length) return <section className="board"><div className="empty">no issues on the board yet</div></section>
   return (
     <section className="board">
-      {charters.map((c) => <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)} onAction={onAction} ask={ask} onOpen={onOpen} />)}
-      {orphans.length > 0 && <CharterCard c={null} leaves={orphans} onAction={onAction} ask={ask} onOpen={onOpen} />}
+      {milestones.map((m) => {
+        const milestoneDefault = m.state !== 'CLOSED' && m.state !== 'done'
+        return (
+          <MilestoneGroup
+            key={m.n}
+            milestone={m}
+            charters={charters.filter((c) => c.milestone === m.n)}
+            leaves={leaves}
+            onAction={onAction}
+            ask={ask}
+            onOpen={onOpen}
+            expanded={getExpanded(m.n, milestoneDefault)}
+            onToggle={() => doToggle(m.n, milestoneDefault)}
+            getExpanded={getExpanded}
+            doToggle={doToggle}
+          />
+        )
+      })}
+      {unmilestoned.map((c) => (
+        <CharterCard
+          key={c.n}
+          c={c}
+          leaves={childrenOf(c.n)}
+          onAction={onAction}
+          ask={ask}
+          onOpen={onOpen}
+          expanded={getExpanded(c.n, true)}
+          onToggle={() => doToggle(c.n, true)}
+        />
+      ))}
+      {orphans.length > 0 && (
+        <CharterCard
+          c={null}
+          leaves={orphans}
+          onAction={onAction}
+          ask={ask}
+          onOpen={onOpen}
+          expanded={getExpanded(0, true)}
+          onToggle={() => doToggle(0, true)}
+        />
+      )}
     </section>
+  )
+}
+
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle }: {
+  milestone: Task; charters: Task[]; leaves: Task[]
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
+  onOpen: (n: number) => void
+  expanded: boolean; onToggle: () => void
+  getExpanded: (n: number, def: boolean) => boolean
+  doToggle: (n: number, def: boolean) => void
+}) {
+  const bodyId = `milestone-body-${milestone.n}`
+  const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
+  return (
+    <div className="milestone-group">
+      <div className="charter-head">
+        <button
+          className={'chevron-btn' + (expanded ? ' expanded' : ' collapsed')}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={onToggle}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+        ><span className="chevron">▶</span></button>
+        <div className="charter-id">
+          <span className="num">#{milestone.n}</span>
+          <span className={'badge b-' + milestone.state}>{milestone.state}</span>
+        </div>
+        <div className="charter-title" onClick={() => onOpen(milestone.n)} style={{ cursor: 'pointer' }}>{milestone.title}</div>
+        <div className="grow" />
+      </div>
+      <div id={bodyId} className="milestone-body" style={expanded ? undefined : { display: 'none' }}>
+        {charters.map((c) => (
+          <CharterCard
+            key={c.n}
+            c={c}
+            leaves={childrenOf(c.n)}
+            onAction={onAction}
+            ask={ask}
+            onOpen={onOpen}
+            expanded={getExpanded(c.n, true)}
+            onToggle={() => doToggle(c.n, true)}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -360,21 +486,39 @@ function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) 
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
+  expanded: boolean; onToggle: () => void
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
   const pct = total > 0 ? Math.round((100 * done) / total) : 0
   const gridRef = useRef<HTMLDivElement>(null)
   useFlip(gridRef)
+  const bodyId = `charter-body-${c?.n ?? 0}`
   return (
     <div className="charter">
       <div className="charter-head">
+        <button
+          className={'chevron-btn' + (expanded ? ' expanded' : ' collapsed')}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={onToggle}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+        ><span className="chevron">▶</span></button>
         <div className="charter-id">
           {c ? <span className="num">#{c.n}</span> : <span className="num">∅</span>}
           {c && <span className={'badge b-' + c.state}>{c.state}</span>}
+          {c && c.rework_n != null && c.rework_n > 0 && (
+            <span
+              className="rework-badge"
+              title={c.rework_n + ' re-check cycle(s)'}
+              data-testid="rework-badge"
+            >
+              {'↺'}{c.rework_n}
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
@@ -389,12 +533,14 @@ function CharterCard({ c, leaves, onAction, ask, onOpen }: {
             true)}>Request changes</button>
         </>}
       </div>
-      {total > 0 && (
-        <div className="task-grid" ref={gridRef}>
-          {leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}
-        </div>
-      )}
-      {total === 0 && <div className="leaf-empty">awaiting decomposition…</div>}
+      <div id={bodyId} style={expanded ? undefined : { display: 'none' }}>
+        {total > 0 && (
+          <div className="task-grid" ref={gridRef}>
+            {leaves.map((l) => <TaskCard key={l.n} t={l} onOpen={onOpen} />)}
+          </div>
+        )}
+        {total === 0 && <div className="leaf-empty">awaiting decomposition…</div>}
+      </div>
     </div>
   )
 }
@@ -627,6 +773,15 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const historyComments = comments.filter((c) => HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
   const discussionComments = comments.filter((c) => !HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
 
+  const CONVERGENCE_MARKERS = [
+    'needs-rework', 'verify-merged', 're-check', 'request-changes',
+    'plan failed', 'rework', 'analyst',
+  ]
+  const convComments = comments.filter((c) => {
+    const lower = c.body.toLowerCase()
+    return CONVERGENCE_MARKERS.some((m) => lower.includes(m))
+  })
+
   return (
     <div ref={bgRef} className="drawer-bg" onClick={close}>
       <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -645,6 +800,39 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
           {cost != null && <div><span className="ds-label">cost</span><span className="ds-val">${Number(cost).toFixed(3)}</span></div>}
           {pr && <div><span className="ds-label">pr</span><a className="ds-val pr" href={pr} target="_blank" rel="noreferrer">open ↗</a></div>}
         </div>
+
+        {task?.kind === 'charter' && (
+          <div className="convergence-section" data-testid="convergence-section">
+            <div className="drawer-section">
+              Convergence
+              {(task.rework_n ?? 0) > 0
+                ? <span className="conv-count" data-testid="conv-count">
+                    {'↺'}{task.rework_n} re-check{task.rework_n === 1 ? '' : 's'}
+                  </span>
+                : <span className="conv-clean" data-testid="conv-clean">clean</span>
+              }
+            </div>
+            {convComments.length > 0 ? (
+              <div className="conv-feed" data-testid="conv-feed">
+                {convComments.map((c) => (
+                  <div key={c.id} className="conv-event">
+                    <span className="conv-meta">
+                      <span className="conv-author">{c.author}</span>
+                      <span className="conv-ts">
+                        {new Date(c.created).toLocaleString()}
+                      </span>
+                    </span>
+                    <pre className="conv-body">
+                      {c.body.length > 320 ? c.body.slice(0, 320) + '…' : c.body}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="conv-empty" data-testid="conv-empty">no re-checks yet</div>
+            )}
+          </div>
+        )}
 
         {task && task.state !== 'done' && (
           <div className="drawer-actions">

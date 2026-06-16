@@ -94,8 +94,12 @@ case "$obj $verb" in
     echo "comment #$n: $body" >> "$GH_LOG" ;;
 
   "label create")
-    # no-op in tests (ensure_label calls this; silently ignore)
-    ;;
+    # #205: model real gh — create succeeds once, fails if the label already exists
+    name="$1"; LF="${LABELS_FILE:-${GH_LOG}.labels}"
+    if [ -f "$LF" ] && grep -qx -- "$name" "$LF"; then exit 1; fi
+    printf '%s\n' "$name" >> "$LF" ;;
+  "label edit")
+    : ;;
 
   *)
     echo "stub gh UNHANDLED: $obj $verb $*" >> "$GH_LOG" ;;
@@ -365,6 +369,70 @@ prio_state=$(board_get_state 12)
 [ "$prio_state" = "review" ] \
   && ok "RED-d(2): priority — review+needs-rework → state='review'" \
   || ko "RED-d(2): priority — expected 'review', got '$prio_state'"
+
+# ── INIT-e (#205): labels-setup creates status:needs-rework idempotently + is invoked at Run ──
+#    [GROUND] runs the REAL run-charter.sh in a sandbox HOME — proves the label exists after bootstrap.
+FAKE_HOME="$ROOT/fake_home_e"; mkdir -p "$FAKE_HOME/cbnet/run"
+cp "$HERE/../launcher/labels-setup.sh" "$FAKE_HOME/cbnet/labels-setup.sh"
+printf 'GH_TOKEN=testtoken\n' > "$FAKE_HOME/.crewboss.env"
+printf '#!/usr/bin/env bash\necho "[launcher stub]"\n' > "$FAKE_HOME/cbnet/crewboss-launcher-gh.sh"
+chmod +x "$FAKE_HOME/cbnet/crewboss-launcher-gh.sh"
+export LABELS_FILE="$SANDBOX/init_labels"; rm -f "$LABELS_FILE"
+HOME="$FAKE_HOME" PATH="$BIN:$PATH" CB_REPO="test/repo" bash "$HERE/../runtime/run-charter.sh" >/dev/null 2>&1 || true
+grep -qx "status:needs-rework" "$LABELS_FILE" 2>/dev/null \
+  && ok "INIT-e: run-charter invokes labels-setup at bootstrap; status:needs-rework created" \
+  || ko "INIT-e: status:needs-rework NOT created by run-charter bootstrap (rework axis hollow)"
+HOME="$FAKE_HOME" PATH="$BIN:$PATH" CB_REPO="test/repo" bash "$FAKE_HOME/cbnet/labels-setup.sh" >/dev/null 2>&1 \
+  && ok "INIT-e: labels-setup is idempotent (2nd run exits 0; create-fails->edit-succeeds)" \
+  || ko "INIT-e: labels-setup NOT idempotent (2nd run failed on existing label)"
+unset LABELS_FILE
+
+# ── RE-f (#210): re-dispatch clears stale state+work, re-queues launchable, leaf re-claims ──
+#    [GROUND] seed term=1 + a work dir, run the command, assert cleared + re-claim via one tick.
+CB_HOME_RE="$ROOT/cbhome_re"; mkdir -p "$CB_HOME_RE/run/state/77" "$CB_HOME_RE/run/work/77"
+cp "$BOARD_GH_SRC" "$CB_HOME_RE/board-gh.sh"
+cp "$(dirname "$BOARD_GH_SRC")/launchable.sh" "$CB_HOME_RE/launchable.sh"
+chmod +x "$CB_HOME_RE/board-gh.sh" "$CB_HOME_RE/launchable.sh"
+printf '1'         > "$CB_HOME_RE/run/state/77/term"
+printf '9999'      > "$CB_HOME_RE/run/state/77/pid"
+printf 'leaf/77-x' > "$CB_HOME_RE/run/state/77/pr_head"
+echo "poison"      > "$CB_HOME_RE/run/work/77/junk.txt"
+reset_board <<'JSON'
+[
+  {"number":5,"state":"OPEN",
+   "labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":77,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:blocked"}],
+   "body":"Charter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+PATH="$BIN:$PATH" CB_REPO="test/repo" CB_HOME="$CB_HOME_RE" bash "$LAUNCHER_GH" re-dispatch 77 2>/dev/null
+[ -z "$(cat "$CB_HOME_RE/run/state/77/term" 2>/dev/null)" ] \
+  && ok "RE-f: term flag cleared by re-dispatch" || ko "RE-f: term NOT cleared (re-claim still blocked)"
+[ ! -d "$CB_HOME_RE/run/work/77" ] \
+  && ok "RE-f: run/work/77 removed (poisoned tree cleared)" || ko "RE-f: run/work/77 still present"
+has_label 77 "status:needs-rework" \
+  && ok "RE-f: #77 routed to status:needs-rework (re-launchable)" || ko "RE-f: #77 not needs-rework"
+no_label 77 "status:blocked" \
+  && ok "RE-f: prior status:blocked removed by re-dispatch" || ko "RE-f: status:blocked still present"
+SPAWN_LOG_RE="$SANDBOX/spawn-re.log"; REWORK_LOG_RE="$SANDBOX/rework-re.log"
+SPAWN_STUB_RE="$ROOT/spawn-re.sh"; REWORK_STUB_RE="$ROOT/rework-re.sh"
+cat > "$SPAWN_STUB_RE" <<STUB
+#!/usr/bin/env bash
+echo "spawn \$1" >> "$SPAWN_LOG_RE"
+exit 0
+STUB
+cat > "$REWORK_STUB_RE" <<STUB
+#!/usr/bin/env bash
+echo "rework-spawn \$1" >> "$REWORK_LOG_RE"
+exit 0
+STUB
+chmod +x "$SPAWN_STUB_RE" "$REWORK_STUB_RE"
+PATH="$BIN:$PATH" CB_REPO="test/repo" CB_HOME="$CB_HOME_RE" \
+  CB_SPAWN="$SPAWN_STUB_RE" CB_REWORK_SPAWN="$REWORK_STUB_RE" \
+  CB_RETRY_CAP=2 CB_MAX_PARALLEL=5 bash "$LAUNCHER_GH" once 2>/dev/null
+grep -q "rework-spawn 77" "$REWORK_LOG_RE" 2>/dev/null \
+  && ok "RE-f: #77 re-claimed after re-dispatch (one tick, via CB_REWORK_SPAWN)" \
+  || ko "RE-f: #77 NOT re-claimed after re-dispatch (rework log: $(cat "$REWORK_LOG_RE" 2>/dev/null))"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 echo

@@ -17,6 +17,7 @@ set -uo pipefail
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"; STATE="$RUN/state"; LOCK="$RUN/launcher.lock"
 RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
+# CB_SPAWN_TIMEOUT — per-spawn wall-clock kill (#212 I4 hang-protection); default 1800s (<< nsjail 3600).
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
 SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
@@ -187,7 +188,7 @@ claim_and_spawn(){ # id
 # Idempotent: merged/closed leaves not re-processed.  All errors logged, non-fatal.
 _integrator_cycle(){
   if [ -z "$GIT_REMOTE" ]; then
-    [ -n "${_REMOTE_DISABLED_LOGGED:-}" ] || log "integrator+finale DISABLED: CB_GIT_REMOTE not set"
+    [ -n "${_REMOTE_DISABLED_LOGGED:-}" ] || log "integrator+finale DISABLED: CB_GIT_REMOTE not set — verify-merged + rework/escalation trigger ALSO held (verify-red will NOT route leaves to needs-rework until a remote is set)"
     export _REMOTE_DISABLED_LOGGED=1
     return 0
   fi
@@ -297,11 +298,28 @@ _integrator_cycle(){
     elif [ "$try_exit" -eq 0 ]; then
       # Clean merge: run verify-merged (engine suite on merged tree) before merging. [#176]
       local vm_exit=0
-      bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
-           --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null || vm_exit=$?
+      local vm_out=""
+      vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged "$pr_head" "$pr_base" \
+           --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null) || vm_exit=$?
+      local _vmreason; _vmreason="$(printf '%s\n' "$vm_out" | sed -n 's/^RED_REASON: //p' | head -1)"
       if [ "$vm_exit" -eq 1 ]; then
-        # Engine RED on merged tree — do NOT merge; leave leaf in status:review (retryable).
-        log "integrator: #$rid PR #$pr_num verify-merged FAIL (engine red on merged tree) — staying in review"
+        # [#208] confirmed terminal RED → escalate; clear term + remove review EXPLICITLY (board route
+        # does NOT remove status:review → busy-loop, latent #196 bug); carry the RED reason into the comment.
+        local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
+        if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked (${_vmreason:-RED})"
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
+        else
+          _rwk=$((_rwk + 1)); sset "$rid" rework_n "$_rwk"; sset "$rid" term ""
+          log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — escalating to needs-rework (rework ${_rwk}/${CB_REWORK_CAP:-2}; ${_vmreason:-RED})"
+          gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-rework >/dev/null 2>&1 || true
+          gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED — failing: ${_vmreason:-engine RED on merged tree}" >/dev/null 2>&1 || true
+        fi
+        continue
+      elif [ "$vm_exit" -eq 3 ]; then
+        # Retryable RED (#195: red-counter < N, not yet confirmed) — stay in review, retry. [#196]
+        log "integrator: #$rid PR #$pr_num verify-merged retryable red (exit 3, <N) — staying in review, retry next tick"
         continue
       elif [ "$vm_exit" -eq 2 ]; then
         # Infra error — log and retry next tick (same as try-merge infra). [F6]
@@ -396,6 +414,19 @@ _finale_check_ci(){
   local new_state
   if [ "$checks_rc" -eq 0 ]; then
     new_state="green"
+  elif printf '%s' "$checks_out" | grep -qiE "no checks|0 checks reported" \
+       || [ -z "$(printf '%s' "$checks_out" | tr -d '[:space:]')" ]; then
+    # GHA has NOT registered any checks yet — the poll fired in the same tick the PR
+    # was created (creation→poll race). gh reports "no checks reported on the '<b>'
+    # branch" (exit≠0, no "pending" string). Treat as PENDING, not red: a false-red
+    # here is cached terminal (ci_state=red, lines above short-circuit) and the PR
+    # NEVER promotes even after CI goes green — deterministically breaks every
+    # launcher-created charter finale. (#238 capstone find.) Deadline still bounds it.
+    if [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
+      new_state="timeout"
+    else
+      return 3
+    fi
   elif ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
     new_state="red"
   elif [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
@@ -536,6 +567,22 @@ _charter_finale_cycle(){
       continue
     fi
 
+    # ── #206 Part A: persist the regenerated manifest sha-lock as a COMMIT on ──
+    # charter/C BEFORE the PR is created. The full suite just passed on this tree
+    # (gate green), so refreshing the sha-lock is sound (manifest==verified tree).
+    # The subsequent human charter→main merge carries the fresh manifest onto
+    # canon, keeping doctor's deploy-vs-manifest integrity true at the canon
+    # boundary. Infra (clone/push) → defer the PR to the next tick so main never
+    # receives a stale manifest. No-op (no commit) when already fresh.
+    local regen_out regen_rc=0
+    regen_out=$(bash "$INTEGRATOR_SCRIPT" regen-persist "$cid" \
+                  --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>&1) || regen_rc=$?
+    if [ "$regen_rc" -ne 0 ]; then
+      log "charter-finale: #$cid regen-persist infra (rc=$regen_rc) — PR deferred to next tick: $regen_out"
+      continue
+    fi
+    [ -n "$regen_out" ] && log "charter-finale: #$cid regen-persist: $regen_out"
+
     log "charter-finale: #$cid gate green — creating draft PR $branch → main"
 
     # Create draft PR
@@ -563,6 +610,21 @@ _charter_finale_cycle(){
     printf '%s' "pending"     > "$_fin_dir/ci_state"
     _finale_check_ci "$cid" "$pr_num" || true
   done
+}
+
+# re-dispatch <leaf-id> — operator command AND the I-D idempotent re-dispatch primitive:
+# atomically clear launcher-local run-state, remove the poisoned work tree, and re-queue the
+# leaf as launchable (status:needs-rework). Deliberate operator action — never auto-fired.
+cmd_redispatch(){
+  local id="${1:-}"
+  [ -n "$id" ] || { echo "usage: $0 re-dispatch <leaf-id>" >&2; return 64; }
+  local sd="$STATE/$id" wd="$RUN/work/$id" k
+  for k in pid term tries pr_head stale_ticks rework_n; do rm -f "$sd/$k" 2>/dev/null || true; done
+  rm -rf "$wd" 2>/dev/null || sudo rm -rf "$wd" 2>/dev/null || true
+  gh issue edit "$id" -R "$CB_REPO" \
+    --remove-label status:review --remove-label status:blocked --remove-label status:in-progress \
+    --add-label status:needs-rework >/dev/null 2>&1 || true
+  log "re-dispatch #$id: run-state cleared, work tree removed, routed status:needs-rework (re-launchable)"
 }
 
 cmd_once(){
@@ -601,7 +663,22 @@ cmd_run(){
       # route finished background spawns (by status.json phase; phase=unknown -> treat as crash/fail)
       for d in "$STATE"/*/; do [ -e "$d" ] || continue; id=$(basename "$d"); pid=$(sget "$id" pid)
         { [ -n "$pid" ] && [ "$pid" != PENDING ]; } || continue
-        kill -0 "$pid" 2>/dev/null && continue          # still running
+        if kill -0 "$pid" 2>/dev/null; then
+          # [#212 I4 hang-protection] kill a spawn alive past CB_SPAWN_TIMEOUT (wall-clock), route like crash
+          _st=$(sget "$id" starttime)
+          if [ -n "$_st" ]; then
+            _ste=$(date -u -d "$_st" +%s 2>/dev/null || echo 0)
+            _age=$(( $(date -u +%s) - _ste ))
+            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "${CB_SPAWN_TIMEOUT:-1800}" ]; then
+              kill -9 "$pid" 2>/dev/null
+              prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${CB_SPAWN_TIMEOUT:-1800}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + blocked"
+              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + requeue"; fi
+              sset "$id" pid ""
+            fi
+          fi
+          continue          # still running (or just timed-out+routed)
+        fi
         # charter planning task (tech-lead): route by the charter's own label, not by review.
         if [ "$(sget "$id" kind)" = "charter" ]; then
           cst=$(board get "$id" state)
@@ -688,5 +765,6 @@ case "${1:-once}" in
   reconcile) ( flock -n 9 || { log locked; exit 1; }; reconcile ) 9>"$LOCK" ;;
   once) cmd_once ;;
   run)  cmd_run ;;
-  *) echo "usage: $0 {once|run|reconcile}"; exit 64 ;;
+  re-dispatch) cmd_redispatch "${2:-}" ;;
+  *) echo "usage: $0 {once|run|reconcile|re-dispatch <leaf-id>}"; exit 64 ;;
 esac

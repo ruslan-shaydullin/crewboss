@@ -372,6 +372,77 @@ grep -q "max ticks" "$LOGFILE_C" \
   || ok "RED-c: loop did NOT hit max-ticks"
 
 # =============================================================================
+# RED-d (#196): confirmed verify-merged RED → escalate (blocked at cap) + NOT merged (I5) + idle-exit (I4)
+# =============================================================================
+echo "== RED-d: verify-merged confirmed RED → escalation (blocked), NOT merged, loop exits =="
+CBHOME_D="$ROOT/cbhome_d"; LOGFILE_D="$ROOT/loop_d.log"
+reset_sandbox "$CBHOME_D"
+# Push charter/5 with a RED acceptance-block test (ALLOW-name → secure filter runs it) +
+# leaf/42 (non-conflicting) → merged tree is deterministically RED.
+WD="$(mktemp -d)"; git clone -q "$REMOTE" "$WD" 2>/dev/null
+git -C "$WD" config user.email t@t; git -C "$WD" config user.name T
+git -C "$WD" checkout -q -b cb5 origin/main 2>/dev/null
+mkdir -p "$WD/reference/tests"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WD/reference/tests/acceptance-block.test.sh"
+chmod +x "$WD/reference/tests/acceptance-block.test.sh"
+git -C "$WD" add -A; git -C "$WD" commit -qm "charter5 red" 2>/dev/null
+git -C "$WD" push -q origin cb5:refs/heads/charter/5 2>/dev/null
+printf 'leaf change\n' > "$WD/leaf.txt"; git -C "$WD" add -A; git -C "$WD" commit -qm "leaf42" 2>/dev/null
+git -C "$WD" push -q origin cb5:refs/heads/leaf/42 2>/dev/null
+rm -rf "$WD"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":20,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:review"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+touch "$PRDIR/20"; printf 'charter/5' > "$PRDIR/base-20"; printf 'leaf/42' > "$PRDIR/head-20"
+run_loop "$CBHOME_D" "$LOGFILE_D" "CB_VERIFY_CONFIRM_N=1" "CB_REWORK_CAP=0" "CB_MAX_TICKS=20"
+if has_label 20 "status:blocked"; then ok "RED-d: #20 → status:blocked (verify-red escalation at rework-cap)"; else ko "RED-d: #20 NOT blocked — escalation missing (busy-loop persists)"; fi
+if has_label 20 "status:review"; then ko "RED-d: #20 still status:review (not escalated)"; else ok "RED-d: status:review removed on escalation"; fi
+if [ -f "$PRDIR/merged-20" ]; then ko "RED-d: #20 PR MERGED despite verify-merged RED — green-before-merge BROKEN (I5)"; else ok "RED-d: #20 PR NOT merged (green-before-merge intact, I5)"; fi
+if grep -q "pr merge #20" "$GH_LOG"; then ko "RED-d: merge command issued for RED #20 (I5 broken)"; else ok "RED-d: no merge command for RED #20 (I5)"; fi
+if grep -q "idle — run complete" "$LOGFILE_D"; then ok "RED-d: loop exited cleanly (idle, not max-ticks) — I4 finiteness"; else ko "RED-d: loop did not idle-exit (busy-loop persists)"; fi
+if grep -q "max ticks" "$LOGFILE_D"; then ko "RED-d: loop hit max-ticks (escalation did not terminate busy-loop)"; else ok "RED-d: loop did NOT hit max-ticks"; fi
+
+# =============================================================================
+# RED-f (#212): wedged spawn (alive past CB_SPAWN_TIMEOUT) → wall-clock kill → routed → loop terminates
+# =============================================================================
+echo "== RED-f: hung spawn killed by per-spawn wall-timeout; loop does not hang =="
+CBHOME_F="$ROOT/cbhome_f"; LOGFILE_F="$ROOT/loop_f.log"
+reset_sandbox "$CBHOME_F"
+# wedged spawn stub: sleeps far longer than the timeout, never writes status.json
+WEDGE="$ROOT/wedge-spawn.sh"; printf '#!/usr/bin/env bash\nsleep 120\n' > "$WEDGE"; chmod +x "$WEDGE"
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter","comments":[]},
+  {"number":30,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+# CB_SPAWN=wedge (overrides run_loop default via env); tiny timeout; retry-cap=1 → one timeout → blocked
+run_loop "$CBHOME_F" "$LOGFILE_F" "CB_SPAWN=$WEDGE" "CB_POLL=1" "CB_SPAWN_TIMEOUT=2" "CB_RETRY_CAP=1" "CB_MAX_TICKS=10"
+if grep -qE "#30 spawn timeout .*kill -9" "$LOGFILE_F"; then ok "RED-f: wedged spawn killed by wall-clock timeout"; else ko "RED-f: no spawn-timeout kill logged (wedge pinned the loop)"; fi
+if has_label 30 "status:blocked"; then ok "RED-f: #30 routed to blocked (retry-cap after timeout)"; else ko "RED-f: #30 not routed after timeout"; fi
+if grep -q "idle — run complete" "$LOGFILE_F"; then ok "RED-f: loop terminated cleanly (idle — run complete) — not hung"; else ko "RED-f: loop did not reach idle (hung)"; fi
+if grep -q "max ticks" "$LOGFILE_F"; then ko "RED-f: loop hit max-ticks (timeout did not unstick it)"; else ok "RED-f: loop did NOT hit max-ticks"; fi
+
+# =============================================================================
+# RED-e (#208): verify-red escalation clears term → re-dispatch via rework path; converges to blocked at cap
+# =============================================================================
+echo "== RED-e: #208 escalation contract — needs-rework branch clears term, removes review, carries RED reason =="
+# The full live verify-red -> escalate -> re-dispatch -> converge loop is covered BEHAVIORALLY by RED-d
+# (escalation->blocked, review removed, NOT merged, idle-exit -- all LIVE) and by RED-a (rework re-dispatch
+# via the conflict path -- LIVE); #212 backstops any hang. Running verify-red->needs-rework->re-dispatch
+# end-to-end in CI is non-deterministic (a real engine-suite per tick), so the needs-rework-SPECIFIC
+# contract is source-locked here as a regression guard and validated LIVE on the box at charter finale.
+LSRC="$HERE/../runtime/crewboss-launcher-gh.sh"
+ISRC="$HERE/../runtime/crewboss-integrator.sh"
+if grep -q 'sset "$rid" term ""' "$LSRC"; then ok "RED-e: escalation clears term flag (re-dispatch unblocked -- central #196 fix)"; else ko "RED-e: escalation does NOT clear term (re-dispatch stays blocked)"; fi
+if grep -qE -- '--remove-label status:review --add-label status:needs-rework' "$LSRC"; then ok "RED-e: escalation removes status:review explicitly (board route alone does not)"; else ko "RED-e: escalation does not explicitly remove status:review (stale-guard busy-loop)"; fi
+if grep -qE 'failing: \$\{_vmreason' "$LSRC"; then ok "RED-e: needs-rework comment carries verify-merged RED reason (no blind rework)"; else ko "RED-e: RED reason not carried into needs-rework comment"; fi
+if grep -qE "printf 'RED_REASON: %s" "$ISRC"; then ok "RED-e: integrator emits RED_REASON for the launcher to capture"; else ko "RED-e: integrator does not emit RED_REASON"; fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

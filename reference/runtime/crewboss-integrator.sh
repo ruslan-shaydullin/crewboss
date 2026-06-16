@@ -370,22 +370,59 @@ cmd_verify_merged() {
   #        to 124 (timeout convention) → infra (exit 2).
   #    Tests run from the clone root (reference/tests/ and reference/bin/ come from
   #    the clone, not from ~/cbnet box-deploy — HD-2 fresh-clone requirement).
+  #    I2 fix (#194): per-leaf ALLOW filter — only leaf-unit-safe tests run here.
+  #    Default-exclude (fail-safe/fail-closed): any test NOT in ALLOW is skipped.
+  #    Full suite (including EXCLUDED) still runs in GHA (ci.yml:21-33).
+  #    Manifest: reference/tests/per-leaf-manifest (ALLOW/EXCLUDED classification).
   local suite_rc=0
+  _pl_manifest="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/per-leaf-manifest"
+  local _reason_file; _reason_file="$(mktemp 2>/dev/null || echo "/tmp/cb-reason.$$")"
 
   # Start engine run in background subshell
   (
     cd "$merged_dir"
+    # Hermetic env (#238 capstone find): the launcher exports its run-loop scope
+    # (CREWBOSS_CHARTER → CHARTER_SCOPE in launchable.sh) and THIS suite subshell
+    # inherits it via the launcher's `vm_out=$(... verify-merged ...)`. Engine tests
+    # that read CREWBOSS_CHARTER (launchable, cli-smoke, acceptance-block) would then
+    # scope their OWN fixture board to the running charter → empty result → false-RED.
+    # Latent because production batches run the launcher UNSCOPED (CHARTER_SCOPE=0, no
+    # filter); a scoped run (CREWBOSS_CHARTER=<C>) exposes it. Strip the loop-scope so
+    # hermetic engine tests run exactly as they do in clean CI.
+    unset CREWBOSS_CHARTER CHARTER_SCOPE
     shopt -s nullglob
+    # #206 Part A: in-clone sha-lock regen (EPHEMERAL, verdict-only). Refreshes
+    # runtime-manifest.tsv to match the merged tree so runtime-manifest (now an
+    # ALLOW test, #206 Part B) does NOT false-RED on benign sha-drift while still
+    # catching structural breaks (missing row / removed runtime file / wrong
+    # status — Test 2/4). This is NOT a persistence path: merged_dir is discarded
+    # below (rm -rf). Persistence is EXCLUSIVELY the charter-finale regen-persist
+    # commit (#206 Part A). No-op when the tool/manifest is absent (fixtures).
+    [ -f reference/bin/regen-manifest.sh ] && \
+      bash reference/bin/regen-manifest.sh >/dev/null 2>&1 || true
     fail=0
     for t in reference/tests/*.test.sh; do
-      bash "$t" || fail=1
+      _base="$(basename "$t" .test.sh)"
+      # Only run tests explicitly classified as ALLOW in the manifest.
+      # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
+      grep -qE "^ALLOW[[:space:]]+${_base}$" "$_pl_manifest" 2>/dev/null || continue
+      if ! bash "$t" >/dev/null 2>&1; then fail=1; printf '%s\n' "$_base" >> "$_reason_file"; fi
     done
     exit "$fail"
   ) &
   local suite_pid=$!
 
-  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds
-  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) &
+  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds.
+  # The `>/dev/null 2>&1` on this subshell is LOAD-BEARING: when the timer is
+  # cancelled below, its `sleep` child is orphaned (reparented to init). Without the
+  # redirect that orphan inherits OUR stdout — and when a caller captures verify-merged
+  # via command substitution (the launcher's `vm_out=$(... verify-merged ...)`), the
+  # orphaned sleep holds that pipe open until it finally exits, blocking the caller for
+  # the FULL timeout on EVERY call. That was the root of the launcher verify-merged
+  # "flake" (600 s block → killed/retried under load → false red) AND the O(n²) CI
+  # slowness (launcher-loop tests pay ~600 s per verify-merged). Direct callers
+  # (--verdict-file, no $()) never saw it — hence leaf-verifier passed.
+  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) >/dev/null 2>&1 &
   local timer_pid=$!
 
   wait "$suite_pid" 2>/dev/null || suite_rc=$?
@@ -400,35 +437,115 @@ cmd_verify_merged() {
   rm -rf "$merged_dir"
   _BMT_DIR=""
 
-  # 3. Classify result and write verdict.
-  local verdict
+  # 3. Classify + single-counter N-confirmation (issue #195 / I3 anti-poison).
+  #    rc=0 → pass (cache now, reset red-counter).
+  #    rc=1 → real-red: bump per-leaf red-counter (ONE source of truth, shared with
+  #           L3 #196), keyed same as cache (${leaf_sha}_${base_sha}); <N → retryable
+  #           (exit 3, NOT cached); >=N → confirmed terminal red (exit 1, cached fail).
+  #    else → infra (exit 2, not cached).
+  local _redcount_file="" _confirm_n="${CB_VERIFY_CONFIRM_N:-2}" _rn=0
+  [ -n "$_cache_file" ] && _redcount_file="${_cache_file}.redcount"
+
   if [ "$suite_rc" -eq 0 ]; then
-    verdict="pass"
+    [ -n "$verdict_file" ] && printf 'pass' > "$verdict_file"
+    [ -n "$_cache_file" ] && printf 'pass' > "$_cache_file"
+    [ -n "$_redcount_file" ] && rm -f "$_redcount_file"
+    log "verify-merged: PASS (engine green on merged tree)"
+    exit 0
   elif [ "$suite_rc" -eq 1 ]; then
-    verdict="fail"
+    [ -n "$_redcount_file" ] && [ -f "$_redcount_file" ] && _rn="$(cat "$_redcount_file" 2>/dev/null || echo 0)"
+    _rn=$((_rn + 1))
+    [ -n "$_redcount_file" ] && printf '%s' "$_rn" > "$_redcount_file"
+    if [ "$_rn" -ge "$_confirm_n" ]; then
+      [ -n "$verdict_file" ] && printf 'fail' > "$verdict_file"
+      [ -n "$_cache_file" ] && printf 'fail' > "$_cache_file"
+      local _reason; _reason="$(sort -u "$_reason_file" 2>/dev/null | paste -sd, - 2>/dev/null)"
+      [ -n "$_cache_file" ] && printf '%s' "${_reason:-unknown}" > "${_cache_file}.reason"
+      rm -f "$_reason_file" 2>/dev/null
+      printf 'RED_REASON: %s\n' "${_reason:-unknown}"
+      log "verify-merged: FAIL (engine RED confirmed ${_rn}/${_confirm_n} on merged tree; failing: ${_reason:-unknown})"
+      exit 1
+    fi
+    [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+    log "verify-merged: RETRY (engine RED ${_rn}/${_confirm_n} — not yet confirmed, retryable)"
+    exit 3
   else
-    # exit 124 = timeout (infra); any other non-0/1 also treated as infra
-    verdict="infra"
+    [ -n "$verdict_file" ] && printf 'infra' > "$verdict_file"
+    log "verify-merged: INFRA (timeout or harness error; suite_rc=$suite_rc)"
+    exit 2
+  fi
+}
+
+# ── subcommand: regen-persist ─────────────────────────────────────────────────
+# regen-persist <charter-id> --remote URL [--repo OWNER/REPO]
+#
+# #206 Part A — the COMMIT-PRODUCING persist point for the manifest sha-lock.
+# Called by the launcher charter-finale AFTER the full engine suite is green on
+# charter/<C> (the tree that becomes canon) and BEFORE the charter->main PR is
+# created. Clones charter/<C>, regenerates the sha-lock against that tree, and —
+# only if a row actually drifted — commits and pushes the refreshed manifest to
+# charter/<C>. The subsequent human charter->main merge then carries the
+# regenerated manifest onto canon (main), so doctor's deploy-vs-manifest integrity
+# property holds at the canon boundary.
+#
+# Why the finale, not a per-leaf push: pushing a regen commit to every leaf PR
+# head re-triggers CI and RACES when sibling leaves integrate concurrently (the
+# base moves under each leaf). The integrity guarantee is a property of MAIN, so
+# the regen is persisted exactly once, at the charter->main boundary.
+#
+# Idempotent: a no-op (no commit, no push) when the manifest is already fresh —
+# so it is safe to call every finale tick without churning charter/<C>.
+#
+# Exit: 0 = success (committed+pushed a refresh, OR clean no-op: already fresh /
+#           manifest absent in fixtures).
+#       2 = infra (clone / fetch / push failed) — caller should retry next tick
+#           and NOT create the PR (canon would carry a stale manifest otherwise).
+cmd_regen_persist() {
+  local cid="${1:-}"; shift || true
+  [ -n "$cid" ] || { log "regen-persist: missing charter id"; exit 2; }
+  local remote="" repo="${CB_REPO:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --remote) remote="$2"; shift ;;
+      --repo)   repo="$2"; shift ;;
+    esac; shift
+  done
+  [ -n "$remote" ] || { log "regen-persist: --remote is required"; exit 2; }
+
+  local branch="charter/$cid"
+  local tmpdir; tmpdir="$(mktemp -d)"
+
+  git clone -q "$remote" "$tmpdir" 2>/dev/null || {
+    log "regen-persist #$cid: clone failed"; rm -rf "$tmpdir"; exit 2; }
+  git -C "$tmpdir" config user.email "integrator@crewboss" 2>/dev/null
+  git -C "$tmpdir" config user.name  "crewboss-integrator"  2>/dev/null
+  git -C "$tmpdir" fetch -q origin "$branch" 2>/dev/null \
+    && git -C "$tmpdir" checkout -q -B "$branch" FETCH_HEAD 2>/dev/null || {
+    log "regen-persist #$cid: cannot checkout $branch"; rm -rf "$tmpdir"; exit 2; }
+
+  # Regen against the checked-out charter/<C> tree.
+  if [ -f "$tmpdir/reference/bin/regen-manifest.sh" ]; then
+    ( cd "$tmpdir" && bash reference/bin/regen-manifest.sh ) >/dev/null 2>&1 || true
   fi
 
-  [ -n "$verdict_file" ] && printf '%s' "$verdict" > "$verdict_file"
-
-  # Write verdict to cache (only pass/fail; infra is never cached — must retry).
-  if [ -n "$_cache_file" ] && [ "$verdict" != "infra" ]; then
-    printf '%s' "$verdict" > "$_cache_file"
+  # Idempotent: nothing drifted → clean no-op (no commit, no push).
+  if git -C "$tmpdir" diff --quiet -- reference/runtime-manifest.tsv 2>/dev/null; then
+    log "regen-persist #$cid: manifest already fresh — no-op"
+    rm -rf "$tmpdir"; exit 0
   fi
 
-  case "$verdict" in
-    pass)
-      log "verify-merged: PASS (engine green on merged tree)"
-      exit 0 ;;
-    fail)
-      log "verify-merged: FAIL (engine RED on merged tree)"
-      exit 1 ;;
-    infra)
-      log "verify-merged: INFRA (timeout or harness error; suite_rc=$suite_rc)"
-      exit 2 ;;
-  esac
+  git -C "$tmpdir" add reference/runtime-manifest.tsv 2>/dev/null
+  git -C "$tmpdir" commit -q \
+    -m "chore(manifest): regen sha-lock at charter-#${cid} finale" 2>/dev/null || {
+    log "regen-persist #$cid: commit failed"; rm -rf "$tmpdir"; exit 2; }
+
+  if git -C "$tmpdir" push -q origin "$branch" 2>/dev/null; then
+    log "regen-persist #$cid: pushed refreshed manifest to $branch"
+    rm -rf "$tmpdir"; exit 0
+  else
+    log "regen-persist #$cid: push to $branch failed"
+    rm -rf "$tmpdir"; exit 2
+  fi
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -437,8 +554,9 @@ case "${1:-}" in
   gate-charter)  shift; cmd_gate_charter "$@" ;;
   try-merge)     shift; cmd_try_merge "$@" ;;
   verify-merged) shift; cmd_verify_merged "$@" ;;
+  regen-persist) shift; cmd_regen_persist "$@" ;;
   *)
-    printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged} ...\n' \
+    printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist} ...\n' \
       "$(basename "$0")" >&2
     exit 64 ;;
 esac

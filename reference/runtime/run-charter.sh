@@ -5,6 +5,8 @@ LAUNCHER_PID="$HOME/cbnet/run/launcher.pid"
 if [ -f "$LAUNCHER_PID" ] && kill -0 "$(cat "$LAUNCHER_PID" 2>/dev/null)" 2>/dev/null; then
   echo "loop already running"; exit 0
 fi
+# board-init: ensure orchestration labels exist (idempotent) before the loop starts (#205)
+bash "$CB_HOME/labels-setup.sh" >/dev/null 2>&1 || true
 # Belt-and-braces: pipe launcher stdout+stderr through redact.pl so launcher.out
 # never accumulates raw tokens (e.g. from set -x or stray echo).
 # Graceful degradation: falls back to cat if redact.pl is absent (dev/test envs).
