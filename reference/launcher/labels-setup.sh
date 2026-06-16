@@ -19,6 +19,7 @@ mklabel "status:in-progress" "1d76db" "leaf: claimed / executor running"
 mklabel "status:review"      "5319e7" "leaf: PR open, awaiting approval+merge"
 mklabel "status:blocked"     "b60205" "leaf: failed past retry-cap — needs tech-lead triage"
 mklabel "status:needs-rework" "e4e669" "leaf: needs rework before re-integration"
+mklabel "status:needs-conflict-resolution" "e11d48" "charter: merge conflicts with main — needs manual resolution"
 mklabel "hold"               "d93f0b" "veto: never launch (manual hold)"
 
 echo "✓ crewboss board labels ready"
