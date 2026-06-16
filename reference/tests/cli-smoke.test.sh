@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test for the `crewboss` CLI — deterministic, offline parts (help / init / status / errors).
 # gh-dependent paths (labels, branch protection) are not asserted here.
+# Unset charter-scope env var so the launchable predicate sees all charters in fixtures.
+unset CREWBOSS_CHARTER
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CLI="$HERE/../bin/crewboss"

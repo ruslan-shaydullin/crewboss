@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Deterministic test of the launchable predicate against a synthetic board (NO network).
+# Unset charter-scope env var so the predicate sees all charters in the fixture.
+unset CREWBOSS_CHARTER
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PRED="$HERE/../launcher/launchable.sh"
 

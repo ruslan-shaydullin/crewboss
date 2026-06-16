@@ -13,6 +13,8 @@
 #        after enforcement is active
 
 set -u
+# Unset charter-scope env var so the launchable predicate sees all charters in fixtures.
+unset CREWBOSS_CHARTER
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PARSER="$HERE/../runtime/acceptance-parse.sh"
 LAUNCHABLE_REF="$HERE/../launcher/launchable.sh"

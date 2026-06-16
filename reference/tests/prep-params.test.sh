@@ -4,6 +4,9 @@
 # Class ii: unit-bash helpers; stubs in PATH; throwaway bare-remote; reset_sandbox.
 # Ref: issue #86.
 set -u
+# Unset CB_GIT_REMOTE so charter-leaf-prep.sh builds the clone URL from CB_REPO,
+# not from the box-side remote override (which would shadow the fixture CB_REPO).
+unset CB_GIT_REMOTE
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(cd "$HERE/../runtime" && pwd)"
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
