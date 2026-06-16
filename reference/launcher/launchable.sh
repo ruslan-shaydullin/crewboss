@@ -32,6 +32,18 @@ jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" '
   def numsAfter($body; $kw):
     [ ($body // "") | split("\n")[] | select(test("(?i)^[\\s*_>#-]*" + $kw + "\\s*:")) ] | join(" ")
     | [ scan("\\d+") | tonumber ];
+  # depNums: STRICT Depends-on parse for the ordering gate. A real declaration is a
+  # clean full line "Depends-on: #N(, #N)*"; only such lines yield dependency numbers.
+  # numsAfter is too loose here — a leaf whose BODY merely mentions "Depends-on:" in
+  # prose / a test-case table (e.g. a linter for that very syntax) would otherwise
+  # inject phantom deps that never close, wedging the leaf as un-launchable.
+  # (Surfaced by the first end-to-end autonomous control run: a Depends-on linter leaf.)
+  def depNums($body):
+    [ ($body // "") | split("\n")[]
+      | select(test("(?i)^[\\s*_>#-]*Depends-on\\s*:"))
+      | sub("(?i)^[\\s*_>#-]*Depends-on\\s*:\\s*"; "")
+      | select(test("^#\\d+(\\s*,\\s*#\\d+)*\\s*$"))
+      | scan("\\d+") | tonumber ];
   def has_acceptance_block:
     (. // "") | split("\n") |
     reduce .[] as $line (
@@ -56,7 +68,7 @@ jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" '
   | select( ([.labels[].name] | any(. == "status:in-progress" or . == "status:review" or . == "status:blocked" or . == "hold")) | not )
   | ($by[$cN|tostring]) as $c
   | select($c != null and $c.state == "OPEN" and ([$c.labels[].name] | any(. == "status:approved")) and ([$c.labels[].name] | any(. == "type:charter")))
-  | select( numsAfter(.body; "Depends-on") | all( ($by[(.|tostring)]) | (. != null and .state == "CLOSED") ) )
+  | select( depNums(.body) | all( ($by[(.|tostring)]) | (. != null and .state == "CLOSED") ) )
   | select( $charter_scope == 0 or $cN == $charter_scope )
   | select( .body | has_acceptance_block )
   | .number

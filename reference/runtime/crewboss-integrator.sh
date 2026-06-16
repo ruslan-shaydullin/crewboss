@@ -381,6 +381,15 @@ cmd_verify_merged() {
   # Start engine run in background subshell
   (
     cd "$merged_dir"
+    # Hermetic env (#238 capstone find): the launcher exports its run-loop scope
+    # (CREWBOSS_CHARTER → CHARTER_SCOPE in launchable.sh) and THIS suite subshell
+    # inherits it via the launcher's `vm_out=$(... verify-merged ...)`. Engine tests
+    # that read CREWBOSS_CHARTER (launchable, cli-smoke, acceptance-block) would then
+    # scope their OWN fixture board to the running charter → empty result → false-RED.
+    # Latent because production batches run the launcher UNSCOPED (CHARTER_SCOPE=0, no
+    # filter); a scoped run (CREWBOSS_CHARTER=<C>) exposes it. Strip the loop-scope so
+    # hermetic engine tests run exactly as they do in clean CI.
+    unset CREWBOSS_CHARTER CHARTER_SCOPE
     shopt -s nullglob
     # #206 Part A: in-clone sha-lock regen (EPHEMERAL, verdict-only). Refreshes
     # runtime-manifest.tsv to match the merged tree so runtime-manifest (now an
@@ -403,8 +412,17 @@ cmd_verify_merged() {
   ) &
   local suite_pid=$!
 
-  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds
-  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) &
+  # Background timer: kill the suite subshell after CB_VERIFY_TIMEOUT seconds.
+  # The `>/dev/null 2>&1` on this subshell is LOAD-BEARING: when the timer is
+  # cancelled below, its `sleep` child is orphaned (reparented to init). Without the
+  # redirect that orphan inherits OUR stdout — and when a caller captures verify-merged
+  # via command substitution (the launcher's `vm_out=$(... verify-merged ...)`), the
+  # orphaned sleep holds that pipe open until it finally exits, blocking the caller for
+  # the FULL timeout on EVERY call. That was the root of the launcher verify-merged
+  # "flake" (600 s block → killed/retried under load → false red) AND the O(n²) CI
+  # slowness (launcher-loop tests pay ~600 s per verify-merged). Direct callers
+  # (--verdict-file, no $()) never saw it — hence leaf-verifier passed.
+  ( sleep "${CB_VERIFY_TIMEOUT:-600}" 2>/dev/null; kill "$suite_pid" 2>/dev/null ) >/dev/null 2>&1 &
   local timer_pid=$!
 
   wait "$suite_pid" 2>/dev/null || suite_rc=$?

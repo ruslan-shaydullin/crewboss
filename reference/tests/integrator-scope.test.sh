@@ -31,7 +31,7 @@ SANDBOX="$ROOT/sb"
 BOARD_STATE="$SANDBOX/board.json"
 GH_LOG="$SANDBOX/gh.log"
 PRDIR="$SANDBOX/prs"
-GATEDIR="$ROOT/gatedir"   # empty dir: no CREWBOSS_NOGATE markers → gate passes
+GATEDIR="$ROOT/gatedir"   # empty dir: no gate-bypass markers → gate passes
 export REMOTE SANDBOX BOARD_STATE GH_LOG PRDIR
 
 BIN="$ROOT/bin"; mkdir -p "$BIN" "$GATEDIR"

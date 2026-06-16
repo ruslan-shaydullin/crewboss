@@ -241,7 +241,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=11 EXCLUDED=35) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=12 EXCLUDED=36) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -259,17 +259,17 @@ else
   _manifest_union="$(grep -E '^(ALLOW|EXCLUDED)[[:space:]]+' "$_MANIFEST" \
     | awk '{print $2}' | sort -u)"
 
-  [ "$_allow_count" -eq 11 ] \
-    && ok "guard: ALLOW count=11" \
-    || ko "guard: ALLOW count expected 11, got $_allow_count"
+  [ "$_allow_count" -eq 12 ] \
+    && ok "guard: ALLOW count=12" \
+    || ko "guard: ALLOW count expected 12, got $_allow_count"
 
-  [ "$_excl_count" -eq 35 ] \
-    && ok "guard: EXCLUDED count=35" \
-    || ko "guard: EXCLUDED count expected 35, got $_excl_count"
+  [ "$_excl_count" -eq 36 ] \
+    && ok "guard: EXCLUDED count=36" \
+    || ko "guard: EXCLUDED count expected 36, got $_excl_count"
 
-  [ "$_actual_count" -eq 46 ] \
-    && ok "guard: actual *.test.sh count=46" \
-    || ko "guard: actual *.test.sh count expected 46, got $_actual_count"
+  [ "$_actual_count" -eq 48 ] \
+    && ok "guard: actual *.test.sh count=48" \
+    || ko "guard: actual *.test.sh count expected 48, got $_actual_count"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"
@@ -311,6 +311,54 @@ done
 [ "$_smoke_ok" -eq 1 ] \
   && ok "smoke-parallel: all 3 concurrent verify-merged returned pass" \
   || ko "smoke-parallel: one or more concurrent verify-merged did not return pass"
+
+# =============================================================================
+# Test 9: Hermetic env — verify-merged sanitizes launcher loop-scope (#238)
+#   The launcher exports CREWBOSS_CHARTER (→ CHARTER_SCOPE) to scope its run loop,
+#   and the verify-merged suite subshell inherits it via `vm_out=$(...)`. Engine
+#   tests that read CREWBOSS_CHARTER (launchable, cli-smoke, acceptance-block) would
+#   scope their FIXTURE board to the running charter → empty → false-RED. The suite
+#   subshell MUST unset CREWBOSS_CHARTER/CHARTER_SCOPE so hermetic tests are unperturbed.
+#   Fixture: an ALLOW test (acceptance-block) that FAILS iff either var is set.
+#   With both set in the CALLER env → must STILL verdict=pass (proves sanitisation).
+# =============================================================================
+echo "=== Test 9: Hermetic env (verify-merged unsets CREWBOSS_CHARTER/CHARTER_SCOPE) ==="
+REMOTE9="$ROOT/remote9.git"
+VERDICT9="$ROOT/verdict9.txt"
+{
+  rm -rf "$REMOTE9"
+  git init --bare -q "$REMOTE9"
+  _tmp9="$(mktemp -d)"
+  git clone -q "$REMOTE9" "$_tmp9" 2>/dev/null
+  git -C "$_tmp9" config user.email t@t
+  git -C "$_tmp9" config user.name  T
+  mkdir -p "$_tmp9/reference/tests"
+  # ALLOW test (acceptance-block is in the real per-leaf-manifest ALLOW set) that
+  # exits 1 iff the launcher loop-scope leaked into its environment.
+  printf '#!/usr/bin/env bash\n[ -n "${CREWBOSS_CHARTER:-}" ] && exit 1\n[ -n "${CHARTER_SCOPE:-}" ] && exit 1\nexit 0\n' \
+    > "$_tmp9/reference/tests/acceptance-block.test.sh"
+  chmod +x "$_tmp9/reference/tests/acceptance-block.test.sh"
+  printf 'ALLOW dummy\n' > "$_tmp9/reference/tests/per-leaf-manifest"
+  printf 'base\n' > "$_tmp9/README.md"
+  git -C "$_tmp9" add -A
+  git -C "$_tmp9" commit -qm "base" 2>/dev/null
+  git -C "$_tmp9" push -q origin "HEAD:refs/heads/charter/5" 2>/dev/null
+  printf 'leaf change\n' > "$_tmp9/leaf.txt"
+  git -C "$_tmp9" add -A
+  git -C "$_tmp9" commit -qm "leaf work" 2>/dev/null
+  git -C "$_tmp9" push -q origin "HEAD:refs/heads/leaf/42" 2>/dev/null
+  rm -rf "$_tmp9"
+}
+
+rc=0
+CREWBOSS_CHARTER=999 CHARTER_SCOPE=999 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
+  --remote "$REMOTE9" --verdict-file "$VERDICT9" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] \
+  && ok "hermetic-env: exit 0 — CREWBOSS_CHARTER/CHARTER_SCOPE sanitised in suite subshell" \
+  || ko "hermetic-env: expected exit 0, got $rc (launcher loop-scope leaked into engine tests)"
+[ "$(cat "$VERDICT9" 2>/dev/null)" = "pass" ] \
+  && ok "hermetic-env: verdict=pass" \
+  || ko "hermetic-env: verdict mismatch (got '$(cat "$VERDICT9" 2>/dev/null)')"
 
 # =============================================================================
 echo

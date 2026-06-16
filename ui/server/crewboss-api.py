@@ -32,14 +32,18 @@ def read_json(path, default):
     except Exception: return default
 
 import re
-_CHARTER_RE  = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_CHARTER_RE   = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_MILESTONE_RE = re.compile(r"(?im)^[\s*_>#-]*Milestone\s*:\s*#?(\d+)")
 _ROLE_NAME_RE = re.compile(r'^[a-z0-9-]+$')
 _ANSI_RE      = re.compile(r'\x1b\[[0-9;]*m')
 def _charter_of(body):
     m = _CHARTER_RE.search(body or "")
     return int(m.group(1)) if m else None
+def _milestone_of(body):
+    m = _MILESTONE_RE.search(body or "")
+    return int(m.group(1)) if m else None
 
-def build_agents(by_n):
+def build_agents(by_n, loop_running=False):
     """Live agents = launcher run-state pids that are alive, joined with status.json + board."""
     agents = []
     sdir = os.path.join(RUN, "state")
@@ -63,9 +67,24 @@ def build_agents(by_n):
     boss = os.path.join(RUN, "boss.session")
     if os.path.exists(boss):
         agents.append(dict(task=None, role="boss", phase="interactive", title="boss session", started=""))
+    # Synthetic (non-PID) agents
+    if loop_running:
+        agents.append(dict(task=None, role="launcher", phase="running",
+                           title="launcher loop", started="", pid=None))
+    for n, item in by_n.items():
+        if item.get("state") == "review":
+            if not any(a.get("task") == n for a in agents):
+                agents.append(dict(task=n, role="integrator", phase="merging",
+                                   title=item.get("title", ""), started="", pid=None))
+    for n, item in by_n.items():
+        if item.get("kind") == "charter" and item.get("state") == "needs-plan":
+            if not any(a.get("task") == n for a in agents):
+                agents.append(dict(task=n, role="tech-lead", phase="planning",
+                                   title=item.get("title", ""), started="", pid=None))
+    # TODO: analyst synthetic agent — pending P2/F1 implementation
     return agents
 
-def build_loop_info():
+def build_loop_info(board=None):
     """Read loop-mode info from run-env.sh (same source as action=run, #148)."""
     run_env_sh = os.path.join(CB_HOME, "run-env.sh")
     home = os.environ.get("HOME", os.path.expanduser("~"))
@@ -105,7 +124,33 @@ def build_loop_info():
         running = True
     except Exception:
         pass
-    return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel, running=running)
+    # stage: first-match wins
+    if not running:
+        stage = "idle"
+    else:
+        sdir = os.path.join(RUN, "state")
+        has_finale = False
+        if os.path.isdir(sdir):
+            has_finale = any(e.startswith("finale-") for e in os.listdir(sdir))
+        items = list(board) if board else []
+        reviewing = [it for it in items if it.get("state") == "review" and it.get("kind") == "leaf"]
+        in_progress = [it for it in items if it.get("state") == "in-progress"]
+        needs_plan = [it for it in items if it.get("kind") == "charter"
+                      and it.get("state") in ("needs-plan", "plan-review")]
+        if has_finale:
+            stage = "finale"
+        elif reviewing and integrate:
+            stage = "integrating"
+        elif reviewing:
+            stage = "reviewing"
+        elif in_progress:
+            stage = "executing"
+        elif needs_plan:
+            stage = "planning"
+        else:
+            stage = "running"
+    return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel,
+                running=running, stage=stage)
 
 def build_state():
     issues = []
@@ -118,7 +163,9 @@ def build_state():
     board = []
     for it in issues:
         labels = [l["name"] for l in it.get("labels",[])]
-        kind = "charter" if "type:charter" in labels else "leaf"
+        if   "type:milestone" in labels:           kind = "milestone"
+        elif "type:charter"   in labels:           kind = "charter"
+        else:                                      kind = "leaf"
         if   it.get("state")=="CLOSED":            st="done"
         elif "hold" in labels:                     st="held"
         elif "status:blocked" in labels:           st="blocked"
@@ -130,21 +177,33 @@ def build_state():
         else:                                      st="open"
         n = it["number"]
         sj = read_json(os.path.join(RUN,"work",str(n),"status.json"), {})
+        body = it.get("body","")
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
-                          charter=(_charter_of(it.get("body","")) if kind=="leaf" else None)))
+                          charter=(_charter_of(body) if kind=="leaf" else None),
+                          milestone=(_milestone_of(body) if kind=="charter" else None)))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
+    # Add rework_n counter for charter items
+    for item in board:
+        if item.get("kind") == "charter":
+            rw = os.path.join(RUN, "state", str(item["n"]), "rework_n")
+            try:
+                item["rework_n"] = int(open(rw).read().strip())
+            except Exception:
+                item["rework_n"] = 0
     budget = read_json(os.path.join(RUN,"budget.json"), {"spent_usd":0,"runs":[]})
     cfg    = read_json(os.path.join(RUN,"config.json"), {"monthly_credit_usd":0,"cost_pct":0})
     cap = cfg.get("monthly_credit_usd",0)*cfg.get("cost_pct",0)/100
     flags = dict(paused=os.path.exists(os.path.join(RUN,"pause")),
                  killed=os.path.exists(os.path.join(RUN,"kill_switch")))
-    return dict(board=board, agents=build_agents(by_n),
+    loop = build_loop_info(board=board)
+    agents = build_agents(by_n, loop_running=loop.get("running", False))
+    return dict(board=board, agents=agents,
                 budget=dict(spent=budget.get("spent_usd",0), cap=cap, runs=budget.get("runs",[])),
                 flags=flags, autonomy=dict(repo=REPO),
-                loop=build_loop_info())
+                loop=loop)
 
 def build_comments(n):
     """Comments for issue n: last 50, via gh CLI."""
