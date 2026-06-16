@@ -243,6 +243,22 @@ case "$obj $verb" in
         exit 0
       fi
     fi
+    # No-checks-then-success: charter-nochecks-until-<c>=K → gh reports "no checks
+    # reported" (GHA registration race right after PR creation) for calls 1..K, then
+    # success.  Models the creation→poll race that false-cached terminal red (#238).
+    ncfile="$PRDIR/charter-nochecks-until-$charter_n"
+    if [ -f "$ncfile" ]; then
+      nc_until="$(cat "$ncfile")"
+      callsfile="$PRDIR/charter-ci-calls-$charter_n"
+      ci_calls=0; [ -f "$callsfile" ] && ci_calls="$(cat "$callsfile")"
+      ci_calls=$((ci_calls+1))
+      printf '%d' "$ci_calls" > "$callsfile"
+      if [ "$ci_calls" -le "$nc_until" ]; then
+        printf "no checks reported on the 'charter/%s' branch\n" "$charter_n" >&2; exit 1
+      else
+        exit 0
+      fi
+    fi
     # Static status (default: success)
     status="$(cat "$PRDIR/charter-checks-$charter_n" 2>/dev/null || echo success)"
     case "$status" in
@@ -403,6 +419,54 @@ ci_polls=$(cat "$PRDIR/charter-ci-calls-5" 2>/dev/null || echo 0)
 ghlog_has "ERROR-anti-deadlock" \
   && ko "RED-c: anti-deadlock violation — pr-checks before pr-create" \
   || ok "RED-c: no anti-deadlock violation"
+
+# =============================================================================
+# RED-d: creation→poll race — "no checks reported" must be PENDING, not red (#238)
+#   The launcher creates the draft PR and polls CI in the SAME tick; GHA has not
+#   registered checks yet → gh reports "no checks reported".  The old code classified
+#   that as terminal red and cached it (ci_state=red), so the PR never promoted even
+#   after CI went green.  New code treats no-checks as pending → promotes on green.
+# =============================================================================
+echo "== RED-d: no-checks-yet (creation→poll race) treated as pending, not red =="
+
+CBHOME_D="$ROOT/cbhome_d"
+LOGFILE_D="$ROOT/loop_d.log"
+reset_sandbox "$CBHOME_D"
+printf '%s' "$BOARD_C5" > "$BOARD_STATE"
+# No checks reported for first 2 polls (GHA registration race), success from poll 3.
+printf '2' > "$PRDIR/charter-nochecks-until-5"
+
+PATH="$BIN:$PATH" \
+  CB_REPO="test/repo" \
+  CB_HOME="$CBHOME_D" \
+  CB_GIT_REMOTE="$REMOTE" \
+  CB_INTEGRATOR="$INTEGRATOR" \
+  CB_GATE_REPO_DIR="$CLEAN_GATE_DIR" \
+  CB_POLL=0 \
+  CB_MAX_TICKS=15 \
+  CB_IDLE_CONFIRM=1 \
+  CB_MAX_PARALLEL=2 \
+  CB_RETRY_CAP=2 \
+  CB_FINALE_CHECKS_TIMEOUT=10 \
+  CB_FINALE_CHECKS_POLL=1 \
+  bash "$LAUNCHER" run >"$LOGFILE_D" 2>&1 || true
+
+# PR must be promoted (proves no-checks was treated as pending, not red-cached)
+ghlog_has "pr-ready" \
+  && ok "RED-d: PR promoted despite no-checks on early polls (no-checks = pending)" \
+  || ko "RED-d: PR NOT promoted — no-checks false-cached as terminal red"
+
+# No CI-fail comment must have been posted during the no-checks phase
+fail_d=$(count_comments 5 "failed|CI failed")
+[ "$fail_d" -eq 0 ] \
+  && ok "RED-d: no premature CI-fail comment during no-checks phase" \
+  || ko "RED-d: $fail_d CI-fail comment(s) — no-checks misclassified as red"
+
+# CI must have been polled at least 3 times (2 no-checks + 1 success)
+ci_polls_d=$(cat "$PRDIR/charter-ci-calls-5" 2>/dev/null || echo 0)
+[ "$ci_polls_d" -ge 3 ] \
+  && ok "RED-d: CI polled $ci_polls_d times (≥3 — waited through no-checks ticks)" \
+  || ko "RED-d: CI polled only $ci_polls_d times (expected ≥3 — no-checks not retried?)"
 
 # =============================================================================
 echo
