@@ -19,8 +19,108 @@ export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 # role-aware prompt: a leaf's prompt is its issue body (self-contained brief); a tech-lead is
 # told to DECOMPOSE the charter (#$ID) into leaf sub-issues and move it to plan-review.
-if [ "$ROLE" = "tech-lead" ]; then
-  PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
+# In manifest mode, if the role is an analysis role, build the analyst prompt.
+_IS_ANALYSIS_ROLE=0
+_IS_APPROVAL_ROLE=0
+_IS_MANIFEST_ROLE=0
+_MANIFEST_LOADED=0
+if [ -n "${CB_MANIFEST:-}" ]; then
+  # Load manifest library to check analysis roles and all manifest roles
+  _HERE_PREP_CHK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _MLIB_CHK=""
+  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+    _MLIB_CHK="$CB_MANIFEST_LIB"
+  elif [ -f "$_HERE_PREP_CHK/../launcher/manifest.sh" ]; then
+    _MLIB_CHK="$_HERE_PREP_CHK/../launcher/manifest.sh"
+  elif [ -f "$CB_HOME/manifest.sh" ]; then
+    _MLIB_CHK="$CB_HOME/manifest.sh"
+  fi
+  if [ -n "$_MLIB_CHK" ] && [ -f "$_MLIB_CHK" ]; then
+    # shellcheck source=../launcher/manifest.sh
+    source "$_MLIB_CHK"
+    _ANALYSIS_ROLES=$(manifest_analysis_roles "$CB_MANIFEST" 2>/dev/null || true)
+    for _ar in $_ANALYSIS_ROLES; do
+      [ "$_ar" = "$ROLE" ] && _IS_ANALYSIS_ROLE=1 && break
+    done
+    _APPROVAL_ROLE_ID=$(manifest_policy "$CB_MANIFEST" approval_role 2>/dev/null || true)
+    [ -n "$_APPROVAL_ROLE_ID" ] && [ "$_APPROVAL_ROLE_ID" = "$ROLE" ] && _IS_APPROVAL_ROLE=1
+    _MANIFEST_ROLES=$(manifest_roles "$CB_MANIFEST" 2>/dev/null || true)
+    if [ -n "$_MANIFEST_ROLES" ]; then
+      _MANIFEST_LOADED=1
+      for _mr in $_MANIFEST_ROLES; do
+        [ "$_mr" = "$ROLE" ] && _IS_MANIFEST_ROLE=1 && break
+      done
+    fi
+  fi
+fi
+if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  PROMPT="You are the $ROLE for charter #$ID in repo $(bash "$BOARD" get "$ID" pr_repo).
+
+$_ROLE_PROMPT
+
+## Rubric (objective complexity triggers — apply as a floor, not a vibe)
+\`\`\`json
+$_RUBRIC
+\`\`\`
+
+## Artifact contract
+Produce a machine-readable composition block as a comment on the charter issue, then move the charter to team-review.
+
+The composition block MUST use EXACTLY this format:
+
+## Composition (machine)
+- approach: <one line>
+- role: <role-id>
+- leaf: <leaf-id> -> <role-id>
+- est_cost_usd: <number>
+
+(Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
+
+## Instructions
+1. Study the charter issue: gh issue view $ID -R $(bash "$BOARD" get "$ID" pr_repo)
+2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
+3. Post the composition block as a comment: gh issue comment $ID -R $(bash "$BOARD" get "$ID" pr_repo) --body '<composition block>'
+4. Move the charter to team-review: gh issue edit $ID -R $(bash "$BOARD" get "$ID" pr_repo) --remove-label status:needs-analysis --add-label status:team-review"
+elif [ "$_IS_APPROVAL_ROLE" = "1" ]; then
+  # Approval-role spawn: CTO (or configured approval_role) reviews and approves/rejects composition.
+  # By analogy with analysis-role: prompt = manifest_role_prompt + composition artifact + outcome instructions.
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+    | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+    2>/dev/null || true)
+  PROMPT="You are the $ROLE for charter #$ID in repo $PR_REPO.
+
+$_ROLE_PROMPT
+
+## Your task: Approve or reject the proposed team composition
+
+The analysis team has proposed the following composition for charter #$ID:
+
+$_COMP_BODY
+
+## Instructions
+
+1. Review the charter issue: gh issue view $ID -R $PR_REPO
+2. Evaluate the composition: roles, scope, leaf assignments, and overall soundness.
+3. Make one of the following decisions:
+
+**To approve** (composition is sound — proceed to planning):
+   gh issue edit $ID -R $PR_REPO --add-label composition:approved --add-label status:needs-plan --remove-label status:team-review
+
+**To reject** (composition needs revision — return to analysis):
+   gh issue comment $ID -R $PR_REPO --body 'Approval rejected: <your explanation>'
+   gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
+elif [ "$ROLE" = "tech-lead" ]; then
+  TS=$(date +%s)
+  BRANCH="tech-lead/$ID-$TS"
+  # Base tech-lead prompt — phrasing locked (HD-1 / legacy-pin #135); do NOT alter without pin bump.
+  _TL_PROMPT="You are the tech-lead. Decompose charter #$ID in repo $PR_REPO into 2-4 leaf sub-issues with: gh issue create -R $PR_REPO. Each sub-issue body MUST:
 1. Start with 'Charter: #$ID'
 2. Contain a self-contained task description (a cold executor sees only that issue)
 3. Include a '## Acceptance (machine)' section with at least one '- check: <cmd>' or '- test: <file>' line
@@ -30,6 +130,38 @@ After creating each sub-issue N, add the required label: gh issue edit N -R $PR_
 Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
 
 $(bash "$BOARD" get "$ID" prompt)"
+  if [ -n "${CB_MANIFEST:-}" ]; then
+    # Manifest mode: augment prompt with approved composition.
+    # Parsing delegated to composition-parse.sh (#134) — do NOT duplicate format logic here.
+    _HERE_PREP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+      | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+      2>/dev/null || true)
+    _COMP_TSV=""
+    if [ -n "$_COMP_BODY" ]; then
+      _COMP_TSV=$(printf '%s\n' "$_COMP_BODY" \
+        | bash "$_HERE_PREP/composition-parse.sh" "$CB_MANIFEST" 2>/dev/null) || _COMP_TSV=""
+    fi
+    if [ -n "$_COMP_TSV" ]; then
+      _COMP_ROLES=$(printf '%s\n' "$_COMP_TSV" | awk -F'\t' '$1=="role"{print $2}')
+      _COMP_LEAVES=$(printf '%s\n' "$_COMP_TSV" | awk -F'\t' '$1=="leaf"{printf "%s -> %s\n",$2,$3}')
+      PROMPT="$_TL_PROMPT
+
+## Approved composition (charter #$ID)
+Leaf assignments (symbolic leaf-id -> role-id):
+$_COMP_LEAVES
+Roles in this charter: $(printf '%s' "$_COMP_ROLES" | tr '\n' ' ')
+
+For each sub-issue N you create, additionally run:
+  gh issue edit N -R $PR_REPO --add-label role:<role-id>
+where <role-id> is from the composition map above — do NOT invent role-ids.
+Sub-issues correspond 1:1 to the composition; map symbolic leaf-ids to the created issue numbers yourself."
+    else
+      PROMPT="$_TL_PROMPT"
+    fi
+  else
+    PROMPT="$_TL_PROMPT"
+  fi
 else
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
@@ -37,9 +169,31 @@ else
   CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
   CB=""
   [ -n "$CHARTER" ] && CB="charter/$CHARTER"
+  # Manifest-role fail-fast: if CB_MANIFEST is set and ROLE is unknown to the manifest,
+  # a typo in the role: label would silently fall through to a generic executor prompt.
+  # Instead, bail immediately with a clear error so the operator can fix the label.
+  if [ "$_MANIFEST_LOADED" = "1" ] && [ "$_IS_MANIFEST_ROLE" = "0" ]; then
+    echo "prep-spawn: role '$ROLE' not found in manifest $CB_MANIFEST (check role: label for typo)" >&2
+    exit 2
+  fi
   if [ -n "$CB" ]; then
     BRANCH="leaf/$ID-$TS"   # charter leaves must use leaf/ prefix so integrator can find them
-    PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+    if [ "$_IS_MANIFEST_ROLE" = "1" ]; then
+      # Role-resolved spawn: insert role body (from manifest) before ---- TASK ----
+      # so the executor knows its persona. Hard-rules block is preserved verbatim.
+      _ROLE_BODY=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
+Hard rules for THIS run:
+- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
+
+$_ROLE_BODY
+
+---- TASK (issue #$ID) ----
+$(bash "$BOARD" get "$ID" prompt)"
+    else
+      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
 - When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
@@ -47,6 +201,7 @@ Hard rules for THIS run:
 
 ---- TASK (issue #$ID) ----
 $(bash "$BOARD" get "$ID" prompt)"
+    fi
   else
     PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
 - You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
@@ -142,6 +297,15 @@ echo ".task.prompt" >> "$WA/work/.git/info/exclude"
 if [ "${CB_GOVERNED:-0}" = "1" ] && [ -d "$CB_HOME/gov/.claude" ]; then
   cp -r "$CB_HOME/gov/.claude" "$WA/work/.claude"
   printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+# Manifest-role agent injection: materialise the role definition from the manifest into
+# the work-tree .claude/agents/ directory so the executor runs with its role persona.
+# Precedent: CB_GOVERNED cp + .git/info/exclude injection above.
+if [ "$_IS_MANIFEST_ROLE" = "1" ] && [ -n "${CB_MANIFEST:-}" ]; then
+  mkdir -p "$WA/work/.claude/agents"
+  cp "$CB_MANIFEST/roles/$ROLE.md" "$WA/work/.claude/agents/$ROLE.md"
+  grep -qxF '.claude' "$WA/work/.git/info/exclude" 2>/dev/null \
+    || printf '.claude\n' >> "$WA/work/.git/info/exclude"
 fi
 
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"

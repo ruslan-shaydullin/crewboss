@@ -23,7 +23,7 @@ cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
     gh issue list -R "$REPO" --state all -L 200 --json number,state,labels,body \
-      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ;;
+      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${CB_MANIFEST:+--require-composition} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
     gh issue list -R "$REPO" --state open -L 200 --json number,labels | jq -r '
@@ -64,6 +64,8 @@ case "$cmd" in
                 elif ([.labels[].name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[].name]|any(.=="status:plan-review")) then "plan-review"
                 elif ([.labels[].name]|any(.=="status:needs-plan")) then "needs-plan"
+                elif ([.labels[].name]|any(.=="status:team-review")) then "team-review"
+                elif ([.labels[].name]|any(.=="status:needs-analysis")) then "needs-analysis"
                 else "open" end' ;;
       *) echo "unknown field: $field" >&2; exit 64 ;;
     esac ;;
@@ -98,6 +100,31 @@ case "$cmd" in
                gh issue edit "$id" -R "$REPO" --add-label status:needs-rework >/dev/null
                [ -n "$comment" ] && gh issue comment "$id" -R "$REPO" -b "$comment" >/dev/null
                echo "#$id -> needs-rework" ;;
+      analysis)
+               # Enter analysis stage OR return to analysis on reject.
+               # Ensure both manifest-mode status labels exist on the board.
+               ensure_label "status:needs-analysis" "bfd4f2"
+               ensure_label "status:team-review"    "d4c5f9"
+               # Remove statuses that should not coexist with needs-analysis.
+               gh issue edit "$id" -R "$REPO" \
+                 --remove-label status:needs-plan \
+                 --remove-label status:team-review \
+                 --add-label    status:needs-analysis >/dev/null
+               [ -n "$comment" ] && gh issue comment "$id" -R "$REPO" -b "$comment" >/dev/null
+               echo "#$id -> needs-analysis" ;;
+      team-review)
+               # Composition drafted; move to team approval.
+               gh issue edit "$id" -R "$REPO" \
+                 --remove-label status:needs-analysis \
+                 --add-label    status:team-review >/dev/null
+               echo "#$id -> team-review" ;;
+      plan)
+               # Composition approved; exit manifest stages into needs-plan pipeline.
+               gh issue edit "$id" -R "$REPO" \
+                 --remove-label status:needs-analysis \
+                 --remove-label status:team-review \
+                 --add-label    status:needs-plan >/dev/null
+               echo "#$id -> needs-plan" ;;
       *) echo "unknown outcome: $outcome" >&2; exit 64 ;;
     esac ;;
 
