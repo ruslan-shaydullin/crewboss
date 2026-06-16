@@ -519,6 +519,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
               {'↺'}{c.rework_n}
             </span>
           )}
+          {c && c.git_status === 'needs-conflict-resolution' && (
+            <span
+              className="conflict-badge"
+              title="Branch has merge conflicts — resolve before integrating"
+              data-testid="conflict-badge"
+            >
+              ⚡ conflict
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
