@@ -400,6 +400,15 @@ body {
   background: rgba(240,103,106,.2); color: #f0676a;
 }
 
+/* charter git-status conflict badge (#258) */
+.conflict-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 7px; border-radius: 5px; font-size: .72rem; font-weight: 700;
+  background: rgba(240,103,106,.25); color: #f0676a;
+  border: 1px solid rgba(240,103,106,.4);
+  letter-spacing: .01em;
+}
+
 /* ── collapse/expand chevron buttons ────────────────────────────────────── */
 .chevron-btn { background:transparent; border:none; color:var(--mut); cursor:pointer; padding:3px 7px; font-size:11px; line-height:1; border-radius:5px; transition:color .15s; flex-shrink:0 }
 .chevron-btn:hover { color:var(--ink); background:var(--raise) }
