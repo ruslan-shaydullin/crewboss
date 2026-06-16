@@ -1,6 +1,6 @@
 export type Task = {
   n: number
-  kind: 'charter' | 'leaf'
+  kind: 'charter' | 'leaf' | 'milestone'
   state: string
   title: string
   labels: string[]
@@ -8,6 +8,7 @@ export type Task = {
   pr?: string
   phase?: string | null
   charter?: number | null
+  milestone?: number | null
 }
 export type Agent = {
   task: number | null
