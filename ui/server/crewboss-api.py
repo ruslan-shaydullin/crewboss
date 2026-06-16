@@ -32,11 +32,15 @@ def read_json(path, default):
     except Exception: return default
 
 import re
-_CHARTER_RE  = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_CHARTER_RE   = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
+_MILESTONE_RE = re.compile(r"(?im)^[\s*_>#-]*Milestone\s*:\s*#?(\d+)")
 _ROLE_NAME_RE = re.compile(r'^[a-z0-9-]+$')
 _ANSI_RE      = re.compile(r'\x1b\[[0-9;]*m')
 def _charter_of(body):
     m = _CHARTER_RE.search(body or "")
+    return int(m.group(1)) if m else None
+def _milestone_of(body):
+    m = _MILESTONE_RE.search(body or "")
     return int(m.group(1)) if m else None
 
 def build_agents(by_n, loop_running=False):
@@ -159,7 +163,9 @@ def build_state():
     board = []
     for it in issues:
         labels = [l["name"] for l in it.get("labels",[])]
-        kind = "charter" if "type:charter" in labels else "leaf"
+        if   "type:milestone" in labels:           kind = "milestone"
+        elif "type:charter"   in labels:           kind = "charter"
+        else:                                      kind = "leaf"
         if   it.get("state")=="CLOSED":            st="done"
         elif "hold" in labels:                     st="held"
         elif "status:blocked" in labels:           st="blocked"
@@ -171,10 +177,12 @@ def build_state():
         else:                                      st="open"
         n = it["number"]
         sj = read_json(os.path.join(RUN,"work",str(n),"status.json"), {})
+        body = it.get("body","")
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
-                          charter=(_charter_of(it.get("body","")) if kind=="leaf" else None)))
+                          charter=(_charter_of(body) if kind=="leaf" else None),
+                          milestone=(_milestone_of(body) if kind=="charter" else None)))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
