@@ -97,6 +97,11 @@ reset_sandbox(){
          "$ROOT/gh-calls.log" "$ROOT/gh-R.log" \
          "$ROOT/clone-urls.log" "$ROOT/spawn-calls.log"
   mkdir -p "$CB_HOME/run"
+  # Hermetic env: unset CB_GIT_REMOTE so charter-leaf-prep.sh builds the clone URL
+  # from CB_REPO (the variable under test) rather than a host-env override.
+  # Without this, a parent process (e.g. the launcher) that exports CB_GIT_REMOTE
+  # causes RED-b to fail even when CB_REPO is correctly passed.
+  unset CB_GIT_REMOTE
   # crewboss-spawn.sh stub: records args then exits 0.
   cat > "$CB_HOME/crewboss-spawn.sh" << 'SPAWNEOF'
 #!/usr/bin/env bash
