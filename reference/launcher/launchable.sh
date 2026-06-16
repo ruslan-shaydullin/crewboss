@@ -7,13 +7,16 @@
 # stdout: launchable leaf issue numbers, one per line.
 #
 # Options:
-#   --charter N   scope output to leaves of charter N only (also: env CREWBOSS_CHARTER=N)
+#   --charter N             scope output to leaves of charter N only (also: env CREWBOSS_CHARTER=N)
+#   --require-composition   also require composition:approved on the charter (manifest-mode gate)
+#                           also: env CREWBOSS_REQUIRE_COMPOSITION=1; default off (HD-1 compat)
 #
 # launchable(leaf) =
 #   leaf is OPEN
 #   AND body has "Charter: #N"  (it's a managed leaf; leading markdown like **/-/>/# is tolerated,
 #                                 since an LLM tech-lead naturally writes **Charter: #N**)
 #   AND charter #N is OPEN and labeled status:approved   (plan-approval gate)
+#   AND (if --require-composition) charter #N is labeled composition:approved (composition gate)
 #   AND every "Depends-on: #X" issue is CLOSED           (ordering)
 #   AND leaf is NOT labeled status:in-progress|status:review|status:blocked|hold
 #   AND (if --charter N / CREWBOSS_CHARTER=N) charter #N matches the scope
@@ -25,10 +28,16 @@
 # Pure function — NO network. The real launcher pipes `gh issue list ... --json ...`
 # into this; the test harness pipes a synthetic board. See ../board-orchestration.md.
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-}"
+REQUIRE_COMPOSITION="${CREWBOSS_REQUIRE_COMPOSITION:-0}"
 while [ $# -gt 0 ]; do
-  case "$1" in --charter) CHARTER_SCOPE="$2"; shift ;; esac; shift
+  case "$1" in
+    --charter) CHARTER_SCOPE="$2"; shift ;;
+    --require-composition) REQUIRE_COMPOSITION=1 ;;
+  esac
+  shift
 done
-jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" '
+jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" \
+      --argjson require_composition "$REQUIRE_COMPOSITION" '
   def numsAfter($body; $kw):
     [ ($body // "") | split("\n")[] | select(test("(?i)^[\\s*_>#-]*" + $kw + "\\s*:")) ] | join(" ")
     | [ scan("\\d+") | tonumber ];
@@ -67,7 +76,7 @@ jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" '
   | select($cN != null)
   | select( ([.labels[].name] | any(. == "status:in-progress" or . == "status:review" or . == "status:blocked" or . == "hold")) | not )
   | ($by[$cN|tostring]) as $c
-  | select($c != null and $c.state == "OPEN" and ([$c.labels[].name] | any(. == "status:approved")) and ([$c.labels[].name] | any(. == "type:charter")))
+  | select($c != null and $c.state == "OPEN" and ([$c.labels[].name] | any(. == "status:approved")) and ([$c.labels[].name] | any(. == "type:charter")) and ($require_composition == 0 or ([$c.labels[].name] | any(. == "composition:approved"))))
   | select( depNums(.body) | all( ($by[(.|tostring)]) | (. != null and .state == "CLOSED") ) )
   | select( $charter_scope == 0 or $cN == $charter_scope )
   | select( .body | has_acceptance_block )
