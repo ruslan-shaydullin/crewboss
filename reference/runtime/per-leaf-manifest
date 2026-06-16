@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=12, EXCLUDED=36, union=48  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=13, EXCLUDED=36, union=49  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -28,7 +28,7 @@
 # #206 also adds charter-finale-regen (the A-persistence integration test): heavy
 #   git (clone/merge/push to prove persistence on MAIN) ⇒ EXCLUDED. union 45→46.
 
-# ── ALLOW (12 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
+# ── ALLOW (13 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
 ALLOW acceptance-block
 ALLOW cli-smoke
 ALLOW gate-comment-payload
@@ -42,6 +42,10 @@ ALLOW runtime-lint
 ALLOW runtime-manifest
 ALLOW spawn-unit
 ALLOW token-hygiene
+# #217 leaf-lint: verdict = pure function of body text (grep/awk parse of
+#   Charter:/Depends-on: fields; no launcher loops, no background processes,
+#   no timing/poll/sleep). Meets ALLOW criterion.
+ALLOW leaf-lint
 
 # ── EXCLUDED (36 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness
