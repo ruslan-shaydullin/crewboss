@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=17, EXCLUDED=45, union=62  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=18, EXCLUDED=45, union=63  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -101,6 +101,8 @@ EXCLUDED approval-gate
 #   Layer 2: board-gh.sh + gh stub synchronous). No launcher loop, no background processes,
 #   no timing/poll/sleep. Verdict = f(merged content only). Meets ALLOW criterion.
 ALLOW launchable-composition
+# #273 ops-roles: pure unit (grep/parse of .claude/agents role files; no processes/timing/launcher).
+ALLOW ops-roles
 # #140 manifest-e2e: end-to-end acceptance test driving the REAL launcher through the full
 #   manifest pipeline (needs-plan → needs-analysis → team-review → needs-plan → plan-review
 #   → approved → role-leaves → integrator-merge → idle). Uses background processes, real
