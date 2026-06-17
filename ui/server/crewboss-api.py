@@ -297,6 +297,7 @@ def build_team():
         nodes.append(dict(role=role, reports_to=nd.get("reports_to"),
                           kind=fm.get("kind", "?"), domain=fm.get("domain", ""),
                           tools=fm.get("tools", ""), code_blind=fm.get("code_blind", "") == "true",
+                          model=fm.get("model", ""), accesses=fm.get("accesses", ""),
                           live=live.get(role, 0)))
     # full role library (every roles/*.md) — the pool = library minus placed nodes
     roles = []
@@ -306,7 +307,8 @@ def build_team():
             if not fn.endswith(".md"): continue
             fm = _frontmatter(os.path.join(rdir, fn))
             roles.append(dict(role=fn[:-3], kind=fm.get("kind", "?"), domain=fm.get("domain", ""),
-                              code_blind=fm.get("code_blind", "") == "true"))
+                              code_blind=fm.get("code_blind", "") == "true",
+                              model=fm.get("model", ""), accesses=fm.get("accesses", "")))
     return {"present": True, "nodes": nodes, "roles": roles,
             "departments": org.get("departments", []), "policy": org.get("policy", {})}
 
@@ -600,8 +602,14 @@ def get_role(name):
     fm, prompt = _parse_role_md(path)
     return {"ok": True, "name": name, "frontmatter": fm, "prompt": prompt}
 
-def _role_invariant_check(name, kind, tools, code_blind):
-    """Mirror the doctor's role-invariant rules so we catch errors even for roles not yet in org."""
+def _role_invariant_check(name, kind, tools, code_blind, model='', accesses=''):
+    """Mirror the doctor's role-invariant rules so we catch errors even for roles not yet in org.
+
+    model: known routing values = {'anthropic', 'qwen'} or a concrete model id string;
+           empty or unknown values are forward-compatible and NOT blocked (forward-compat).
+    accesses: CSV of access tokens (format check only; empty = deny-all semantics;
+              enforcement is in F2/nsjail — only schema here, no hard allowlist yet).
+    """
     _has = lambda t: bool(re.search(r'(?i)\b' + t + r'\b', tools))
     errs = []
     if kind in ('manager', 'analyst'):
@@ -614,6 +622,17 @@ def _role_invariant_check(name, kind, tools, code_blind):
         errs.append(f"  FAIL role '{name}' has unknown kind '{kind}' (expected executor|analyst|manager)")
     if code_blind and _has('Read'):
         errs.append(f"  FAIL code-blind role '{name}' must NOT have Read (tools: {tools})")
+    # model: forward-compat — known set (anthropic, qwen) documented; empty/unknown not blocked
+    # accesses: CSV token format check — each token must match [a-zA-Z0-9:_/-]+
+    if accesses:
+        _csv_token_re = re.compile(r'^[a-zA-Z0-9:_/\-]+$')
+        bad_tokens = [t.strip() for t in accesses.split(',')
+                      if t.strip() and not _csv_token_re.match(t.strip())]
+        if bad_tokens:
+            errs.append(
+                f"  FAIL role '{name}' accesses has invalid token format: {bad_tokens!r}"
+                " (expected CSV of [a-zA-Z0-9:_/-]+)"
+            )
     if errs:
         n = len(errs)
         return "== role invariants ==\n" + "\n".join(errs) + f"\n\nmanifest-doctor: {n} problem(s)"
@@ -629,10 +648,12 @@ def save_role(body):
     profile   = str(body.get('profile', '')).strip()
     code_blind= bool(body.get('code_blind', False))
     skills    = str(body.get('skills',  '') or '').strip()
+    model     = str(body.get('model',   '') or '').strip()
+    accesses  = str(body.get('accesses','') or '').strip()
     prompt    = str(body.get('prompt',  '') or '').strip()
 
     # Pre-validate role invariants (mirrors doctor rules; catches new roles not yet in org)
-    inv_err = _role_invariant_check(name, kind, tools, code_blind)
+    inv_err = _role_invariant_check(name, kind, tools, code_blind, model=model, accesses=accesses)
     if inv_err:
         return {"ok": False, "msg": inv_err}
 
@@ -640,6 +661,8 @@ def save_role(body):
                 f'tools: {tools}', f'profile: {profile}']
     if code_blind: fm_lines.append('code_blind: true')
     if skills:     fm_lines.append(f'skills: {skills}')
+    if model:      fm_lines.append(f'model: {model}')
+    if accesses:   fm_lines.append(f'accesses: {accesses}')
     fm_lines.append('---')
     content = '\n'.join(fm_lines) + '\n' + (prompt + '\n' if prompt else '')
 
