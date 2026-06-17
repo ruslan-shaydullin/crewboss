@@ -186,12 +186,22 @@ def build_state():
                 git_status = "clean"
         else:
             git_status = None
+        # blast_radius: label-derived serialization flag for charters (#265)
+        if kind == "charter":
+            if "blast-radius:high" in labels:
+                blast_radius = "high"
+            elif "blast-radius:low" in labels:
+                blast_radius = "low"
+            else:
+                blast_radius = None
+        else:
+            blast_radius = None
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
                           charter=(_charter_of(body) if kind=="leaf" else None),
                           milestone=(_milestone_of(body) if kind=="charter" else None),
-                          git_status=git_status))
+                          git_status=git_status, blast_radius=blast_radius))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
