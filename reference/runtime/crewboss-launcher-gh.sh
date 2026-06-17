@@ -28,6 +28,9 @@ PLAN_SPAWN="${CB_PLAN_SPAWN:-$SPAWN}"
 ANALYSIS_SPAWN="${CB_ANALYSIS_SPAWN:-$PLAN_SPAWN}"
 # CB_APPROVAL_SPAWN: spawn script for the approval role (default: same as PLAN_SPAWN).
 APPROVAL_SPAWN="${CB_APPROVAL_SPAWN:-$PLAN_SPAWN}"
+# CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
+# Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
+CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -864,6 +867,32 @@ cmd_run(){
           fi
           sset "$id" pid ""; continue
         fi
+        # conflict-resolution task (git-resolver): success = label status:needs-conflict-resolution
+        # was removed by git-resolver; failure = label still present → retry/blocked. [#187 L2]
+        if [ "$(sget "$id" kind)" = "conflict-resolution" ]; then
+          _cr_labels=$(gh issue view "$id" -R "$CB_REPO" --json labels \
+                       2>/dev/null | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+          _still_conflict=$(printf '%s' "$_cr_labels" \
+                            | jq -r 'index("status:needs-conflict-resolution") != null' \
+                            2>/dev/null || echo "true")
+          if [ "$_still_conflict" = "false" ]; then
+            # Success: conflict resolved — clear pid, term, AND tries (F-1 contract)
+            sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            log "#$id conflict-resolution done"
+          else
+            # Failure: still needs-conflict-resolution → increment tries
+            prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+            if [ "$tries" -ge "$RETRY_CAP" ]; then
+              board route "$id" blocked "conflict-resolution failed $tries× (retry-cap $RETRY_CAP)" >/dev/null
+              sset "$id" pid ""; sset "$id" term 1
+              log "#$id conflict-resolution failed ($tries) -> blocked"
+            else
+              sset "$id" pid ""
+              log "#$id conflict-resolution failed ($tries) -> retry"
+            fi
+          fi
+          continue
+        fi
         ph=$(jq -r '.phase' "$RUN/work/$id/status.json" 2>/dev/null || echo unknown)
         case "$ph" in
           done)        board route "$id" review  >/dev/null; sset "$id" term 1; log "#$id done -> review" ;;
@@ -1041,6 +1070,24 @@ Charter: #$cid"
             done
           fi
         fi
+        # conflict-resolution cycle: for charters with status:needs-conflict-resolution,
+        # spawn git-resolver to resolve merge conflicts so the finale can proceed. [#187 L2]
+        _conflict_boards=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+                           --json number,labels 2>/dev/null | jq -r '
+          .[] | select([.labels[].name] | index("type:charter") != null)
+              | select([.labels[].name] | index("status:needs-conflict-resolution") != null)
+              | select([.labels[].name] | index("hold") == null)
+              | .number' 2>/dev/null || true)
+        for cid in $_conflict_boards; do
+          [ "$running" -ge "$MAXP" ] && break
+          [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+          [ -n "$(sget "$cid" pid)" ] && continue
+          [ -n "$(sget "$cid" term)" ] && continue
+          sset "$cid" kind conflict-resolution; sset "$cid" starttime "$(now)"
+          ( "$CONFLICT_SPAWN" "$cid" git-resolver >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+          running=$((running+1))
+          log "bg-spawn git-resolver for charter #$cid (running=$running/$MAXP)"
+        done
         # blast-radius gate (unscoped only): if a high-blast-radius charter is active,
         # hold all other charters and only dispatch work for it. [#262]
         _block=""
