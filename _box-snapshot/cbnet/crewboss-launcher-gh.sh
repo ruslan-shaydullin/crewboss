@@ -64,9 +64,27 @@ claim_and_spawn(){ # id
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
+    # ── queue-mode detection ─────────────────────────────────────────────────
+    local _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+    _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
+    if [ -n "$_q_order" ]; then
+      for _qn in $_q_order; do
+        _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+        case "$_qst" in plan-review|done|blocked) continue ;; esac
+        _q_head="$_qn"; break
+      done
+      _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
+      log "queue-mode: order=[$_q_disp] head=#${_q_head:-none}"
+    fi
     local ids id launched=0 rc
     ids=$(board launchable)
     for id in $ids; do
+      # queue-mode filter: only the head charter's leaves are eligible
+      if [ -n "$_q_order" ]; then
+        if [ -z "$_q_head" ]; then log "queue-mode: queue exhausted — no eligible head"; break; fi
+        _id_ch=$(board get "$id" charter 2>/dev/null || echo "")
+        [ "$_id_ch" = "$_q_head" ] || continue
+      fi
       [ "$launched" -ge "$MAXP" ] && { log "parallel cap reached"; break; }
       claim_and_spawn "$id"; rc=$?
       launched=$((launched+1))
@@ -85,7 +103,7 @@ running_count(){ local d id pid n=0
   echo "$n"; }
 cmd_run(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0
+    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
     reconcile   # STARTUP ONLY: requeue orphans from a previous run/reboot. Inside the loop,
                 # the launcher started its own spawns, so a dead pid = finished (route by
                 # status.json) — NOT an orphan; running reconcile per-tick would requeue every
@@ -123,10 +141,27 @@ cmd_run(){
         log "paused — not claiming new (rm $RUN/pause to resume)"
       # claim new launchable up to the cap
       elif [ -z "$stop" ]; then
+        # ── queue-mode detection (per tick) ──────────────────────────────────
+        _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
+        _q_head=""
+        if [ -n "$_q_order" ]; then
+          for _qn in $_q_order; do
+            _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+            case "$_qst" in plan-review|done|blocked) continue ;; esac
+            _q_head="$_qn"; break
+          done
+          _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
+          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none}"
+        fi
         # plan charters first: a needs-plan charter -> spawn a tech-lead to decompose it
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
         for cid in $(board plannable); do
           [ "$running" -ge "$MAXP" ] && break
+          # queue-mode: only head charter is eligible for planning
+          if [ -n "$_q_order" ]; then
+            [ -z "$_q_head" ] && break
+            [ "$cid" = "$_q_head" ] || continue
+          fi
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
           sset "$cid" kind charter; sset "$cid" starttime "$(now)"
@@ -140,6 +175,12 @@ cmd_run(){
           # (laggy) gh list still reports it launchable.
           [ -n "$(sget "$id" pid)" ] && continue
           [ -n "$(sget "$id" term)" ] && continue
+          # queue-mode filter: only the head charter's leaves are eligible
+          if [ -n "$_q_order" ]; then
+            if [ -z "$_q_head" ]; then break; fi
+            _id_ch=$(board get "$id" charter 2>/dev/null || echo "")
+            [ "$_id_ch" = "$_q_head" ] || continue
+          fi
           board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
           ( "$SPAWN" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
