@@ -11,6 +11,7 @@ export type Task = {
   rework_n?: number      // new — present only on charter tasks (#185)
   milestone?: number | null   // #186 — present only on charter tasks
   git_status?: string | null  // #258 — 'clean' | 'needs-conflict-resolution'; charter only
+  blast_radius?: string | null  // #265 — 'high' | 'low'; charter only
 }
 export type Agent = {
   task: number | null

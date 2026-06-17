@@ -537,6 +537,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
               ✓ git
             </span>
           )}
+          {c && c.blast_radius === 'high' && (
+            <span
+              className="blast-radius-badge"
+              title="High blast-radius: serializes the queue — other charters wait"
+              data-testid="blast-radius-badge"
+            >
+              ⊘ serializes
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
