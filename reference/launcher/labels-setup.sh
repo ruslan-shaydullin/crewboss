@@ -22,4 +22,8 @@ mklabel "status:needs-rework" "e4e669" "leaf: needs rework before re-integration
 mklabel "status:needs-conflict-resolution" "e11d48" "charter: merge conflicts with main — needs manual resolution"
 mklabel "hold"               "d93f0b" "veto: never launch (manual hold)"
 
+# blast-radius labels (#262): high serializes all other charter dispatches
+mklabel "blast-radius:high"  "b60205" "charter: active high blast-radius — serializes launcher (unscoped)"
+mklabel "blast-radius:low"   "c5def5" "charter: normal parallel launch (default if no blast-radius label)"
+
 echo "✓ crewboss board labels ready"
