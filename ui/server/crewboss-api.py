@@ -681,8 +681,28 @@ class H(BaseHTTPRequestHandler):
         from urllib.parse import urlparse, parse_qs
         return parse_qs(urlparse(self.path).query).get("token",[""])[0] == TOKEN
     def do_OPTIONS(self): self.send_response(204); self._cors(); self.end_headers()
+    def _serve_static(self, path):
+        # Serve the built dashboard (vite dist) so the box serves both API and UI on one
+        # port — the user opens http://127.0.0.1:<port>/ over the existing SSH tunnel.
+        import mimetypes
+        root = os.environ.get("CB_WEB_DIR",
+                              os.path.join(os.path.dirname(os.path.abspath(__file__)), "www"))
+        rel = "index.html" if path in ("/", "") else path.lstrip("/")
+        full = os.path.normpath(os.path.join(root, rel))
+        if not full.startswith(os.path.normpath(root)):
+            return self._send(403, {"ok": False, "msg": "forbidden"})
+        if not os.path.isfile(full):
+            full = os.path.join(root, "index.html")  # SPA fallback for client routes
+        if not os.path.isfile(full):
+            return self._send(404, {"ok": False, "msg": "ui not built (set CB_WEB_DIR or build ui/app)"})
+        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        with open(full, "rb") as f: data = f.read()
+        self.send_response(200); self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data))); self._cors(); self.end_headers()
+        self.wfile.write(data)
     def do_GET(self):
         path = self.path.split("?",1)[0]
+        if not path.startswith("/api"): return self._serve_static(path)  # dashboard UI
         if path=="/api/health": return self._send(200,{"ok":True,"repo":REPO})
         if not self._auth_ok(): return self._send(401,{"ok":False,"msg":"unauthorized"})
         if path=="/api/state": return self._send(200, build_state())
