@@ -728,6 +728,20 @@ _charter_finale_cycle(){
   done
 }
 
+# _serializing_charter: in unscoped mode, return the min-numbered OPEN charter with
+# label blast-radius:high (type:charter + OPEN + blast-radius:high). Empty if none.
+# Called once per cmd_run tick; cheap (single gh issue list, same pattern as _loop_is_alive). [#262]
+_serializing_charter(){
+  local _s
+  _s=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+       --json number,state,labels 2>/dev/null || echo "[]")
+  printf '%s' "$_s" | jq -r '
+    [ .[] | select(.state=="OPEN")
+          | select([.labels[].name] | index("type:charter") != null)
+          | select([.labels[].name] | index("blast-radius:high") != null)
+    ] | sort_by(.number) | first | .number // empty' 2>/dev/null || true
+}
+
 # re-dispatch <leaf-id> — operator command AND the I-D idempotent re-dispatch primitive:
 # atomically clear launcher-local run-state, remove the poisoned work tree, and re-queue the
 # leaf as launchable (status:needs-rework). Deliberate operator action — never auto-fired.
@@ -1027,9 +1041,15 @@ Charter: #$cid"
             done
           fi
         fi
+        # blast-radius gate (unscoped only): if a high-blast-radius charter is active,
+        # hold all other charters and only dispatch work for it. [#262]
+        _block=""
+        [ "${CHARTER_SCOPE:-0}" = "0" ] && _block=$(_serializing_charter)
+        [ -n "$_block" ] && log "blast-radius: serializing on #$_block — other charters held"
         # plan charters first: a needs-plan charter -> spawn a tech-lead to decompose it
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
         for cid in $(plannable_scoped); do
+          [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
           [ "$running" -ge "$MAXP" ] && break
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
@@ -1044,6 +1064,7 @@ Charter: #$cid"
           # (laggy) gh list still reports it launchable.
           [ -n "$(sget "$id" pid)" ] && continue
           [ -n "$(sget "$id" term)" ] && continue
+          [ -n "$_block" ] && [ "$(board get "$id" charter 2>/dev/null)" != "$_block" ] && continue
           # Choose spawn path before claiming (needs-rework -> rework script)
           _bg_spawn="$SPAWN"
           _bg_old_branch=""

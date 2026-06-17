@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=17, EXCLUDED=43, union=60  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=17, EXCLUDED=44, union=61  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -110,3 +110,7 @@ EXCLUDED manifest-e2e
 #   to test auto-rebase of charter behind main in the finale cycle. Heavy: launches the
 #   real launcher loop, real git clone/merge/push ops, timing-sensitive. EXCLUDED (fail-closed).
 EXCLUDED finale-autorebase
+# #262 blast-radius-schedule: integration-stub driving the REAL launcher loop
+#   (cmd_run, unscoped) to verify the blast-radius scheduler gate. Launcher loop +
+#   background spawns — heavy/launcher-context. EXCLUDED (fail-closed).
+EXCLUDED blast-radius-schedule
