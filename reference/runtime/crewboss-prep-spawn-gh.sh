@@ -64,6 +64,13 @@ if [ -f "$_HERE_LA/../.claude/agents/$ROLE.md" ]; then
 elif [ "${CB_GOVERNED:-0}" = "1" ] && [ -f "${CB_HOME:-}/gov/.claude/agents/$ROLE.md" ]; then
   _LOOP_AGENT_FILE="${CB_HOME:-}/gov/.claude/agents/$ROLE.md"
 fi
+# The STANDARD loop roles have their own dispatch and an agent file in .claude/agents/ too:
+# executor → leaf/<id>- branch (integrator finds the PR by that prefix); tech-lead → its branch;
+# analyst/boss/integrator/task-helper are delegation roles, not launcher-loop leaf spawns. They
+# MUST NOT route through the loop-agent branch (that broke executor → loop-agent/ branch → the
+# integrator could not find the PR). The loop-agent branch is ONLY for the NEW ops-roles
+# (git-resolver, observer, role-builder, test-planner). [fix: #275 L1 regression, 2026-06-17]
+case "$ROLE" in executor|tech-lead|analyst|boss|integrator|task-helper) _LOOP_AGENT_FILE="" ;; esac
 if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
