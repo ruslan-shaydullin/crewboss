@@ -528,6 +528,15 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
               ⚡ conflict
             </span>
           )}
+          {c && c.git_status === 'clean' && (
+            <span
+              className="git-clean-badge"
+              title="Branch is current with main — auto-rebase keeps it fresh (#187)"
+              data-testid="git-clean-badge"
+            >
+              ✓ git
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
