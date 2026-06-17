@@ -53,6 +53,17 @@ if [ -n "${CB_MANIFEST:-}" ]; then
     fi
   fi
 fi
+# Loop-agent detection: roles with an agent definition file in reference/.claude/agents/<ROLE>.md
+# (in-repo path for dev/CI) or in $CB_HOME/gov/.claude/agents/<ROLE>.md (box with CB_GOVERNED).
+# These are launcher-loop-spawned roles (git-resolver, observer, etc.) — distinct from manifest
+# roles (which live in CB_MANIFEST/roles/) and from the hard-coded tech-lead path.
+_LOOP_AGENT_FILE=""
+_HERE_LA="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_HERE_LA/../.claude/agents/$ROLE.md" ]; then
+  _LOOP_AGENT_FILE="$_HERE_LA/../.claude/agents/$ROLE.md"
+elif [ "${CB_GOVERNED:-0}" = "1" ] && [ -f "${CB_HOME:-}/gov/.claude/agents/$ROLE.md" ]; then
+  _LOOP_AGENT_FILE="${CB_HOME:-}/gov/.claude/agents/$ROLE.md"
+fi
 if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
@@ -116,6 +127,22 @@ $_COMP_BODY
 **To reject** (composition needs revision — return to analysis):
    gh issue comment $ID -R $PR_REPO --body 'Approval rejected: <your explanation>'
    gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
+elif [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$ROLE" != "tech-lead" ]; then
+  # Loop-agent branch: roles defined in reference/.claude/agents/ (git-resolver, observer, etc.)
+  # These are spawned directly by the launcher loop (not by manifest pipeline or tech-lead path).
+  # Prompt: describe the specific instance task; agent persona comes from --agent $ROLE.
+  TS=$(date +%s)
+  BRANCH="loop-agent/$ID-$TS"
+  PROMPT="Resolve the merge conflict on charter #$ID (branch \`charter/$ID\`) in repo $PR_REPO.
+
+1. Fetch \`origin/charter/$ID\` and create a local branch to work on it.
+2. Merge \`origin/main\` into it, then resolve all conflicts:
+   - SHA/manifest files (\`runtime-manifest.tsv\`) → run \`bash regen-manifest.sh\` to regenerate; do NOT manually pick SHAs.
+   - Code conflicts → resolve by semantic intent (understand both sides, produce correct merged result).
+   - Config/schema files → prefer union of changes; flag ambiguity with a comment.
+3. Run the ALLOW suite (each ALLOW entry in \`reference/runtime/per-leaf-manifest\`) — all must pass before push.
+4. Push the resolved branch: \`git push -f origin HEAD:refs/heads/charter/$ID\`.
+5. Remove the conflict label from the charter issue: \`gh issue edit $ID -R $PR_REPO --remove-label status:needs-conflict-resolution\`."
 elif [ "$ROLE" = "tech-lead" ]; then
   TS=$(date +%s)
   BRANCH="tech-lead/$ID-$TS"
