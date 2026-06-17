@@ -1,0 +1,35 @@
+# crewboss-api.service — systemd unit for the dashboard API daemon.
+#
+# Closes the API-operability SPOF (#188 gap-1): the daemon survives ssh-session close,
+# auto-restarts on crash (Restart=always), and starts on boot. Replaces the fragile
+# ssh-inline nohup/setsid start in deploy-runtime.sh (which died on abrupt ssh teardown).
+#
+# Install once on the box (passwordless sudo):
+#   sudo cp reference/runtime/crewboss-api.service /etc/systemd/system/crewboss-api.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crewboss-api
+# Then deploy-runtime.sh restarts it with: sudo systemctl restart crewboss-api.
+#
+# Auth: gh uses ec2-user's stored config (~/.config/gh) via HOME=/home/ec2-user — no token
+# env needed. CB_WEB_DIR points at the built vite dist served as the dashboard (static route).
+
+[Unit]
+Description=crewboss dashboard API (board state + dashboard static)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/cbnet
+Environment=HOME=/home/ec2-user
+Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CB_REPO=stratch1989/crewboss
+Environment=CB_HOME=/home/ec2-user/cbnet
+Environment=CB_WEB_DIR=/home/ec2-user/cbnet/www
+ExecStart=/usr/bin/python3 /home/ec2-user/cbnet/crewboss-api.py --port 8787
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

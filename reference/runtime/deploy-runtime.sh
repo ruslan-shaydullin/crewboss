@@ -122,32 +122,21 @@ fi
 printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
 ssh $CB_SSH_OPTS "$CB_HOST" "
-  CB_HOME='$CB_REMOTE_HOME'
-  # Source the FULL env contract (run-env.sh #147) so CB_REPO + CB_API_TOKEN reach the
-  # daemon. run-env.sh sets CB_REPO (default) AND sources ~/.crewboss.env for the token.
-  # Sourcing ONLY ~/.crewboss.env dropped CB_REPO (it isn't defined there) -> the daemon
-  # restarted with empty repo -> empty board after every deploy. (issue #148 + regression.)
-  if [ -f \"\$CB_HOME/run-env.sh\" ]; then . \"\$CB_HOME/run-env.sh\"
-  elif [ -f \"\$HOME/.crewboss.env\" ]; then . \"\$HOME/.crewboss.env\"; fi
-  export CB_HOME CB_REPO CB_API_TOKEN
-  API_PID=\"\$CB_HOME/run/api.pid\"
-  mkdir -p \"\$CB_HOME/run\"
-  # Kill the ACTUAL listener on the API port, not just the pid file. A daemon started
-  # outside this script (manual start) or after a stale pid file otherwise survives, the
-  # new daemon fails to bind 8787, and the box keeps serving OLD code after every deploy.
-  # (root cause of the 21h-stale dashboard, 2026-06-17 deploy-debt.)
-  for _p in \$(fuser 8787/tcp 2>/dev/null); do kill -9 \"\$_p\" 2>/dev/null || true; done
-  [ -f \"\$API_PID\" ] && { kill \"\$(cat \"\$API_PID\")\" 2>/dev/null || true; rm -f \"\$API_PID\"; }
-  sleep 1
-  # nohup + setsid + </dev/null: maximally detach so the daemon survives the ssh session
-  # closing (setsid → new session immune to session SIGHUP; nohup → also ignores SIGHUP if
-  # an ssh ControlMaster/multiplexed connection tears the session down on deploy exit).
-  # CB_HOME/CB_REPO/CB_API_TOKEN are exported above. [deploy-debt 2026-06-17]
-  cd \"\$CB_HOME\"
-  nohup setsid python3 crewboss-api.py --port 8787 > run/api.out 2>&1 < /dev/null & disown 2>/dev/null || true
-  echo \$! > \"\$API_PID\"
-  sleep 3
-  echo \"API restarted, auth=\${CB_API_TOKEN:+on}\"
+  # Preferred: the crewboss-api systemd service (survives ssh close, auto-restarts on crash,
+  # starts on boot — closes the API-operability SPOF). reference/runtime/crewboss-api.service
+  # documents the unit; install it once with: sudo cp + systemctl enable --now. [#188 gap-1]
+  if [ -f /etc/systemd/system/crewboss-api.service ]; then
+    sudo systemctl restart crewboss-api && echo 'API restarted (systemd crewboss-api, robust)'
+  else
+    # Fallback: no unit installed — detached start (fragile, dies on abrupt ssh teardown).
+    H=\$(eval echo $CB_REMOTE_HOME); cd \"\$H\"
+    if [ -f run-env.sh ]; then . run-env.sh; elif [ -f \$HOME/.crewboss.env ]; then . \$HOME/.crewboss.env; fi
+    export CB_REPO=\${CB_REPO:-stratch1989/crewboss} CB_HOME=\"\$H\"
+    for _p in \$(fuser 8787/tcp 2>/dev/null); do kill -9 \"\$_p\" 2>/dev/null || true; done; sleep 1
+    nohup setsid python3 crewboss-api.py --port 8787 > run/api.out 2>&1 < /dev/null & disown 2>/dev/null || true
+    echo \"\$!\" > run/api.pid; sleep 2
+    echo 'API restarted (FALLBACK detached — install crewboss-api.service for robustness)'
+  fi
 "
 
 # ── Verify: post-deploy drift check (non-fatal warn) ─────────────────────────
