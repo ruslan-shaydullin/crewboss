@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=17, EXCLUDED=44, union=61  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=17, EXCLUDED=45, union=62  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -114,3 +114,7 @@ EXCLUDED finale-autorebase
 #   (cmd_run, unscoped) to verify the blast-radius scheduler gate. Launcher loop +
 #   background spawns — heavy/launcher-context. EXCLUDED (fail-closed).
 EXCLUDED blast-radius-schedule
+# #270 role-schema: integration/api test that starts crewboss-api.py daemon, posts
+#   roles with model+accesses, verifies round-trip and file frontmatter. Starts a
+#   real daemon (background process, timing-sensitive). EXCLUDED (fail-closed).
+EXCLUDED role-schema
