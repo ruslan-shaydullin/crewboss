@@ -133,6 +133,13 @@ run_launcher(){
     export CB_POLL=0
     export CB_IDLE_CONFIRM=1
     export CB_MAX_TICKS=20
+    # Prevent integrator stale-guard from moving review leaves to blocked during
+    # short test runs (default threshold=10 ticks fires before CB_MAX_TICKS=20).
+    export CB_REVIEW_STALE_TICKS=999
+    # Isolate from caller's environment: unset vars the launcher reads from env
+    # so that unscoped tests are not accidentally scoped by the parent process,
+    # and non-CB_SPAWN spawn scripts (plan, analysis, etc.) default to CB_SPAWN.
+    unset CREWBOSS_CHARTER CB_PLAN_SPAWN CB_ANALYSIS_SPAWN CB_APPROVAL_SPAWN CB_CONFLICT_SPAWN CB_REWORK_SPAWN
     # Apply extra env overrides (e.g. CREWBOSS_CHARTER=5)
     for kv in "$@"; do export "${kv?}"; done
     PATH="$BIN:$PATH" bash "$LAUNCHER" "$sub"

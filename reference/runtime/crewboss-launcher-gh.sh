@@ -763,9 +763,30 @@ cmd_redispatch(){
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
+    # ── queue-mode detection ─────────────────────────────────────────────────
+    # Read $RUN/queue.json (.order[]); if non-empty, only the head-of-queue
+    # charter (first in order not yet in plan-review/done/blocked) may have
+    # leaves launched.  Absent/unreadable/empty order → no change in behaviour.
+    local _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+    _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
+    if [ -n "$_q_order" ]; then
+      for _qn in $_q_order; do
+        _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+        case "$_qst" in plan-review|done|blocked) continue ;; esac
+        _q_head="$_qn"; break
+      done
+      _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
+      log "queue-mode: order=[$_q_disp] head=#${_q_head:-none}"
+    fi
     local ids id launched=0 rc
     ids=$(board launchable)
     for id in $ids; do
+      # queue-mode filter: only the head charter's leaves are eligible
+      if [ -n "$_q_order" ]; then
+        if [ -z "$_q_head" ]; then log "queue-mode: queue exhausted — no eligible head"; break; fi
+        _id_ch=$(board get "$id" charter 2>/dev/null || echo "")
+        [ "$_id_ch" = "$_q_head" ] || continue
+      fi
       [ "$launched" -ge "$MAXP" ] && { log "parallel cap reached"; break; }
       claim_and_spawn "$id"; rc=$?
       launched=$((launched+1))
@@ -784,7 +805,7 @@ running_count(){ local d id pid n=0
   echo "$n"; }
 cmd_run(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0
+    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
     reconcile   # STARTUP ONLY: requeue orphans from a previous run/reboot. Inside the loop,
                 # the launcher started its own spawns, so a dead pid = finished (route by
                 # status.json) — NOT an orphan; running reconcile per-tick would requeue every
@@ -913,6 +934,21 @@ cmd_run(){
         log "paused — not claiming new (rm $RUN/pause to resume)"
       # claim new launchable up to the cap
       elif [ -z "$stop" ]; then
+        # ── queue-mode detection (per tick) ──────────────────────────────────
+        # Read $RUN/queue.json; if .order[] is non-empty, restrict all new work
+        # to the head-of-queue charter (first in order not yet terminal-for-queue:
+        # plan-review/done/blocked).  Empty/absent/unreadable → normal behaviour.
+        _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
+        _q_head=""
+        if [ -n "$_q_order" ]; then
+          for _qn in $_q_order; do
+            _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+            case "$_qst" in plan-review|done|blocked) continue ;; esac
+            _q_head="$_qn"; break
+          done
+          _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
+          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none}"
+        fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
         # WITHOUT composition:approved (analysis not yet done) AND needs-analysis charters
@@ -921,6 +957,11 @@ cmd_run(){
         if [ -n "${CB_MANIFEST:-}" ]; then
           for cid in $(plannable_scoped); do
             [ "$running" -ge "$MAXP" ] && break
+            # queue-mode: only head charter is eligible for analysis
+            if [ -n "$_q_order" ]; then
+              [ -z "$_q_head" ] && break
+              [ "$cid" = "$_q_head" ] || continue
+            fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
             # If composition:approved, skip analysis — go straight to tech-lead below
@@ -954,6 +995,11 @@ cmd_run(){
           for cid in $_analysis_boards; do
             [ "$running" -ge "$MAXP" ] && break
             [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+            # queue-mode: only head charter is eligible for analysis
+            if [ -n "$_q_order" ]; then
+              [ -z "$_q_head" ] && break
+              [ "$cid" = "$_q_head" ] || continue
+            fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
             _analysis_role=$(manifest_analysis_roles "$CB_MANIFEST" | head -1)
@@ -977,6 +1023,11 @@ cmd_run(){
                   | .number' 2>/dev/null || true)
             for cid in $_tr_charters; do
               [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+              # queue-mode: only head charter is eligible for approval
+              if [ -n "$_q_order" ]; then
+                [ -z "$_q_head" ] && break
+                [ "$cid" = "$_q_head" ] || continue
+              fi
               [ -n "$(sget "$cid" pid)" ] && continue
               [ -n "$(sget "$cid" term)" ] && continue
               # a. Parse last ## Composition (machine) comment; exit≠0 → auto-reject to analysis
@@ -1081,6 +1132,11 @@ Charter: #$cid"
         for cid in $_conflict_boards; do
           [ "$running" -ge "$MAXP" ] && break
           [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+          # queue-mode: only head charter is eligible for conflict-resolution
+          if [ -n "$_q_order" ]; then
+            [ -z "$_q_head" ] && break
+            [ "$cid" = "$_q_head" ] || continue
+          fi
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
           sset "$cid" kind conflict-resolution; sset "$cid" starttime "$(now)"
@@ -1097,6 +1153,11 @@ Charter: #$cid"
         # (it sets the charter to plan-review itself; local pid guard prevents double-spawn).
         for cid in $(plannable_scoped); do
           [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
+          # queue-mode: only head charter is eligible for tech-lead planning
+          if [ -n "$_q_order" ]; then
+            [ -z "$_q_head" ] && break
+            [ "$cid" = "$_q_head" ] || continue
+          fi
           [ "$running" -ge "$MAXP" ] && break
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
@@ -1112,6 +1173,12 @@ Charter: #$cid"
           [ -n "$(sget "$id" pid)" ] && continue
           [ -n "$(sget "$id" term)" ] && continue
           [ -n "$_block" ] && [ "$(board get "$id" charter 2>/dev/null)" != "$_block" ] && continue
+          # queue-mode filter: only the head charter's leaves are eligible
+          if [ -n "$_q_order" ]; then
+            if [ -z "$_q_head" ]; then break; fi
+            _id_ch=$(board get "$id" charter 2>/dev/null || echo "")
+            [ "$_id_ch" = "$_q_head" ] || continue
+          fi
           # Choose spawn path before claiming (needs-rework -> rework script)
           _bg_spawn="$SPAWN"
           _bg_old_branch=""
