@@ -503,6 +503,65 @@ _finale_check_ci(){
   esac
 }
 
+# ── charter auto-rebase helper (issue #255) ──────────────────────────────────
+# _charter_autorebase <cid> <branch>
+# Attempts to merge origin/main into charter/<cid> in a fresh clone.
+# Returns:
+#   0 — merge succeeded (clean or sha-only manifest conflict auto-resolved),
+#       charter/<cid> pushed to remote; caller may proceed with finale.
+#   2 — real conflicts exist; caller should escalate (label + continue).
+#   other — infra error; caller should retry next tick.
+#
+# sha-only conflict resolution: when the ONLY conflicting file is
+# reference/runtime-manifest.tsv, resolve via `git checkout --theirs` (main
+# is the superset) + regen-manifest.sh (refreshes sha column from actual files)
+# then commit and push.  This mirrors the manual fix applied for #131.
+_charter_autorebase(){
+  local cid="$1" branch="$2"
+  local tmp; tmp=$(mktemp -d) || return 1
+  # Clone and checkout the charter branch
+  git clone -q "$GIT_REMOTE" "$tmp/r" 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  git -C "$tmp/r" config user.email "crewboss-launcher@autorebase" 2>/dev/null || true
+  git -C "$tmp/r" config user.name  "crewboss-launcher"            2>/dev/null || true
+  git -C "$tmp/r" checkout -q "$branch" 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  # Attempt merge of origin/main (already fetched by clone)
+  local merge_rc=0
+  git -C "$tmp/r" merge origin/main --no-edit 2>/dev/null || merge_rc=$?
+  if [ "$merge_rc" = "0" ]; then
+    # Clean merge — push and done
+    git -C "$tmp/r" push origin "$branch" 2>/dev/null \
+      || { rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+    return 0
+  fi
+  # Merge produced conflicts — inspect them
+  local cf
+  cf=$(git -C "$tmp/r" diff --name-only --diff-filter=U 2>/dev/null) || cf=""
+  # Check if ALL conflicting files are in the manifest-only set
+  local non_manifest; non_manifest=$(printf '%s\n' "$cf" \
+    | grep -v '^reference/runtime-manifest\.tsv$' | grep -v '^$') || non_manifest=""
+  if [ -n "$non_manifest" ]; then
+    # Real conflicts outside the manifest — abort and escalate
+    git -C "$tmp/r" merge --abort 2>/dev/null || true
+    rm -rf "$tmp"
+    return 2
+  fi
+  # Only manifest conflicts: resolve via --theirs (main superset) + regen
+  git -C "$tmp/r" checkout --theirs reference/runtime-manifest.tsv 2>/dev/null \
+    || { git -C "$tmp/r" merge --abort 2>/dev/null || true; rm -rf "$tmp"; return 1; }
+  git -C "$tmp/r" add reference/runtime-manifest.tsv 2>/dev/null || true
+  bash "$tmp/r/reference/bin/regen-manifest.sh" "$tmp/r" 2>/dev/null || true
+  git -C "$tmp/r" add -A 2>/dev/null || true
+  git -C "$tmp/r" commit --no-edit 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  git -C "$tmp/r" push origin "$branch" 2>/dev/null \
+    || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+  return 0
+}
+
 # ── charter finale cycle ──────────────────────────────────────────────────────
 # Called every tick of cmd_run after _integrator_cycle.
 # For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
@@ -560,7 +619,33 @@ _charter_finale_cycle(){
     git -C "$_anc_tmp/repo" merge-base --is-ancestor \
       "main" "$branch" 2>/dev/null || _anc_rc=$?
     rm -rf "$_anc_tmp"
-    [ "$_anc_rc" = "0" ] || continue  # main not ancestor of charter/C → stale/diverged
+    if [ "$_anc_rc" != "0" ]; then
+      # main is NOT an ancestor of charter/C — attempt auto-rebase (#255)
+      local _ar_rc=0
+      _charter_autorebase "$cid" "$branch" || _ar_rc=$?
+      if [ "$_ar_rc" = "0" ]; then
+        log "charter-finale: #$cid auto-rebased onto main"
+        # Re-verify ancestor after successful rebase
+        local _arc2_tmp _arc2_rc
+        _arc2_tmp=$(mktemp -d)
+        git clone -q --bare "$GIT_REMOTE" "$_arc2_tmp/repo" 2>/dev/null \
+          || { rm -rf "$_arc2_tmp"; continue; }
+        _arc2_rc=0
+        git -C "$_arc2_tmp/repo" merge-base --is-ancestor \
+          "main" "$branch" 2>/dev/null || _arc2_rc=$?
+        rm -rf "$_arc2_tmp"
+        [ "$_arc2_rc" = "0" ] || { log "charter-finale: #$cid still not ancestor after rebase — skip"; continue; }
+        # Fall through to normal finale processing
+      elif [ "$_ar_rc" = "2" ]; then
+        log "charter-finale: #$cid real conflicts with main — needs conflict-resolution"
+        gh issue edit "$cid" -R "$CB_REPO" \
+          --add-label status:needs-conflict-resolution 2>/dev/null || true
+        continue
+      else
+        log "charter-finale: #$cid autorebase infra error (rc=$_ar_rc) — will retry next tick"
+        continue
+      fi
+    fi
 
     # Idempotent: check for an existing open PR charter/C → main
     local existing_pr

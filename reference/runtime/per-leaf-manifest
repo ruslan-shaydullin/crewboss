@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=17, EXCLUDED=42, union=59  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=17, EXCLUDED=43, union=60  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -106,3 +106,7 @@ ALLOW launchable-composition
 #   → approved → role-leaves → integrator-merge → idle). Uses background processes, real
 #   git operations, timing/poll loops — heavy/launcher-context. EXCLUDED (fail-closed).
 EXCLUDED manifest-e2e
+# #255 finale-autorebase: integration-stub driving the real launcher + git bare remote
+#   to test auto-rebase of charter behind main in the finale cycle. Heavy: launches the
+#   real launcher loop, real git clone/merge/push ops, timing-sensitive. EXCLUDED (fail-closed).
+EXCLUDED finale-autorebase

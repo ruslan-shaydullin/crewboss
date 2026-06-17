@@ -263,12 +263,28 @@ m_sha=$(git ls-remote "$REMOTE" "refs/heads/main"      2>/dev/null | awk '{print
   && ok "Part1-setup: remote has charter/5 (${b_sha:0:7}) != main (${m_sha:0:7}) — stale scenario confirmed" \
   || ko "Part1-setup: remote setup broken (b_sha='$b_sha' m_sha='$m_sha')"
 
-# Run real launcher — gate is green (harness exits 0), so the ONLY guard is the ancestor check
+# Run real launcher — gate is green (harness exits 0).
+# #187 L1: a charter merely BEHIND main (strict subset, no conflicts) is no longer skipped —
+# the finale AUTO-REBASES it (merge main into charter/C + push) so main becomes an ancestor,
+# THEN creates the PR. Anti-false-green (#156) is PRESERVED, not by skipping, but because the
+# rebase makes the PR tree current with main AND the draft-PR CI revalidates the merged tree.
+# (The dangerous DIVERGED-with-conflict case still gets NO PR — it escalates to
+#  status:needs-conflict-resolution; covered by finale-autorebase.test.sh RED-3.)
 run_finale "$CBHOME_1" "CB_HARNESS=\"$GREEN_HARNESS\""
 
 charter_pr_created \
-  && ko "Part1: PR charter/5→main was CREATED despite charter/5 being behind main (ancestor-check failed to block)" \
-  || ok "Part1: PR NOT created — ancestor-check correctly blocked stale charter/5"
+  && ok "Part1: PR created AFTER auto-rebase (#187 L1: behind-main charter rebased onto main, not skipped)" \
+  || ko "Part1: PR NOT created — #187 L1 auto-rebase failed to make a clean behind-main charter finalizable"
+
+# Verify the auto-rebase actually pushed: main must now be an ancestor of charter/5 on the remote.
+_arb_tmp=$(mktemp -d)
+if git clone -q --bare "$REMOTE" "$_arb_tmp/r" 2>/dev/null \
+   && git -C "$_arb_tmp/r" merge-base --is-ancestor main charter/5 2>/dev/null; then
+  ok "Part1: auto-rebase pushed — main is now an ancestor of charter/5 (no stale-tree false-green)"
+else
+  ko "Part1: main is NOT an ancestor of charter/5 after finale — auto-rebase did not push the merge"
+fi
+rm -rf "$_arb_tmp"
 
 # =============================================================================
 # Part 2 — freshness script: branch behind origin/main → exit non-zero

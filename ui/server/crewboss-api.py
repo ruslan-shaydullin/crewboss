@@ -178,11 +178,20 @@ def build_state():
         n = it["number"]
         sj = read_json(os.path.join(RUN,"work",str(n),"status.json"), {})
         body = it.get("body","")
+        # git_status: label-derived freshness for open charters (MVP per issue #258)
+        if kind == "charter":
+            if "status:needs-conflict-resolution" in labels:
+                git_status = "needs-conflict-resolution"
+            else:
+                git_status = "clean"
+        else:
+            git_status = None
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
                           charter=(_charter_of(body) if kind=="leaf" else None),
-                          milestone=(_milestone_of(body) if kind=="charter" else None)))
+                          milestone=(_milestone_of(body) if kind=="charter" else None),
+                          git_status=git_status))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
