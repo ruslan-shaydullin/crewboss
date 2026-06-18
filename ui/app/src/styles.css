@@ -458,6 +458,32 @@ body {
 .queue-btn--launch:hover:not(:disabled) { box-shadow:0 6px 20px -6px rgba(255,255,255,.4) }
 .queue-btn--launch:disabled { opacity:.38; cursor:not-allowed }
 
+/* ── lifecycle stage badge (#283) ────────────────────────────────────────── */
+.lifecycle-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 20px;
+  font-size: 0.7rem; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap; flex-shrink: 0;
+}
+/* concept — gray (open issues not yet planned) */
+.lifecycle-badge--concept    { background: rgba(125,126,133,.18); color: #9a9ba3; border-color: rgba(125,126,133,.3); }
+/* analysis — blue (needs-plan) */
+.lifecycle-badge--analysis   { background: rgba(91,156,240,.15); color: var(--prog); border-color: rgba(91,156,240,.3); }
+/* plan-review — amber/yellow */
+.lifecycle-badge--plan-review { background: rgba(224,182,74,.16); color: var(--plan); border-color: rgba(224,182,74,.32); }
+/* executing — green (approved + in-progress) */
+.lifecycle-badge--executing  { background: rgba(70,206,142,.14); color: var(--done); border-color: rgba(70,206,142,.28); }
+/* finale — purple (review) */
+.lifecycle-badge--finale     { background: rgba(179,155,255,.15); color: var(--review); border-color: rgba(179,155,255,.3); }
+/* done — muted green */
+.lifecycle-badge--done       { background: rgba(70,206,142,.08); color: #4a9970; border-color: rgba(70,206,142,.18); }
+/* blocked — red */
+.lifecycle-badge--blocked    { background: rgba(240,103,106,.15); color: var(--blocked); border-color: rgba(240,103,106,.3); }
+/* held — warm gray (slightly different from concept) */
+.lifecycle-badge--held       { background: rgba(232,151,74,.12); color: var(--held); border-color: rgba(232,151,74,.28); }
+
 /* ── collapse/expand chevron buttons ────────────────────────────────────── */
 .chevron-btn { background:transparent; border:none; color:var(--mut); cursor:pointer; padding:3px 7px; font-size:11px; line-height:1; border-radius:5px; transition:color .15s; flex-shrink:0 }
 .chevron-btn:hover { color:var(--ink); background:var(--raise) }
