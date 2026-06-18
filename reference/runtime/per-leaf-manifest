@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=18, EXCLUDED=46, union=64  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=18, EXCLUDED=47, union=65  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -79,6 +79,7 @@ EXCLUDED killswitch
 EXCLUDED launcher-dryrun
 EXCLUDED launcher-gh-scope
 EXCLUDED launcher-integration
+EXCLUDED launcher-queue
 EXCLUDED leaf-verifier
 EXCLUDED leaf-verifier-cache
 EXCLUDED needs-rework
