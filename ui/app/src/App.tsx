@@ -1,6 +1,27 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
+
+// ── Lifecycle stage badge helpers ──────────────────────────────────────────
+const STATE_LIFECYCLE: Record<string, { label: string; modifier: string }> = {
+  'open':        { label: 'concept',      modifier: 'concept' },
+  'needs-plan':  { label: 'analysis',     modifier: 'analysis' },
+  'plan-review': { label: 'plan-review',  modifier: 'plan-review' },
+  'approved':    { label: 'executing',    modifier: 'executing' },
+  'in-progress': { label: 'executing',    modifier: 'executing' },
+  'review':      { label: 'finale',       modifier: 'finale' },
+  'done':        { label: 'done',         modifier: 'done' },
+  'blocked':     { label: 'blocked',      modifier: 'blocked' },
+  'held':        { label: 'hold',         modifier: 'held' },
+}
+
+function stateToLabel(state: string): string {
+  return STATE_LIFECYCLE[state]?.label ?? state
+}
+
+function stateToModifier(state: string): string {
+  return STATE_LIFECYCLE[state]?.modifier ?? state
+}
 
 /** Check whether a text contains a valid ## Acceptance (machine) block.
  *  Requires: the header line + at least one "- test: …" or "- check: …" entry. */
@@ -111,8 +132,28 @@ export default function App() {
   const [, setTick] = useState(0)
   const tid = useRef(0)
 
-  useEffect(() => subscribe(setState, setConn), [])
+  // Queue state
+  const [queueOrder, setQueueOrder] = useState<number[]>([])
+  const dirtyRef = useRef(false)
+
+  useEffect(() => subscribe((s) => {
+    setState(s)
+    // Sync queue from server only if user is not actively editing
+    if (!dirtyRef.current) {
+      setQueueOrder(s.queue?.order ?? [])
+    }
+  }, setConn), [])
   useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i) }, [])
+
+  const handleQueueChange = useCallback(async (newOrder: number[]) => {
+    dirtyRef.current = true
+    setQueueOrder(newOrder)
+    try {
+      await postQueue(newOrder)
+    } finally {
+      dirtyRef.current = false
+    }
+  }, [])
 
   const toast = useCallback((msg: string, err?: boolean) => {
     const id = ++tid.current
@@ -144,8 +185,17 @@ export default function App() {
         <>
           <Hero state={state} />
           <div className="layout">
-            <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen} />
-            <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+            <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
+              queueOrder={queueOrder} onQueueChange={handleQueueChange} />
+            <aside className="sidebar">
+              <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+              <QueuePanel
+                queueOrder={queueOrder}
+                board={state?.board ?? []}
+                onQueueChange={handleQueueChange}
+                onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
+              />
+            </aside>
           </div>
         </>
       ) : view === 'human' ? (
@@ -265,9 +315,10 @@ function writeCollapseMap(m: Record<string, boolean>) {
   try { localStorage.setItem(COLLAPSE_LS_KEY, JSON.stringify(m)) } catch {}
 }
 
-function Board({ state, conn, onAction, ask, onOpen }: {
+function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
+  queueOrder: number[]; onQueueChange: (order: number[]) => void
 }) {
   // Collapse state — always call hooks before any early return
   const [collapseMap, setCollapseMap] = useState<Record<string, boolean>>(readCollapseMap)
@@ -318,6 +369,8 @@ function Board({ state, conn, onAction, ask, onOpen }: {
             onToggle={() => doToggle(m.n, milestoneDefault)}
             getExpanded={getExpanded}
             doToggle={doToggle}
+            queueOrder={queueOrder}
+            onQueueChange={onQueueChange}
           />
         )
       })}
@@ -331,6 +384,8 @@ function Board({ state, conn, onAction, ask, onOpen }: {
           onOpen={onOpen}
           expanded={getExpanded(c.n, true)}
           onToggle={() => doToggle(c.n, true)}
+          queueOrder={queueOrder}
+          onQueueChange={onQueueChange}
         />
       ))}
       {orphans.length > 0 && (
@@ -342,13 +397,15 @@ function Board({ state, conn, onAction, ask, onOpen }: {
           onOpen={onOpen}
           expanded={getExpanded(0, true)}
           onToggle={() => doToggle(0, true)}
+          queueOrder={queueOrder}
+          onQueueChange={onQueueChange}
         />
       )}
     </section>
   )
 }
 
-function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle }: {
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange }: {
   milestone: Task; charters: Task[]; leaves: Task[]
   onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -356,6 +413,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
   expanded: boolean; onToggle: () => void
   getExpanded: (n: number, def: boolean) => boolean
   doToggle: (n: number, def: boolean) => void
+  queueOrder: number[]; onQueueChange: (order: number[]) => void
 }) {
   const bodyId = `milestone-body-${milestone.n}`
   const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
@@ -387,6 +445,8 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
             onOpen={onOpen}
             expanded={getExpanded(c.n, true)}
             onToggle={() => doToggle(c.n, true)}
+            queueOrder={queueOrder}
+            onQueueChange={onQueueChange}
           />
         ))}
       </div>
@@ -486,10 +546,11 @@ function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) 
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   expanded: boolean; onToggle: () => void
+  queueOrder: number[]; onQueueChange: (order: number[]) => void
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
@@ -546,10 +607,34 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle }: {
               ⊘ serializes
             </span>
           )}
+          {c && (
+            <span
+              className={`lifecycle-badge lifecycle-badge--${stateToModifier(c.state)}`}
+              data-testid="lifecycle-badge"
+            >
+              {stateToLabel(c.state)}
+            </span>
+          )}
         </div>
         <div className="charter-title" onClick={() => c && onOpen(c.n)} style={c ? { cursor: 'pointer' } : undefined}>{c ? c.title : 'Unassigned tasks'}</div>
         <div className="grow" />
         {total > 0 && <Ring pct={pct} label={`${done}/${total}`} />}
+        {c && (() => {
+          const isQueued = queueOrder.includes(c.n)
+          return (
+            <button
+              className={'queue-btn--add' + (isQueued ? ' queue-btn--queued' : '')}
+              disabled={isQueued}
+              data-testid="queue-add-btn"
+              data-charter-n={c.n}
+              onClick={() => {
+                if (!isQueued) onQueueChange([...queueOrder, c.n])
+              }}
+            >
+              {isQueued ? '✓ Queued' : '+ Queue'}
+            </button>
+          )
+        })()}
         {c && c.state === 'plan-review' && <>
           <button className="btn sm pri" onClick={() => ask('Approve plan #' + c.n,
             "Releases this charter's tasks to be launched (executors run, spending from the pool).",
@@ -662,6 +747,67 @@ function SkeletonBoard() {
         </div>
       ))}
     </>
+  )
+}
+
+function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
+  queueOrder: number[]
+  board: Task[]
+  onQueueChange: (order: number[]) => void
+  onLaunch: () => void
+}) {
+  const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
+  const move = (idx: number, dir: -1 | 1) => {
+    const newOrder = [...queueOrder]
+    const target = idx + dir
+    if (target < 0 || target >= newOrder.length) return
+    ;[newOrder[idx], newOrder[target]] = [newOrder[target], newOrder[idx]]
+    onQueueChange(newOrder)
+  }
+  const remove = (idx: number) => {
+    const newOrder = queueOrder.filter((_, i) => i !== idx)
+    onQueueChange(newOrder)
+  }
+  return (
+    <div className="queue-panel" data-testid="queue-panel">
+      <div className="queue-panel__head">
+        <span>Queue</span>
+        <span className="queue-panel__count">{queueOrder.length}</span>
+      </div>
+      {queueOrder.length === 0 ? (
+        <div className="queue-panel__empty" data-testid="queue-empty">
+          Queue is empty — click + Queue on a charter card
+        </div>
+      ) : (
+        <ol className="queue-panel__list">
+          {queueOrder.map((n, idx) => {
+            const charter = charterMap.get(n)
+            return (
+              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n}>
+                <span className="queue-panel__pos">{idx + 1}.</span>
+                <span className="queue-panel__label">
+                  <span className="num">#{n}</span>
+                  {charter && <span className="queue-panel__title"> — {charter.title}</span>}
+                </span>
+                <div className="queue-panel__controls">
+                  <button className="btn ghost xs" onClick={() => move(idx, -1)} disabled={idx === 0} aria-label="Move up">↑</button>
+                  <button className="btn ghost xs" onClick={() => move(idx, 1)} disabled={idx === queueOrder.length - 1} aria-label="Move down">↓</button>
+                  <button className="btn ghost xs" onClick={() => remove(idx)} aria-label="Remove from queue" data-testid="queue-remove-btn">✕</button>
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+      <button
+        className="queue-btn--launch"
+        disabled={queueOrder.length === 0}
+        data-testid="queue-launch-btn"
+        onClick={onLaunch}
+      >
+        ▶ Launch Queue
+      </button>
+    </div>
   )
 }
 

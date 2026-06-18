@@ -30,6 +30,15 @@ curl -s -m5 -H "$H" -d '{"action":"unkill"}' "$B/api/command" >/dev/null; [ ! -f
 echo "=== command: unknown rejected ==="
 curl -s -m5 -H "$H" -d '{"action":"nope"}' "$B/api/command" | grep -q '"ok": false' && ok "unknown action rejected" || no "unknown action"
 
+echo "=== queue: POST /api/queue persists order (#280) ==="
+curl -s -m5 -H "$H" -d '{"order":[3,1,2]}' "$B/api/queue" | grep -q '"ok": true' && ok "POST /api/queue 200 ok" || no "POST /api/queue"
+[ "$(jq -r '.order|join(",")' "$RUN/queue.json" 2>/dev/null)" = "3,1,2" ] && ok "queue.json written [3,1,2]" || no "queue.json content"
+curl -s -m20 -H "$H" "$B/api/state" | jq -e '.queue.order == [3,1,2]' >/dev/null 2>&1 && ok "state.queue.order == [3,1,2]" || no "state.queue"
+echo "=== queue: bad input -> 400 ==="
+code=$(curl -s -m5 -o /dev/null -w '%{http_code}' -H "$H" -d '{"nope":1}' "$B/api/queue"); [ "$code" = 400 ] && ok "non-list order -> 400" || no "bad queue = $code"
+echo "=== queue: empty order clears (#280) ==="
+curl -s -m5 -H "$H" -d '{"order":[]}' "$B/api/queue" | grep -q '"ok": true' && [ "$(jq -r '.order|length' "$RUN/queue.json" 2>/dev/null)" = 0 ] && ok "empty order clears queue" || no "clear queue"
+
 echo "=== SSE events ==="
 ev=$(curl -s -N -m5 -H "$H" "$B/api/events" 2>/dev/null | head -c 400)
 echo "$ev" | grep -q 'event: state' && ok "SSE emits state event" || no "SSE (got: $(echo "$ev"|head -c80))"
