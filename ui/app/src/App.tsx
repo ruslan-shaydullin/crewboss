@@ -2,6 +2,27 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
+// ── Lifecycle stage badge helpers ──────────────────────────────────────────
+const STATE_LIFECYCLE: Record<string, { label: string; modifier: string }> = {
+  'open':        { label: 'concept',      modifier: 'concept' },
+  'needs-plan':  { label: 'analysis',     modifier: 'analysis' },
+  'plan-review': { label: 'plan-review',  modifier: 'plan-review' },
+  'approved':    { label: 'executing',    modifier: 'executing' },
+  'in-progress': { label: 'executing',    modifier: 'executing' },
+  'review':      { label: 'finale',       modifier: 'finale' },
+  'done':        { label: 'done',         modifier: 'done' },
+  'blocked':     { label: 'blocked',      modifier: 'blocked' },
+  'held':        { label: 'hold',         modifier: 'held' },
+}
+
+function stateToLabel(state: string): string {
+  return STATE_LIFECYCLE[state]?.label ?? state
+}
+
+function stateToModifier(state: string): string {
+  return STATE_LIFECYCLE[state]?.modifier ?? state
+}
+
 /** Check whether a text contains a valid ## Acceptance (machine) block.
  *  Requires: the header line + at least one "- test: …" or "- check: …" entry. */
 function hasValidAcceptanceBlock(text: string): boolean {
@@ -584,6 +605,14 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
               data-testid="blast-radius-badge"
             >
               ⊘ serializes
+            </span>
+          )}
+          {c && (
+            <span
+              className={`lifecycle-badge lifecycle-badge--${stateToModifier(c.state)}`}
+              data-testid="lifecycle-badge"
+            >
+              {stateToLabel(c.state)}
             </span>
           )}
         </div>
