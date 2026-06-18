@@ -186,6 +186,22 @@ export async function postQueue(order: number[]): Promise<void> {
   })
 }
 
+export type BossMessage = { role: 'user' | 'boss'; content: string }
+export type BossResult = { ok: boolean; message: string; session_id?: string; charter_number?: number }
+export async function bossChat(message: string, sessionId?: string): Promise<BossResult> {
+  try {
+    const r = await fetch(config.url + '/api/boss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+      body: JSON.stringify({ message, session_id: sessionId }),
+    })
+    if (!r.ok) return { ok: false, message: 'Boss backend error: ' + r.status }
+    return (await r.json()) as BossResult
+  } catch (e) {
+    return { ok: false, message: 'Boss unavailable: ' + String(e) }
+  }
+}
+
 export type CmdResult = { ok: boolean; msg: string }
 export async function command(action: string, number?: number, comment?: string): Promise<CmdResult> {
   try {

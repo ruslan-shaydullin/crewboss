@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
+import { bossChat, command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type BossMessage, type BossResult, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 // ── Lifecycle stage badge helpers ──────────────────────────────────────────
@@ -127,6 +127,11 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [settings, setSettings] = useState(false)
   const [newIssue, setNewIssue] = useState(false)
+  const [bossOpen, setBossOpen] = useState(false)
+  const [bossMessages, setBossMessages] = useState<BossMessage[]>([])
+  const [bossSessionId, setBossSessionId] = useState<string | undefined>(
+    () => localStorage.getItem(BOSS_SESSION_KEY) ?? undefined
+  )
   const [view, setView] = useState<'board' | 'team' | 'human'>('board')
   const [open, setOpen] = useState<number | null>(null)
   const [, setTick] = useState(0)
@@ -172,6 +177,25 @@ export default function App() {
     ask(`Решить задачу #${n}`, 'Опишите решение (опционально):', (text) => run('resolve-decision', n, text ?? ''), true)
   }, [ask, run])
 
+  const handleBossSend = useCallback(async (msg: string) => {
+    const userMsg: BossMessage = { role: 'user', content: msg }
+    setBossMessages((prev) => [...prev, userMsg])
+    const result: BossResult = await bossChat(msg, bossSessionId)
+    if (result.session_id) {
+      setBossSessionId(result.session_id)
+      localStorage.setItem(BOSS_SESSION_KEY, result.session_id)
+    }
+    const bossMsg: BossMessage = { role: 'boss', content: result.message }
+    setBossMessages((prev) => [...prev, bossMsg])
+    return result
+  }, [bossSessionId])
+
+  const handleBossClearSession = useCallback(() => {
+    setBossSessionId(undefined)
+    localStorage.removeItem(BOSS_SESSION_KEY)
+    setBossMessages([])
+  }, [])
+
   return (
     <div className="app">
       <Header state={state} conn={conn} view={view} setView={setView}
@@ -179,7 +203,8 @@ export default function App() {
         onPause={() => run(state?.flags.paused ? 'resume' : 'pause')}
         onKill={() => state?.flags.killed ? run('unkill') : ask('Kill-switch', 'Stops the launcher loop at the next tick. In-flight agents finish on their own.', () => run('kill'))}
         onSettings={() => setSettings(true)}
-        onNew={() => setNewIssue(true)} />
+        onNew={() => setNewIssue(true)}
+        onBoss={() => setBossOpen(true)} />
 
       {view === 'board' ? (
         <>
@@ -212,15 +237,25 @@ export default function App() {
         withInput={confirm.withInput} />}
       {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
       {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} onToast={toast} />}
+      {bossOpen && (
+        <BossPanel
+          sessionId={bossSessionId}
+          messages={bossMessages}
+          onSend={handleBossSend}
+          onClose={() => setBossOpen(false)}
+          onClearSession={handleBossClearSession}
+          repo={state?.autonomy.repo}
+        />
+      )}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} />}
     </div>
   )
 }
 
-function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew }: {
+function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew, onBoss }: {
   state: State | null; conn: boolean; view: 'board' | 'team' | 'human'; setView: (v: 'board' | 'team' | 'human') => void
-  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void
+  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void; onBoss: () => void
 }) {
   const paused = state?.flags.paused, killed = state?.flags.killed
   return (
@@ -237,6 +272,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
       </div>
       <div className="hdr-r">
         <button className="btn" onClick={onNew}>+ New</button>
+        <button className="btn boss-btn" data-testid="boss-btn" onClick={onBoss}>boss</button>
         <button className="btn pri" onClick={onRun}>▶ Run</button>
         <button className="btn" onClick={onPause}>{paused ? 'Resume' : 'Pause'}</button>
         <button className={'btn' + (killed ? '' : ' warn')} onClick={onKill}>{killed ? 'Un-kill' : 'Kill'}</button>
@@ -305,6 +341,9 @@ function LoopBadge({ loop }: { loop: LoopInfo }) {
     </div>
   )
 }
+
+// ── Boss-chat localStorage key ─────────────────────────────────────────────
+const BOSS_SESSION_KEY = 'cb_boss_session'
 
 // ── Collapse-state persistence ─────────────────────────────────────────────
 const COLLAPSE_LS_KEY = 'cb_collapse'
@@ -1557,6 +1596,94 @@ function NewIssueModal({ state, onClose, onToast }: {
         <div className="m-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('discuss') }}>{submitting ? 'Creating…' : 'Create'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BossPanel({ sessionId, messages, onSend, onClose, onClearSession, repo }: {
+  sessionId?: string
+  messages: BossMessage[]
+  onSend: (msg: string) => Promise<BossResult>
+  onClose: () => void
+  onClearSession: () => void
+  repo?: string
+}) {
+  const [input, setInput] = useState('')
+  const [waiting, setWaiting] = useState(false)
+  const [lastResult, setLastResult] = useState<BossResult | null>(null)
+  const msgsRef = useRef<HTMLDivElement>(null)
+  const bgRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (msgsRef.current) msgsRef.current.scrollTop = msgsRef.current.scrollHeight
+  }, [messages, waiting])
+
+  const handleSend = async () => {
+    const text = input.trim()
+    if (!text || waiting) return
+    setInput('')
+    setWaiting(true)
+    setLastResult(null)
+    const result = await onSend(text)
+    setLastResult(result)
+    setWaiting(false)
+  }
+
+  const close = () => animateOverlayOut(bgRef, panelRef, onClose)
+
+  return (
+    <div ref={bgRef} className="modal-bg boss-overlay" onClick={close}>
+      <div ref={panelRef} className="boss-panel" data-testid="boss-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="boss-panel__head">
+          <span className="boss-panel__title">◆ boss</span>
+          {sessionId && (
+            <button className="btn ghost boss-clear-btn" onClick={onClearSession} title="Clear session">clear session</button>
+          )}
+          <button className="btn ghost" onClick={close}>✕</button>
+        </div>
+        <div className="boss-messages" ref={msgsRef}>
+          {messages.length === 0 && !waiting && (
+            <div className="boss-messages__hint muted">Ask the boss to create a charter or help plan your work.</div>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} className={'boss-message boss-message--' + m.role} data-testid="boss-message" data-role={m.role}>
+              <span className="boss-message__role">{m.role === 'user' ? 'You' : 'Boss'}</span>
+              <span className="boss-message__content">{m.content}</span>
+            </div>
+          ))}
+          {waiting && <div className="boss-loading muted">Boss is thinking…</div>}
+          {lastResult && !lastResult.ok && (
+            <div className="boss-error" data-testid="boss-error">{lastResult.message}</div>
+          )}
+          {lastResult?.charter_number != null && (
+            <div className="boss-charter-created" data-testid="boss-charter-created">
+              Charter #{lastResult.charter_number} created
+              {repo && (
+                <> — <a href={`https://github.com/${repo}/issues/${lastResult.charter_number}`} target="_blank" rel="noreferrer" className="boss-charter-link">view on GitHub ↗</a></>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="boss-compose">
+          <textarea
+            className="boss-input"
+            data-testid="boss-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey && input.trim() && !waiting) handleSend() }}
+            placeholder="Ask boss… (Ctrl+Enter to send)"
+            rows={3}
+            disabled={waiting}
+          />
+          <button
+            className="btn pri boss-send"
+            data-testid="boss-send"
+            disabled={!input.trim() || waiting}
+            onClick={handleSend}
+          >{waiting ? 'Sending…' : 'Send'}</button>
         </div>
       </div>
     </div>
