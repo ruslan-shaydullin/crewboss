@@ -721,6 +721,127 @@ def save_role(body):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+_BOSS_CHARTER_RE = re.compile(r"github\.com/[^/]+/[^/]+/issues/(\d+)")
+
+def do_boss_chat(body):
+    """Handle POST /api/boss: synchronous boss spawn with session management."""
+    message    = str(body.get("message", "")).strip()
+    session_id = str(body.get("session_id", "")).strip()
+
+    if not message:
+        return {"ok": False, "message": "message required"}
+
+    # Generate session_id for first call (no session_id supplied)
+    if not session_id:
+        session_id = str(int(time.time() * 1000)) + os.urandom(2).hex()
+
+    sess_dir    = os.path.join(CB_HOME, "run", "boss-sessions", session_id)
+    hist_path   = os.path.join(sess_dir, "history.json")
+    boss_marker = os.path.join(RUN, "boss.session")
+
+    # Mark active session (read by build_agents ~line 84)
+    os.makedirs(RUN, exist_ok=True)
+    try:
+        open(boss_marker, "w").close()
+    except Exception:
+        pass
+
+    try:
+        os.makedirs(sess_dir, exist_ok=True)
+        history = read_json(hist_path, [])
+
+        # Read boss manifest
+        manifest_path = os.path.join(CB_HOME, "..", ".claude", "agents", "boss.md")
+        if not os.path.isfile(manifest_path):
+            manifest_path = os.environ.get("CB_BOSS_MANIFEST_PATH", "")
+        system_prompt = ""
+        if manifest_path and os.path.isfile(manifest_path):
+            try:
+                system_prompt = open(manifest_path, encoding="utf-8", errors="replace").read()
+            except Exception:
+                system_prompt = ""
+
+        # Build full prompt: system prompt + history + new user message
+        parts = []
+        if system_prompt:
+            parts.append(system_prompt)
+        for entry in history:
+            role    = entry.get("role", "user")
+            content = entry.get("content", "")
+            if role == "user":
+                parts.append(f"\nUser: {content}")
+            else:
+                parts.append(f"\nBoss: {content}")
+        parts.append(f"\nUser: {message}")
+        full_prompt = "".join(parts)
+
+        # Build env from run-env.sh (avoids spawn bug #280: empty env after deploy)
+        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        seed_env = {
+            "HOME": home,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+        }
+        try:
+            env_raw = subprocess.run(
+                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
+                capture_output=True, text=True, env=seed_env, timeout=15
+            ).stdout
+            boss_env = {}
+            for line in env_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k and k.isidentifier():
+                        boss_env[k] = v
+            if not boss_env:
+                boss_env = dict(seed_env)
+        except Exception:
+            boss_env = dict(seed_env)
+
+        # Spawn boss synchronously
+        r = subprocess.run(
+            ["claude", "--agent", "boss", "-p", full_prompt],
+            capture_output=True, text=True, timeout=120, env=boss_env
+        )
+        if r.returncode != 0:
+            return {"ok": False, "message": "boss error"}
+
+        # Parse JSON output; extract "result" field
+        try:
+            out = json.loads(r.stdout)
+        except Exception:
+            return {"ok": False, "message": "boss error"}
+
+        if out.get("is_error"):
+            return {"ok": False, "message": "boss error"}
+
+        boss_reply = str(out.get("result", "")).strip()
+
+        # Persist updated history
+        history.append({"role": "user", "content": message})
+        history.append({"role": "boss", "content": boss_reply})
+        try:
+            with open(hist_path, "w", encoding="utf-8") as f:
+                json.dump(history, f)
+        except Exception:
+            pass
+
+        # Build response; detect charter_number from GitHub issue URL in reply
+        response = {"ok": True, "message": boss_reply, "session_id": session_id}
+        m = _BOSS_CHARTER_RE.search(boss_reply)
+        if m:
+            response["charter_number"] = int(m.group(1))
+
+        return response
+
+    finally:
+        # Remove active-session marker in all cases
+        try:
+            os.remove(boss_marker)
+        except Exception:
+            pass
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _cors(self):
@@ -809,6 +930,7 @@ class H(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 return self._send(400, {"ok":False,"msg":"order values must be integers"})
             return self._send(200, save_queue(order))
+        if path == "/api/boss": return self._send(200, do_boss_chat(body))
         return self._send(404,{"ok":False,"msg":"not found"})
 
 if __name__=="__main__":
