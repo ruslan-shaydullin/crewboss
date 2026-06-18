@@ -91,12 +91,14 @@ def build_agents(by_n, loop_running=False):
     for n, item in by_n.items():
         if item.get("state") == "review":
             if not any(a.get("task") == n for a in agents):
-                agents.append(dict(task=n, role="integrator", phase="merging",
+                agents.append(dict(task=n, role="integrator",
+                                   phase="merging" if loop_running else "awaiting",
                                    title=item.get("title", ""), started="", pid=None))
     for n, item in by_n.items():
         if item.get("kind") == "charter" and item.get("state") == "needs-plan":
             if not any(a.get("task") == n for a in agents):
-                agents.append(dict(task=n, role="tech-lead", phase="planning",
+                agents.append(dict(task=n, role="tech-lead",
+                                   phase="planning" if loop_running else "awaiting",
                                    title=item.get("title", ""), started="", pid=None))
     # TODO: analyst synthetic agent — pending P2/F1 implementation
     return agents
@@ -810,5 +812,45 @@ class H(BaseHTTPRequestHandler):
         return self._send(404,{"ok":False,"msg":"not found"})
 
 if __name__=="__main__":
+    if "--selftest-synthetic-gate" in sys.argv:
+        # Verify that synthetic chips respect loop_running
+        _by_n = {
+            10: {"state": "review",     "kind": "leaf",    "title": "Leaf in review"},
+            20: {"state": "needs-plan", "kind": "charter", "title": "Charter needing plan"},
+        }
+        failures = []
+
+        # --- loop_running=False: both chips must be phase="awaiting" ---
+        agents_idle = build_agents(_by_n, loop_running=False)
+        for a in agents_idle:
+            if a.get("role") == "integrator" and a.get("pid") is None:
+                if a.get("phase") != "awaiting":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
+            if a.get("role") == "tech-lead" and a.get("pid") is None:
+                if a.get("phase") != "awaiting":
+                    failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
+        # Confirm chips ARE present (not suppressed)
+        if not any(a.get("role") == "integrator" and a.get("pid") is None for a in agents_idle):
+            failures.append("FAIL integrator synthetic chip missing when loop_running=False")
+        if not any(a.get("role") == "tech-lead" and a.get("pid") is None for a in agents_idle):
+            failures.append("FAIL tech-lead synthetic chip missing when loop_running=False")
+
+        # --- loop_running=True: integrator=merging, tech-lead=planning ---
+        agents_live = build_agents(_by_n, loop_running=True)
+        for a in agents_live:
+            if a.get("role") == "integrator" and a.get("pid") is None:
+                if a.get("phase") != "merging":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=True (expected 'merging')")
+            if a.get("role") == "tech-lead" and a.get("pid") is None:
+                if a.get("phase") != "planning":
+                    failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=True (expected 'planning')")
+
+        if failures:
+            for f in failures:
+                print(f)
+            sys.exit(1)
+        print("PASS synthetic-gate: idle→awaiting, live→merging/planning")
+        sys.exit(0)
+
     print(f"crewboss-api on :{PORT}  repo={REPO}  auth={'on' if TOKEN else 'OFF'}", flush=True)
     ThreadingHTTPServer(("127.0.0.1",PORT), H).serve_forever()

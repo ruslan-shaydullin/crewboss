@@ -21,6 +21,12 @@ st=$(curl -s -m20 -H "$H" "$B/api/state")
 echo "$st" | jq -e '.board and .budget and .flags' >/dev/null 2>&1 && ok "state has board/budget/flags" || no "state shape"
 echo "   board rows: $(echo "$st" | jq '.board|length' 2>/dev/null)  spent: \$$(echo "$st" | jq -r '.budget.spent' 2>/dev/null)"
 
+echo "=== synthetic agents honest when loop stopped ==="
+st2=$(curl -s -m20 -H "$H" "$B/api/state")
+# Extract synthetic agents (pid=null, role tech-lead or integrator)
+bad=$(echo "$st2" | jq '[.agents // [] | .[] | select(.pid == null) | select(.role == "tech-lead" or .role == "integrator") | select(.phase != null and .phase != "awaiting")] | length')
+[ "$bad" = "0" ] && ok "synthetic agents not active-phase when loop stopped" || no "synthetic agents lied: $bad chips with active phase"
+
 echo "=== command: pause -> resume (flag toggles) ==="
 curl -s -m5 -H "$H" -d '{"action":"pause"}' "$B/api/command" | grep -q '"ok": true' && [ -f "$RUN/pause" ] && ok "pause set flag" || no "pause"
 curl -s -m5 -H "$H" -d '{"action":"resume"}' "$B/api/command" >/dev/null; [ ! -f "$RUN/pause" ] && ok "resume cleared flag" || no "resume"
