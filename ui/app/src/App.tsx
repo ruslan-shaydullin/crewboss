@@ -248,7 +248,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
 
 function Hero({ state }: { state: State | null }) {
   const board = state?.board ?? []
-  const running = state?.agents?.length ?? 0
+  const running = state?.agents?.filter(a => a.phase !== 'awaiting').length ?? 0
   const review = board.filter((x) => x.kind === 'leaf' && x.state === 'review').length
   const done = board.filter((x) => x.kind === 'leaf' && x.state === 'done').length
   const blocked = board.filter((x) => x.kind === 'leaf' && x.state === 'blocked').length
@@ -888,7 +888,7 @@ function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
   const flipKey = String(a.task ?? 'boss') + ':' + a.role
   return (
     <div
-      className={'agent role-' + a.role}
+      className={'agent role-' + a.role + (a.phase === 'awaiting' ? ' agent--awaiting' : '')}
       data-flip-key={flipKey}
       onClick={() => a.task != null && onOpen(a.task)}
       style={a.task != null ? { cursor: 'pointer' } : undefined}

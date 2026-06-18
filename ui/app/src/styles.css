@@ -157,6 +157,11 @@ body {
 .agent-phase { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:11px; margin-top:4px; text-transform:uppercase; letter-spacing:.06em }
 .phase-dot { width:6px; height:6px; border-radius:50%; background:var(--done); animation:pulse 1.4s ease-in-out infinite }
 
+/* awaiting (queued) agent chip — muted, no animations */
+.agent--awaiting { opacity: 0.45 }
+.agent--awaiting .agent-wave { animation: none }
+.agent--awaiting .phase-dot { animation: none; background: var(--mut) }
+
 @keyframes pulse { 0%,100%{ box-shadow:0 0 0 0 rgba(70,206,142,.5); opacity:1 } 50%{ box-shadow:0 0 0 6px rgba(70,206,142,0); opacity:.5 } }
 @keyframes wave { 0%{ opacity:.5; transform:scale(1) } 100%{ opacity:0; transform:scale(1.35) } }
 @keyframes rise { from{ opacity:0; transform:translateY(8px) } to{ opacity:1; transform:none } }
