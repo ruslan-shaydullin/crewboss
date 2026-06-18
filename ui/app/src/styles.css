@@ -491,6 +491,40 @@ body {
 .chevron-btn.expanded .chevron { transform:rotate(90deg) }
 .chevron-btn.collapsed .chevron { transform:rotate(0deg) }
 
+/* ── charter layer sections — #289 ─────────────────────────────────────── */
+.charter-section { margin-bottom: 4px }
+
+.charter-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+  cursor: default;
+  user-select: none;
+}
+
+.charter-section-label {
+  font-size: 11px;
+  font-weight: 660;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--mut2);
+}
+
+.charter-section-count {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 1px 8px;
+  color: var(--mut2);
+  min-width: 22px;
+  text-align: center;
+}
+
 /* ── prefers-reduced-motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

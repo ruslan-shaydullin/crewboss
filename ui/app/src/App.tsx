@@ -315,6 +315,12 @@ function writeCollapseMap(m: Record<string, boolean>) {
   try { localStorage.setItem(COLLAPSE_LS_KEY, JSON.stringify(m)) } catch {}
 }
 
+const CHARTER_SECTIONS = [
+  { key: 'sec-inprogress', label: 'В работе',  states: new Set(['approved','in-progress','plan-review','review']),  defaultExpanded: true  },
+  { key: 'sec-new',        label: 'Новые',      states: new Set(['open','needs-plan','needs-analysis','team-review','blocked','held']), defaultExpanded: true  },
+  { key: 'sec-done',       label: 'Выполнено',  states: new Set(['done','CLOSED']),                                       defaultExpanded: false },
+] as const
+
 function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
@@ -336,6 +342,18 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
     })
   }
 
+  const getSectionExpanded = (key: string, def: boolean) =>
+    key in collapseMap ? collapseMap[key] : def
+
+  const doSectionToggle = (key: string, def: boolean) => {
+    setCollapseMap((prev) => {
+      const cur = key in prev ? prev[key] : def
+      const next = { ...prev, [key]: !cur }
+      writeCollapseMap(next)
+      return next
+    })
+  }
+
   if (!state) return (
     <section className="board">
       <SkeletonBoard />
@@ -345,7 +363,6 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
   const milestones = state.board.filter((x) => x.kind === 'milestone')
   const charters = state.board.filter((x) => x.kind === 'charter')
   const leaves = state.board.filter((x) => x.kind === 'leaf')
-  const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
   const orphans = leaves.filter((l) => !l.charter || !charters.some((c) => c.n === l.charter))
   const milestonedCharterNs = new Set(
     milestones.flatMap((m) => charters.filter((c) => c.milestone === m.n).map((c) => c.n))
@@ -374,18 +391,18 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
           />
         )
       })}
-      {unmilestoned.map((c) => (
-        <CharterCard
-          key={c.n}
-          c={c}
-          leaves={childrenOf(c.n)}
-          onAction={onAction}
-          ask={ask}
-          onOpen={onOpen}
-          expanded={getExpanded(c.n, true)}
-          onToggle={() => doToggle(c.n, true)}
-          queueOrder={queueOrder}
-          onQueueChange={onQueueChange}
+      {CHARTER_SECTIONS.map((sec) => (
+        <CharterSection
+          key={sec.key}
+          sectionKey={sec.key}
+          label={sec.label}
+          charters={unmilestoned.filter((c) => sec.states.has(c.state))}
+          leaves={leaves}
+          expanded={getSectionExpanded(sec.key, sec.defaultExpanded)}
+          onToggle={() => doSectionToggle(sec.key, sec.defaultExpanded)}
+          onAction={onAction} ask={ask} onOpen={onOpen}
+          getExpanded={getExpanded} doToggle={doToggle}
+          queueOrder={queueOrder} onQueueChange={onQueueChange}
         />
       ))}
       {orphans.length > 0 && (
@@ -402,6 +419,42 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
         />
       )}
     </section>
+  )
+}
+
+function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange }: {
+  sectionKey: string; label: string; charters: Task[]; leaves: Task[]
+  expanded: boolean; onToggle: () => void
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
+  onOpen: (n: number) => void
+  getExpanded: (n: number, def: boolean) => boolean
+  doToggle: (n: number, def: boolean) => void
+  queueOrder: number[]; onQueueChange: (order: number[]) => void
+}) {
+  if (charters.length === 0) return null
+  const bodyId = `charter-section-body-${sectionKey}`
+  const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
+  return (
+    <div className="charter-section" data-testid="charter-section" data-section-key={sectionKey}>
+      <div className="charter-section-head">
+        <button
+          className={'chevron-btn' + (expanded ? ' expanded' : ' collapsed')}
+          aria-expanded={expanded} aria-controls={bodyId} onClick={onToggle}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+        ><span className="chevron">▶</span></button>
+        <span className="charter-section-label">{label}</span>
+        <span className="charter-section-count">{charters.length}</span>
+      </div>
+      <div id={bodyId} style={expanded ? undefined : { display: 'none' }}>
+        {charters.map((c) => (
+          <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)}
+            onAction={onAction} ask={ask} onOpen={onOpen}
+            expanded={getExpanded(c.n, true)} onToggle={() => doToggle(c.n, true)}
+            queueOrder={queueOrder} onQueueChange={onQueueChange} />
+        ))}
+      </div>
+    </div>
   )
 }
 
