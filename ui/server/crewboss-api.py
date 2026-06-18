@@ -31,6 +31,23 @@ def read_json(path, default):
     try: return json.load(open(path))
     except Exception: return default
 
+def save_queue(order):
+    """Atomically persist the operator queue (ordered charter numbers) to run/queue.json.
+    Mirrors the tempfile+rename pattern used for other run-state writes; the launcher reads
+    it via jq '.order[]' (#281). Empty order = cleared queue -> launcher default behaviour."""
+    os.makedirs(RUN, exist_ok=True)
+    path = os.path.join(RUN, "queue.json")
+    fd, tmp = tempfile.mkstemp(dir=RUN, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"order": order}, f)
+        os.replace(tmp, path)
+    except Exception:
+        try: os.remove(tmp)
+        except Exception: pass
+        raise
+    return {"ok": True}
+
 import re
 _CHARTER_RE   = re.compile(r"(?im)^[\s*_>#-]*Charter\s*:\s*#?(\d+)")
 _MILESTONE_RE = re.compile(r"(?im)^[\s*_>#-]*Milestone\s*:\s*#?(\d+)")
@@ -219,10 +236,15 @@ def build_state():
                  killed=os.path.exists(os.path.join(RUN,"kill_switch")))
     loop = build_loop_info(board=board)
     agents = build_agents(by_n, loop_running=loop.get("running", False))
+    # operator queue (#280): the ordered charter list the launcher consumes (#281). None when
+    # absent or malformed, so the UI renders an empty cockpit rather than crashing.
+    queue = read_json(os.path.join(RUN, "queue.json"), None)
+    if not (isinstance(queue, dict) and isinstance(queue.get("order"), list)):
+        queue = None
     return dict(board=board, agents=agents,
                 budget=dict(spent=budget.get("spent_usd",0), cap=cap, runs=budget.get("runs",[])),
                 flags=flags, autonomy=dict(repo=REPO),
-                loop=loop)
+                loop=loop, queue=queue)
 
 def build_comments(n):
     """Comments for issue n: last 50, via gh CLI."""
@@ -777,6 +799,14 @@ class H(BaseHTTPRequestHandler):
         if path=="/api/team":    return self._send(200, save_team(body))
         if path=="/api/issue":   return self._send(200, do_issue(body))
         if path=="/api/role":    return self._send(200, save_role(body))
+        if path=="/api/queue":
+            order = body.get("order")
+            if not isinstance(order, list):
+                return self._send(400, {"ok":False,"msg":"order must be a list"})
+            try: order = [int(x) for x in order]
+            except (ValueError, TypeError):
+                return self._send(400, {"ok":False,"msg":"order values must be integers"})
+            return self._send(200, save_queue(order))
         return self._send(404,{"ok":False,"msg":"not found"})
 
 if __name__=="__main__":
