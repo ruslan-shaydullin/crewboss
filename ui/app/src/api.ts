@@ -35,6 +35,7 @@ export type State = {
   flags: { paused: boolean; killed: boolean }
   autonomy: { repo: string }
   loop?: LoopInfo
+  queue?: { order: number[] } | null
 }
 
 const KURL = 'cb_api'
@@ -175,6 +176,14 @@ export async function setCheck(n: number, index: number, checked: boolean): Prom
   } catch (e) {
     return { ok: false, msg: 'request failed: ' + e }
   }
+}
+
+export async function postQueue(order: number[]): Promise<void> {
+  await fetch(config.url + '/api/queue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
+    body: JSON.stringify({ order }),
+  })
 }
 
 export type CmdResult = { ok: boolean; msg: string }
