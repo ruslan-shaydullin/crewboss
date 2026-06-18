@@ -2,6 +2,14 @@
 # Validate the gh-mode launcher loop end-to-end against the REAL board with a STUB spawn
 # (no jail, no spend): claim->review, retry->blocked, reconcile, budget-stop.
 set -u
+# ── self-install: copy scripts from our own directory to /tmp/cbnet ────────────
+_HERE="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p /tmp/cbnet
+for _f in crewboss-launcher-gh.sh board-gh.sh stub-spawn.sh launchable.sh; do
+  [ -f "$_HERE/$_f" ] && cp "$_HERE/$_f" "/tmp/cbnet/$_f" && chmod +x "/tmp/cbnet/$_f"
+done
+unset _HERE _f
+# ────────────────────────────────────────────────────────────────────────────────
 export CB_REPO=stratch1989/crewboss-proto CB_HOME=/tmp/cbnet
 export CB_SPAWN=/tmp/cbnet/stub-spawn.sh CB_RETRY_CAP=2 CB_MAX_PARALLEL=5 CB_LAUNCHER_ID=cbtest
 L=/tmp/cbnet/crewboss-launcher-gh.sh; BG=/tmp/cbnet/board-gh.sh

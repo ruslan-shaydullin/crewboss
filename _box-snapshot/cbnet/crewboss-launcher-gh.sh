@@ -61,6 +61,54 @@ claim_and_spawn(){ # id
   route "$id" "$ex"
 }
 
+# --- finale-merge-gate -------------------------------------------------------
+# For each open charter/N -> main PR with green CI: promote to ready-for-review,
+# post a comment, and idempotently create a type:human-decision board task so the
+# cockpit operator has something actionable (F12 fix).
+# Pattern mirrors the approval-gate block (type:human-decision + idempotency guard).
+finale_merge_gate(){
+  local pr_num pr_url charter_n existing inum ibody
+  while IFS=$'\t' read -r pr_num pr_url charter_n; do
+    [ -z "$pr_num" ] && continue
+    # ── promote to ready-for-review + comment ──────────────────────────────
+    gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+    gh pr comment "$pr_num" -R "$CB_REPO" \
+      --body "CI is green. Finale PR is ready for merge." 2>/dev/null || true
+    log "finale-merge-gate: charter #$charter_n PR $pr_url promoted to ready"
+    # ── idempotency guard: skip if merge-gate human-decision issue exists ──
+    existing=""
+    while IFS= read -r inum; do
+      [ -z "$inum" ] && continue
+      ibody=$(gh issue view "$inum" -R "$CB_REPO" --json body -q '.body' 2>/dev/null || true)
+      printf '%s\n' "$ibody" | grep -q "^merge-gate: true" && { existing="$inum"; break; }
+    done < <(gh issue list -R "$CB_REPO" --state open --label "type:human-decision" \
+        --search "Merge charter/$charter_n" --json number -q '.[].number' 2>/dev/null)
+    if [ -n "$existing" ]; then
+      log "finale-merge-gate: charter #$charter_n human-decision #$existing exists — skip"
+      continue
+    fi
+    # ── create type:human-decision issue ─────────────────────────────────────
+    gh issue create -R "$CB_REPO" \
+      --title "Merge charter/$charter_n into main (PR: $pr_url)" \
+      --label "type:human-decision" \
+      --body "Charter: #$charter_n
+PR-url: $pr_url
+merge-gate: true
+
+Finale PR is ready and CI is green. Use the Merge button in the cockpit to land this charter." 2>/dev/null || true
+    log "finale-merge-gate: created human-decision issue for charter #$charter_n"
+  done < <(gh pr list -R "$CB_REPO" --state open --base main \
+    --json number,url,headRefName,statusCheckRollup \
+    --jq '.[] | select(.headRefName | startswith("charter/")) |
+          select(.statusCheckRollup | length > 0) |
+          select(.statusCheckRollup | all(
+            .status == "COMPLETED" and
+            (.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED")
+          )) |
+          [.number | tostring, .url, (.headRefName | ltrimstr("charter/"))] | @tsv' \
+    2>/dev/null)
+}
+
 cmd_once(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
     reconcile
@@ -90,6 +138,7 @@ cmd_once(){
       launched=$((launched+1))
       [ "$rc" = "9" ] && break
     done
+    finale_merge_gate
     log "cycle done: launched=$launched"
   ) 9>"$LOCK"
 }
@@ -197,6 +246,7 @@ cmd_run(){
         idle_ticks=$((idle_ticks+1))
         [ "$idle_ticks" -ge "${CB_IDLE_CONFIRM:-2}" ] && { log "idle — run complete"; break; }
       else idle_ticks=0; fi
+      finale_merge_gate
       ticks=$((ticks+1)); [ "$ticks" -ge "$maxticks" ] && { log "max ticks ($maxticks) — stop"; break; }
       sleep "$poll"
     done

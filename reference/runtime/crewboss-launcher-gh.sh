@@ -484,6 +484,31 @@ _finale_check_ci(){
           2>/dev/null || true
         printf '%s' "green" > "$_fin_dir/last_comment"
       fi
+      # ── idempotent type:human-decision board task for the cockpit (F12 #318) ─
+      # Pattern mirrors approval-gate (type:human-decision + idempotency guard).
+      local _hd_pr_url _hd_all _hd_existing
+      _hd_pr_url=$(gh pr view "$pr_num" -R "$CB_REPO" --json url -q '.url' 2>/dev/null || echo "")
+      _hd_all=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+        --json number,labels,body 2>/dev/null || echo "[]")
+      _hd_existing=$(printf '%s' "$_hd_all" | jq -r --argjson c "$cid" '
+        [.[] | select([.labels[].name] | index("type:human-decision") != null)
+              | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))
+              | select((.body//"") | test("merge-gate: true"))]
+        | length' 2>/dev/null || echo "0")
+      if [ "${_hd_existing:-0}" = "0" ]; then
+        gh issue create -R "$CB_REPO" \
+          --title "Merge charter/$cid into main (PR: $_hd_pr_url)" \
+          --label "type:human-decision" \
+          --body "Charter: #$cid
+PR-url: $_hd_pr_url
+merge-gate: true
+
+Finale PR is ready and CI is green. Use the Merge button in the cockpit to land this charter." \
+          2>/dev/null || true
+        log "charter-finale: #$cid human-decision issue created (merge-gate)"
+      else
+        log "charter-finale: #$cid merge-gate human-decision already open (idempotent) — skip"
+      fi
       return 0 ;;
     red)
       log "charter-finale: #$cid PR #$pr_num CI failed — stays draft"
