@@ -28,6 +28,8 @@ PLAN_SPAWN="${CB_PLAN_SPAWN:-$SPAWN}"
 ANALYSIS_SPAWN="${CB_ANALYSIS_SPAWN:-$PLAN_SPAWN}"
 # CB_APPROVAL_SPAWN: spawn script for the approval role (default: same as PLAN_SPAWN).
 APPROVAL_SPAWN="${CB_APPROVAL_SPAWN:-$PLAN_SPAWN}"
+# CB_REVIEW_SPAWN: spawn script for the substance-review role (#334 convergence). Default = PLAN_SPAWN.
+REVIEW_SPAWN="${CB_REVIEW_SPAWN:-$PLAN_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
@@ -855,6 +857,26 @@ cmd_run(){
           fi
           continue
         fi
+        # review task (#334 convergence): success = review:agreed set OR charter sent to needs-analysis.
+        if [ "$(sget "$id" kind)" = "review" ]; then
+          cst=$(board get "$id" state)
+          _agr=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("review:agreed") != null' 2>/dev/null || echo "false")
+          if [ "$_agr" = "true" ] || [ "$cst" = "needs-analysis" ]; then
+            sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            log "#$id review done -> $([ "$_agr" = "true" ] && echo agreed || echo changes-requested)"
+          else
+            prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+            if [ "$tries" -ge "$RETRY_CAP" ]; then
+              board route "$id" blocked "review failed $tries× (retry-cap $RETRY_CAP)" >/dev/null
+              sset "$id" pid ""; sset "$id" term 1
+              log "#$id review failed ($tries) -> blocked"
+            else
+              sset "$id" pid ""
+              log "#$id review failed ($tries) -> retry"
+            fi
+          fi
+          continue
+        fi
         # approval task: route by charter state; success = left team-review, fail = retry/blocked.
         # F-1 contract: successful approve (→needs-plan) or reject (→needs-analysis) both count as
         # success; CLEAR pid, term AND tries so the next stage can claim the charter without guards.
@@ -1039,12 +1061,64 @@ cmd_run(){
                   | bash "$HERE_LAUNCHER/composition-parse.sh" "$CB_MANIFEST" 2>/dev/null) || _comp_tsv=""
               fi
               if [ -z "$_comp_tsv" ]; then
-                log "#$cid approval-gate: invalid/missing composition → auto-reject to needs-analysis"
+                # CONVERGENCE CAP on the FORMAT-reject path too (#334): without this it loops forever
+                # before the substance reviewer ever runs (the runaway we hit). Counts toward cround.
+                _cround=$(sget "$cid" cround); _cround=${_cround:-0}; _ccap="${CB_CONVERGE_CAP:-4}"
+                if [ "$_cround" -ge "$_ccap" ]; then
+                  _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+                  _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
+                  if [ "${_ex_hd:-0}" = "0" ]; then
+                    gh issue create -R "$CB_REPO" \
+                      --title "Human decision: charter #$cid composition not converging" \
+                      --body "## Composition not converging
+Charter #$cid composition stayed format-invalid through CONVERGE_CAP=$_ccap rounds (analyst keeps producing an unparseable/invalid-role composition). Human call: fix the manifest/charter, give direction, or close.
+
+Charter: #$cid" \
+                      --label "type:human-decision" 2>/dev/null || true
+                  fi
+                  log "#$cid composition cap $_ccap reached (format-invalid) → human-decision"
+                  continue
+                fi
+                sset "$cid" cround "$((_cround+1))"
+                log "#$cid approval-gate: invalid/missing composition (round $((_cround+1))/$_ccap) → re-analysis"
                 board route "$cid" analysis >/dev/null || true
                 gh issue comment "$cid" -R "$CB_REPO" \
-                  --body "approval-gate: composition block missing or invalid — routed back to needs-analysis for re-decomposition" \
+                  --body "approval-gate: composition block missing or invalid — routed back to needs-analysis (round $((_cround+1))/$_ccap)" \
                   2>/dev/null || true
                 continue
+              fi
+              # ── REVIEWER substance-convergence gate (#334) ──
+              # Composition is format-valid; require code-grounded SUBSTANCE review before cost/cto.
+              # analyst ↔ reviewer rounds until review:agreed; CONVERGE_CAP → escalate to human.
+              _review_role=$(manifest_policy "$CB_MANIFEST" review_role 2>/dev/null || true)
+              if [ -n "$_review_role" ]; then
+                _rv_lbls=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+                _rv_agreed=$(printf '%s' "$_rv_lbls" | jq -r 'index("review:agreed") != null' 2>/dev/null || echo "false")
+                if [ "$_rv_agreed" != "true" ]; then
+                  _cround=$(sget "$cid" cround); _cround=${_cround:-0}
+                  _ccap="${CB_CONVERGE_CAP:-4}"
+                  if [ "$_cround" -ge "$_ccap" ]; then
+                    _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+                    _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
+                    if [ "${_ex_hd:-0}" = "0" ]; then
+                      gh issue create -R "$CB_REPO" \
+                        --title "Human decision: charter #$cid analysis did not converge" \
+                        --body "## Convergence not reached
+Charter #$cid did not reach review agreement within CONVERGE_CAP=$_ccap rounds. Human call: approve the latest composition, give direction, or close.
+
+Charter: #$cid" \
+                        --label "type:human-decision" 2>/dev/null || true
+                      log "#$cid convergence: cap $_ccap reached → human-decision"
+                    fi
+                    continue
+                  fi
+                  [ "$running" -ge "$MAXP" ] && break
+                  sset "$cid" kind review; sset "$cid" cround "$((_cround+1))"; sset "$cid" starttime "$(now)"
+                  ( "$REVIEW_SPAWN" "$cid" "$_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+                  running=$((running+1))
+                  log "bg-spawn review ($_review_role) round $((_cround+1)) for charter #$cid (running=$running/$MAXP)"
+                  continue
+                fi
               fi
               # b. HD-2 cost estimate: (spent_usd / len(runs)) × leaf_count
               _leaf_count=$(printf '%s\n' "$_comp_tsv" | awk -F'\t' '$1=="leaf"' | wc -l | tr -d '[:space:]')

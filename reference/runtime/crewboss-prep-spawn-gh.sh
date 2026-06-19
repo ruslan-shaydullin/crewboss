@@ -22,6 +22,7 @@ export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH
 # In manifest mode, if the role is an analysis role, build the analyst prompt.
 _IS_ANALYSIS_ROLE=0
 _IS_APPROVAL_ROLE=0
+_IS_REVIEW_ROLE=0
 _IS_MANIFEST_ROLE=0
 _MANIFEST_LOADED=0
 if [ -n "${CB_MANIFEST:-}" ]; then
@@ -44,6 +45,8 @@ if [ -n "${CB_MANIFEST:-}" ]; then
     done
     _APPROVAL_ROLE_ID=$(manifest_policy "$CB_MANIFEST" approval_role 2>/dev/null || true)
     [ -n "$_APPROVAL_ROLE_ID" ] && [ "$_APPROVAL_ROLE_ID" = "$ROLE" ] && _IS_APPROVAL_ROLE=1
+    _REVIEW_ROLE_ID=$(manifest_policy "$CB_MANIFEST" review_role 2>/dev/null || true)
+    [ -n "$_REVIEW_ROLE_ID" ] && [ "$_REVIEW_ROLE_ID" = "$ROLE" ] && _IS_REVIEW_ROLE=1
     _MANIFEST_ROLES=$(manifest_roles "$CB_MANIFEST" 2>/dev/null || true)
     if [ -n "$_MANIFEST_ROLES" ]; then
       _MANIFEST_LOADED=1
@@ -76,6 +79,7 @@ if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
   BRANCH="task/$ID-$TS"
   _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
   _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  _MROLES=$(manifest_roles "$CB_MANIFEST" 2>/dev/null | tr '\n' ' ' || true)
   PROMPT="You are the $ROLE for charter #$ID in repo $(bash "$BOARD" get "$ID" pr_repo).
 
 $_ROLE_PROMPT
@@ -98,8 +102,13 @@ The composition block MUST use EXACTLY this format:
 
 (Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
 
+## Available roles — use ONLY these EXACT role-ids; NEVER invent a role (no 'go-backend-dev', 'python-dev', etc.)
+$_MROLES
+Assign worker leaves to an implementation role (e.g. 'executor'). Do NOT assign leaves to manager/analyst roles. If a needed capability has no role here, say so in 'approach' rather than inventing a role-id.
+
 ## Instructions
-1. Study the charter issue: gh issue view $ID -R $(bash "$BOARD" get "$ID" pr_repo)
+1. Study the charter issue AND any prior review feedback: gh issue view $ID -R $(bash "$BOARD" get "$ID" pr_repo) --comments
+   If a prior 'REVIEW: changes-requested' comment exists, your NEW composition MUST address every 'фикс:' point in it — do NOT repeat the rejected composition unchanged.
 2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
 3. Post the composition block as a comment: gh issue comment $ID -R $(bash "$BOARD" get "$ID" pr_repo) --body '<composition block>'
 4. Move the charter to team-review: gh issue edit $ID -R $(bash "$BOARD" get "$ID" pr_repo) --remove-label status:needs-analysis --add-label status:team-review"
@@ -134,7 +143,49 @@ $_COMP_BODY
 **To reject** (composition needs revision — return to analysis):
    gh issue comment $ID -R $PR_REPO --body 'Approval rejected: <your explanation>'
    gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
-elif [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$ROLE" != "tech-lead" ]; then
+elif [ "$_IS_REVIEW_ROLE" = "1" ]; then
+  # Review-role spawn (#334 convergence loop): SUBSTANCE review of the composition, code-grounded.
+  # AGREE -> set review:agreed (cost/cto gate proceeds next tick). CRITIQUE -> actionable feedback
+  # comment + route back to needs-analysis so the analyst revises (the analyst reads the critique).
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+    | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+    2>/dev/null || true)
+  PROMPT="You are the $ROLE for charter #$ID in repo $PR_REPO.
+
+$_ROLE_PROMPT
+
+## Rubric (objective floor)
+\`\`\`json
+$_RUBRIC
+\`\`\`
+
+## The composition under review
+$_COMP_BODY
+
+## Judge the composition BY SUBSTANCE against four grounded anchors
+1. Rubric — did the analyst respect the objective triggers above?
+2. Real code — READ the repo (you have Read/Bash); is the approach feasible and does it fit reality? what gotchas were missed?
+3. Acceptance — what would PROVE this is done/correct? is a verification plan implied?
+4. Intent — does the plan still serve what charter #$ID actually asks?
+
+## Instructions
+1. Study the charter + read the relevant code: gh issue view $ID -R $PR_REPO
+2. Output ONE verdict (default to rigor — do NOT agree on a plausible-but-ungrounded plan):
+
+**AGREE** (genuinely sound on all four anchors):
+   gh issue comment $ID -R $PR_REPO --body 'REVIEW: agreed — <one-line why>'
+   gh issue edit $ID -R $PR_REPO --add-label review:agreed
+
+**CRITIQUE** (otherwise — feedback the analyst can act on, then send back):
+   gh issue comment $ID -R $PR_REPO --body 'REVIEW: changes-requested
+- что: <concrete flaw> | почему: <which anchor + how> | фикс: <what to change>
+(one line per issue)'
+   gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
+elif [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$_IS_REVIEW_ROLE" = "0" ] && [ "$ROLE" != "tech-lead" ]; then
   # Loop-agent branch: roles defined in reference/.claude/agents/ (git-resolver, observer, etc.)
   # These are spawned directly by the launcher loop (not by manifest pipeline or tech-lead path).
   # Prompt: describe the specific instance task; agent persona comes from --agent $ROLE.
