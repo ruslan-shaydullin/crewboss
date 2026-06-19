@@ -22,14 +22,17 @@ CFG="$RUN/config.json"; [ -f "$CFG" ] || echo '{"monthly_credit_usd":100,"cost_p
 BUDGET="$RUN/budget.json"; [ -f "$BUDGET" ] || echo '{"spent_usd":0,"runs":[]}' > "$BUDGET"
 
 TASK="$1"; ROLE="$2"; PROMPTSRC="$3"; WORK="$4"; PR_REPO="${5:-}"
-# provision: /work mount mode from role capability (#356 AgentConfigMap P1).
-#   CB_FS_WORK=ro → read-only bind (-R): the agent physically cannot write the repo,
-#   even via Bash (EROFS at the kernel). Absent/rw → read-write bind (-B) = today's
-#   behaviour (back-compat default; non-migrated roles unchanged).
-WORK_MOUNT="-B"; [ "${CB_FS_WORK:-rw}" = "ro" ] && WORK_MOUNT="-R"
+# provision: bind-mount modes from role capabilities (#356 AgentConfigMap P1 + #356 follow-up).
+#   fs.work  → /work  (repo checkout); fs.cbnet → /cbnet (runtime: scripts, manifest, state).
+#   ro → read-only bind (-R): the agent physically cannot write it, even via Bash (EROFS).
+# FAIL-SAFE: empty/absent OR explicit "rw" → -B (read-write = today's behaviour, back-compat
+#   for non-migrated roles); "ro" OR any other (typo'd) value → -R. A malformed capability
+#   locks down, never silently opens (default-deny).
+WORK_MOUNT="-R";  case "${CB_FS_WORK:-}"  in ""|rw) WORK_MOUNT="-B"  ;; esac
+CBNET_MOUNT="-R"; case "${CB_FS_CBNET:-}" in ""|rw) CBNET_MOUNT="-B" ;; esac
 # dry-run hook: print the provisioning decision and exit before any jail/proxy/budget
 # machinery, so the mount logic is unit-testable without nsjail (macOS/CI).
-[ -n "${CB_SPAWN_DRYRUN:-}" ] && { echo "WORK_MOUNT=$WORK_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-rw}"; exit 0; }
+[ -n "${CB_SPAWN_DRYRUN:-}" ] && { echo "WORK_MOUNT=$WORK_MOUNT CBNET_MOUNT=$CBNET_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-} fs_cbnet=${CB_FS_CBNET:-}"; exit 0; }
 TDIR="$RUN/work/$TASK"; mkdir -p "$TDIR"
 LOG="$TDIR/run.log"; ST="$TDIR/status.json"
 : > "$LOG"; chmod 600 "$LOG"
@@ -85,7 +88,7 @@ set +e
 /usr/local/bin/nsjail -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
   --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
   --seccomp_policy "$PROFILE" --seccomp_log \
-  $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev -B "$CB_HOME:/cbnet" \
+  $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev $CBNET_MOUNT "$CB_HOME:/cbnet" \
   $WORK_MOUNT "$WORK:/work" \
   -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --cwd /work \
   --env CLAUDE_CODE_OAUTH_TOKEN $GHENV $PE \
