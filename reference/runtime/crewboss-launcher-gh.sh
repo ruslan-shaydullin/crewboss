@@ -1061,29 +1061,30 @@ cmd_run(){
                   | bash "$HERE_LAUNCHER/composition-parse.sh" "$CB_MANIFEST" 2>/dev/null) || _comp_tsv=""
               fi
               if [ -z "$_comp_tsv" ]; then
-                # CONVERGENCE CAP on the FORMAT-reject path too (#334): without this it loops forever
-                # before the substance reviewer ever runs (the runaway we hit). Counts toward cround.
-                _cround=$(sget "$cid" cround); _cround=${_cround:-0}; _ccap="${CB_CONVERGE_CAP:-4}"
-                if [ "$_cround" -ge "$_ccap" ]; then
+                # FORMAT-reject cap (#334 runaway guard) on its OWN counter `fround`/CB_FORMAT_CAP (#352),
+                # SEPARATE from substance `cround`/CONVERGE_CAP. A transient format-glitch mid-convergence
+                # must NOT consume a substance-review round and prematurely escalate (the #350 finding).
+                _fround=$(sget "$cid" fround); _fround=${_fround:-0}; _fcap="${CB_FORMAT_CAP:-${CB_CONVERGE_CAP:-4}}"
+                if [ "$_fround" -ge "$_fcap" ]; then
                   _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
                   _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
                   if [ "${_ex_hd:-0}" = "0" ]; then
                     gh issue create -R "$CB_REPO" \
                       --title "Human decision: charter #$cid composition not converging" \
                       --body "## Composition not converging
-Charter #$cid composition stayed format-invalid through CONVERGE_CAP=$_ccap rounds (analyst keeps producing an unparseable/invalid-role composition). Human call: fix the manifest/charter, give direction, or close.
+Charter #$cid composition stayed format-invalid through FORMAT_CAP=$_fcap rounds (analyst keeps producing an unparseable/invalid-role composition). Human call: fix the manifest/charter, give direction, or close.
 
 Charter: #$cid" \
                       --label "type:human-decision" 2>/dev/null || true
                   fi
-                  log "#$cid composition cap $_ccap reached (format-invalid) → human-decision"
+                  log "#$cid composition cap $_fcap reached (format-invalid) → human-decision"
                   continue
                 fi
-                sset "$cid" cround "$((_cround+1))"
-                log "#$cid approval-gate: invalid/missing composition (round $((_cround+1))/$_ccap) → re-analysis"
+                sset "$cid" fround "$((_fround+1))"
+                log "#$cid approval-gate: invalid/missing composition (format round $((_fround+1))/$_fcap) → re-analysis"
                 board route "$cid" analysis >/dev/null || true
                 gh issue comment "$cid" -R "$CB_REPO" \
-                  --body "approval-gate: composition block missing or invalid — routed back to needs-analysis (round $((_cround+1))/$_ccap)" \
+                  --body "approval-gate: composition block missing or invalid — routed back to needs-analysis (format round $((_fround+1))/$_fcap)" \
                   2>/dev/null || true
                 continue
               fi

@@ -176,15 +176,19 @@ GHEOF
 chmod +x "$BIN/gh"
 
 # ── analysis spawn stub ───────────────────────────────────────────────────────
-# Always succeeds (posts composition + team-review). If ANALYSIS_GARBAGE_FLAG present,
-# posts an INVALID composition (## header but no parseable leaf/role lines) so the
-# format-reject path fires instead of the reviewer gate.
+# Always succeeds (posts composition + team-review). ANALYSIS_GARBAGE_FLAG holds a COUNTDOWN:
+# while > 0, decrement and post an INVALID composition (## header but no parseable leaf/role
+# lines) so the format-reject path fires; at 0, post a valid composition. Lets a test interleave
+# a format-glitch round with substance rounds.
 ANALYSIS_STUB="$ROOT/analysis-stub.sh"
 cat > "$ANALYSIS_STUB" <<'ASEOF'
 #!/usr/bin/env bash
 CID="$1"; AROLE="$2"
 printf '%s %s\n' "$CID" "$AROLE" >> "$ANALYSIS_LOG"
-if [ -f "$ANALYSIS_GARBAGE_FLAG" ]; then
+_garb=0
+[ -f "$ANALYSIS_GARBAGE_FLAG" ] && _garb=$(cat "$ANALYSIS_GARBAGE_FLAG" 2>/dev/null || echo 0)
+if [ "${_garb:-0}" -gt 0 ]; then
+  printf '%d' "$((_garb - 1))" > "$ANALYSIS_GARBAGE_FLAG"
   gh issue comment "$CID" -R "test/repo" --body "## Composition (machine)
 garbage content no valid fields at all"
 else
@@ -369,7 +373,7 @@ _hd_e2=$(open_hd_for 5)
 echo "=== FORMAT-CAP: invalid composition ×cap → human-decision (runaway fix) ==="
 CBHOME_F="$ROOT/cbhome_f"; LOG_F="$ROOT/loop_f.log"
 reset_sandbox "$CBHOME_F"; write_budget_low "$CBHOME_F"
-touch "$ANALYSIS_GARBAGE_FLAG"   # analyst always posts an unparseable composition
+printf '99' > "$ANALYSIS_GARBAGE_FLAG"   # analyst always posts an unparseable composition
 printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-analysis"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
@@ -414,6 +418,40 @@ _rv_a=$(grep -c '^5 reviewer' "$REVIEW_LOG" 2>/dev/null)
 grep -q "cto" "$APPROVAL_LOG" \
   && ok "AGREED-SKIP: cto spawned (proceeded straight to cost gate)" \
   || ko "AGREED-SKIP: cto NOT spawned (agreed charter did not proceed)"
+
+# =============================================================================
+# FORMAT-MID-SUBSTANCE (#352): a transient format-glitch BETWEEN substance rounds must NOT
+# consume a substance-review round. Separate counters (fround vs cround) → still converges.
+# With CONVERGE_CAP=2 and the OLD shared counter, the glitch+1 reject would hit the cap and
+# escalate before the 2nd review — so the no-HD assertion below is a real regression lock.
+# =============================================================================
+echo "=== FORMAT-MID-SUBSTANCE: format-glitch between substance rounds → still converges (no premature escalation) ==="
+CBHOME_M="$ROOT/cbhome_m"; LOG_M="$ROOT/loop_m.log"
+reset_sandbox "$CBHOME_M"; write_budget_low "$CBHOME_M"
+printf '1' > "$ANALYSIS_GARBAGE_FLAG"   # one format-glitch composition, then valid
+printf '1' > "$REVIEW_REJECT_FLAG"      # reviewer rejects once, then agrees
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-analysis"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_M" "$LOG_M" "CB_CONVERGE_CAP=2" "CB_FORMAT_CAP=2"
+
+_hd_m=$(open_hd_for 5)
+[ "${_hd_m:-0}" -eq 0 ] \
+  && ok "FORMAT-MID-SUBSTANCE: NO premature escalation (format-glitch did not consume a substance round)" \
+  || ko "FORMAT-MID-SUBSTANCE: human-decision created — format-glitch ate a substance round (shared-counter regression)"
+
+has_label 5 "review:agreed" \
+  && ok "FORMAT-MID-SUBSTANCE: converged (review:agreed) despite the mid-convergence format-glitch" \
+  || ko "FORMAT-MID-SUBSTANCE: did NOT converge"
+
+_rv_m=$(grep -c '^5 reviewer' "$REVIEW_LOG" 2>/dev/null)
+[ "$_rv_m" -eq 2 ] \
+  && ok "FORMAT-MID-SUBSTANCE: both substance rounds ran (reviewer spawned 2×, glitch on separate counter)" \
+  || ko "FORMAT-MID-SUBSTANCE: reviewer spawned $_rv_m× (expected 2 — substance rounds not preserved)"
+
+[ "$(comment_count 5 'format round')" -ge 1 ] \
+  && ok "FORMAT-MID-SUBSTANCE: the format-glitch round actually occurred (format-reject fired)" \
+  || ko "FORMAT-MID-SUBSTANCE: no format-reject evidence — test did not exercise the glitch path"
 
 # =============================================================================
 echo
