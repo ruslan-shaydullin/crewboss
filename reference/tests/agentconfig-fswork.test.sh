@@ -61,6 +61,36 @@ for r in solution-analyst reviewer; do
     || ko "$r NOT migrated to fs_work: ro"
 done
 
+# 5. FAIL-SAFE: a typo'd/unknown fs_work value locks down (-R), never silently opens (default-deny)
+echo "$(run_dryrun executor garbage)" | grep -q "WORK_MOUNT=-R" \
+  && ok "fs_work=<unknown> → fail-closed -R (default-deny, no silent open on typo)" \
+  || ko "fs_work=<unknown> did NOT fail-closed to -R: $(run_dryrun executor garbage)"
+
+# 6. fs.cbnet capability → /cbnet (runtime: scripts/manifest/state) mount mode
+dry_cbnet(){ CB_HOME="$ROOT/h" CB_SPAWN_DRYRUN=1 CB_FS_CBNET="$1" bash "$SPAWN" 5 solution-analyst /dev/null "$ROOT/w" 2>&1; }
+echo "$(dry_cbnet ro)" | grep -q "CBNET_MOUNT=-R" \
+  && ok "fs_cbnet=ro → /cbnet read-only (-R) — can't write runtime/manifest" \
+  || ko "fs_cbnet=ro did NOT yield CBNET_MOUNT=-R: $(dry_cbnet ro)"
+out=$(CB_HOME="$ROOT/h" CB_SPAWN_DRYRUN=1 bash "$SPAWN" 5 executor /dev/null "$ROOT/w" 2>&1)
+echo "$out" | grep -q "CBNET_MOUNT=-B" \
+  && ok "fs_cbnet unset → default -B (back-compat)" \
+  || ko "fs_cbnet unset did NOT default to -B: $out"
+
+# 7. /cbnet flag wired into the real nsjail call; old hardcode removed
+grep -qF '$CBNET_MOUNT "$CB_HOME:/cbnet"' "$SPAWN" \
+  && ok "nsjail call uses \$CBNET_MOUNT for /cbnet (flag wired into real spawn)" \
+  || ko "nsjail call does NOT use \$CBNET_MOUNT"
+grep -qF -- '-B "$CB_HOME:/cbnet"' "$SPAWN" \
+  && ko "old hardcoded '-B \$CB_HOME:/cbnet' still present (provision bypassed)" \
+  || ok "old hardcoded '-B /cbnet' removed (provision is the only path)"
+
+# 8. analyst + reviewer also locked to fs_cbnet: ro
+for r in solution-analyst reviewer; do
+  grep -qiE '^fs_cbnet:[[:space:]]*ro' "$HERE/../../team-example/roles/$r.md" \
+    && ok "$r migrated to fs_cbnet: ro" \
+    || ko "$r NOT migrated to fs_cbnet: ro"
+done
+
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
