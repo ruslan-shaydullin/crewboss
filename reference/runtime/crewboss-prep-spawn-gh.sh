@@ -102,6 +102,8 @@ The composition block MUST use EXACTLY this format:
 
 (Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
 
+Each '- leaf:' line MUST be EXACTLY '- leaf: <leaf-id> -> <role-id>' and end there — NO inline '[...]' brackets, NO spec/notes text after the role-id. Put any per-leaf detail in a SEPARATE '## Leaf specs (human)' section BELOW the machine block, never inside the '- leaf:' lines.
+
 ## Available roles — use ONLY these EXACT role-ids; NEVER invent a role (no 'go-backend-dev', 'python-dev', etc.)
 $_MROLES
 Assign worker leaves to an implementation role (e.g. 'executor'). Do NOT assign leaves to manager/analyst roles. If a needed capability has no role here, say so in 'approach' rather than inventing a role-id.

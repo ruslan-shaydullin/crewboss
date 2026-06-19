@@ -69,16 +69,18 @@ while IFS= read -r line; do
     found_approach=$((found_approach + 1))
     approach="${line#- approach: }"
 
-  # Parse - role: <role-id>  (no spaces in id)
-  elif printf '%s\n' "$line" | grep -qE '^- role: [^ ]+$'; then
-    role_id="${line#- role: }"
+  # Parse - role: <role-id>  (id = first token; tolerate trailing annotation, #352)
+  elif printf '%s\n' "$line" | grep -qE '^- role: [^ ]+( .*)?$'; then
+    role_id="${line#- role: }"; role_id="${role_id%% *}"
     roles+=("$role_id")
 
-  # Parse - leaf: <leaf-id> -> <role-id>
-  elif printf '%s\n' "$line" | grep -qE '^- leaf: [^ ]+ -> [^ ]+$'; then
+  # Parse - leaf: <leaf-id> -> <role-id>  (role = first token after '->';
+  # tolerate trailing annotation like '[spec: ...]' so analyst notes don't break parsing, #352)
+  elif printf '%s\n' "$line" | grep -qE '^- leaf: [^ ]+ -> [^ ]+( .*)?$'; then
     rest="${line#- leaf: }"
-    leaf_ids+=("${rest% -> *}")
-    leaf_roles+=("${rest#* -> }")
+    leaf_ids+=("${rest%% -> *}")
+    role_part="${rest#* -> }"
+    leaf_roles+=("${role_part%% *}")
 
   # Parse - est_cost_usd: <value>
   elif printf '%s\n' "$line" | grep -qE '^- est_cost_usd: .+'; then
