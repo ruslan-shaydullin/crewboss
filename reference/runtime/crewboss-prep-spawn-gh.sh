@@ -395,4 +395,13 @@ if [ "$_IS_MANIFEST_ROLE" = "1" ] && [ -n "${CB_MANIFEST:-}" ]; then
     || printf '.claude\n' >> "$WA/work/.git/info/exclude"
 fi
 
+# AgentConfigMap P1 (#356): resolve the role's fs.work capability from the manifest and pass
+# it to the spawn primitive. `fs_work: ro` → /work mounted read-only (analyst/reviewer can't
+# write the repo, enforced by nsjail). Absent → unset → spawn defaults to rw (back-compat).
+if [ -n "${CB_MANIFEST:-}" ] && [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
+  CB_FS_WORK=$(manifest_role_field "$CB_MANIFEST" "$ROLE" fs_work 2>/dev/null \
+    | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  export CB_FS_WORK
+fi
+
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"

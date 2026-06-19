@@ -22,6 +22,14 @@ CFG="$RUN/config.json"; [ -f "$CFG" ] || echo '{"monthly_credit_usd":100,"cost_p
 BUDGET="$RUN/budget.json"; [ -f "$BUDGET" ] || echo '{"spent_usd":0,"runs":[]}' > "$BUDGET"
 
 TASK="$1"; ROLE="$2"; PROMPTSRC="$3"; WORK="$4"; PR_REPO="${5:-}"
+# provision: /work mount mode from role capability (#356 AgentConfigMap P1).
+#   CB_FS_WORK=ro → read-only bind (-R): the agent physically cannot write the repo,
+#   even via Bash (EROFS at the kernel). Absent/rw → read-write bind (-B) = today's
+#   behaviour (back-compat default; non-migrated roles unchanged).
+WORK_MOUNT="-B"; [ "${CB_FS_WORK:-rw}" = "ro" ] && WORK_MOUNT="-R"
+# dry-run hook: print the provisioning decision and exit before any jail/proxy/budget
+# machinery, so the mount logic is unit-testable without nsjail (macOS/CI).
+[ -n "${CB_SPAWN_DRYRUN:-}" ] && { echo "WORK_MOUNT=$WORK_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-rw}"; exit 0; }
 TDIR="$RUN/work/$TASK"; mkdir -p "$TDIR"
 LOG="$TDIR/run.log"; ST="$TDIR/status.json"
 : > "$LOG"; chmod 600 "$LOG"
@@ -78,7 +86,7 @@ set +e
   --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
   --seccomp_policy "$PROFILE" --seccomp_log \
   $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev -B "$CB_HOME:/cbnet" \
-  -B "$WORK:/work" \
+  $WORK_MOUNT "$WORK:/work" \
   -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --cwd /work \
   --env CLAUDE_CODE_OAUTH_TOKEN $GHENV $PE \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --really_quiet \
