@@ -480,6 +480,17 @@ _finale_check_ci(){
     green)
       log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
       gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+      # AUTO merge (opt-in, #366): perform the final charter→main human gate automatically once
+      # CI is green. Default off → charter PR waits for a human merge.
+      if [ "${CB_AUTO_MERGE:-0}" = "1" ]; then
+        if gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null; then
+          log "charter-finale: #$cid PR #$pr_num AUTO-merged → main (CB_AUTO_MERGE)"
+          gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
+          printf '%s' "merged" > "$_fin_dir/last_comment"
+          return 0
+        fi
+        log "charter-finale: #$cid PR #$pr_num auto-merge failed — left ready for human"
+      fi
       if [ "$last_comment" != "green" ]; then
         gh issue comment "$cid" -R "$CB_REPO" \
           --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
@@ -903,7 +914,14 @@ cmd_run(){
         # charter planning task (tech-lead): route by the charter's own label, not by review.
         if [ "$(sget "$id" kind)" = "charter" ]; then
           cst=$(board get "$id" state)
-          if [ "$cst" = "plan-review" ] || [ "$cst" = "approved" ]; then sset "$id" term 1; log "#$id planned -> $cst"
+          if [ "$cst" = "plan-review" ] || [ "$cst" = "approved" ]; then
+            # AUTO plan-approval (opt-in, #366): perform the human plan-review gate automatically
+            # (release leaves via status:approved). Default off → plan-review stays a human gate.
+            if [ "${CB_AUTO_PLAN_APPROVE:-0}" = "1" ] && [ "$cst" = "plan-review" ]; then
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
+              log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
+            fi
+            sset "$id" term 1; log "#$id planned -> $cst"
           else prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
             if [ "$tries" -ge "$RETRY_CAP" ]; then sset "$id" term 1; board route "$id" blocked "tech-lead failed to decompose ($tries×)" >/dev/null; log "#$id plan failed -> blocked"
             else log "#$id plan failed -> retry"; fi
