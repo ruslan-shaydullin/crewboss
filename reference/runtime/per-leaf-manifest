@@ -103,6 +103,9 @@ EXCLUDED convergence
 # #382 plan-convergence: tech-lead↔analyst plan-review loop integration-stub driving the REAL
 #   launcher (background spawns, multi-tick poll loop) — heavy/launcher-context. EXCLUDED.
 EXCLUDED plan-convergence
+# #391 plan-decomposition: integration-stub driving the REAL launcher loop to verify
+#   the leaf-count gate (tech-lead stub with/without leaves, multi-tick poll loop) — heavy/launcher-context. EXCLUDED (fail-closed).
+EXCLUDED plan-decomposition
 # #139 launchable-composition: pure-predicate unit test (Layer 1: stdin fixture → launchable.sh;
 #   Layer 2: board-gh.sh + gh stub synchronous). No launcher loop, no background processes,
 #   no timing/poll/sleep. Verdict = f(merged content only). Meets ALLOW criterion.
@@ -136,7 +139,3 @@ EXCLUDED role-schema
 #   conflict-resolution cycle (conflict-spawn stub, real board-gh.sh + launcher).
 #   Background spawns, launcher loop, timing-sensitive. EXCLUDED (fail-closed).
 EXCLUDED git-resolver-wiring
-# #393 plan-decomposition: integration-stub driving the REAL launcher loop (cmd_run)
-#   with gh stub + file-board. Uses background spawns, multi-tick poll loop to verify
-#   the leaf-count gate (0 leaves → blocked). Heavy/launcher-context. EXCLUDED (fail-closed).
-EXCLUDED plan-decomposition
