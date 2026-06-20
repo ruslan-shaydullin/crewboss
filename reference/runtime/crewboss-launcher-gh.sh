@@ -941,7 +941,43 @@ cmd_run(){
             # PLAN-convergence (#382): when plan_review_role is configured, the tech-lead's plan is
             # NOT terminal at plan-review — the analyst reviews it (plan-review gate fires while term
             # is unset). Released to status:approved only on plan:agreed. Default off → existing flow.
+            # Computed early so the LEAF-COUNT GATE below can use it as a guard.
             _plrr=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
+            # LEAF-COUNT GATE (#391): when require_decomp_leaves is set in the manifest policy,
+            # the tech-lead must create ≥1 leaf sub-issues when decomposing a charter.
+            # 0 leaves → re-route to needs-plan (retry) or status:blocked (RETRY_CAP exhausted).
+            # Skipped when plan_review_role is configured — the plan-convergence loop handles
+            # decomposition validation through the critique/re-plan cycle in that mode.
+            # Default off (no require_decomp_leaves in manifest) → existing behaviour unchanged.
+            if [ "$cst" = "plan-review" ] && [ -z "$_plrr" ]; then
+              _rdl=$(manifest_policy "${CB_MANIFEST:-}" require_decomp_leaves 2>/dev/null || true)
+              if [ -n "$_rdl" ]; then
+                _dc_all=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+                          --json number,state,labels,body 2>/dev/null || echo "[]")
+                _dc_leafn=$(printf '%s' "$_dc_all" | jq -r --argjson c "$id" '
+                  [ .[] | select(.state == "OPEN")
+                         | select(([.labels[].name] | any(. == "type:charter")) | not)
+                         | select((.body // "") | test("(?i)Charter:\\s*#?" + ($c|tostring)))
+                  ] | length' 2>/dev/null) || _dc_leafn=0
+                if [ "${_dc_leafn:-0}" -eq 0 ]; then
+                  prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+                  if [ "$tries" -ge "$RETRY_CAP" ]; then
+                    sset "$id" term 1
+                    gh issue edit "$id" -R "$CB_REPO" \
+                      --remove-label status:plan-review --add-label status:blocked 2>/dev/null || true
+                    gh issue comment "$id" -R "$CB_REPO" \
+                      --body "decomposition incomplete: tech-lead produced 0 leaves after ${tries}× — blocked" \
+                      2>/dev/null || true
+                    log "#$id decomposition incomplete (0 leaves, ${tries}×/${RETRY_CAP}) → blocked"
+                  else
+                    gh issue edit "$id" -R "$CB_REPO" \
+                      --remove-label status:plan-review --add-label status:needs-plan 2>/dev/null || true
+                    log "#$id decomposition incomplete (0 leaves) → needs-plan (try ${tries}/${RETRY_CAP})"
+                  fi
+                  sset "$id" pid ""; continue
+                fi
+              fi
+            fi
             _plag=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name]|index("plan:agreed")!=null' 2>/dev/null || echo false)
             if [ -n "$_plrr" ] && [ "$cst" = "plan-review" ] && [ "$_plag" != "true" ]; then
               log "#$id planned -> plan-review (awaiting plan-convergence)"   # term stays unset → gate picks up
