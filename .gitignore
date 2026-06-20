@@ -1,5 +1,9 @@
 node_modules/
 dist/
 .DS_Store
+*.log
+# *.log validated by issue #376: pattern present, .DS_Store intact, server.log ignored
 .crewboss-launcher.beat
 .claude/settings.local.json
+__pycache__/
+*.pyc

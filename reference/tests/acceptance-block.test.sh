@@ -13,6 +13,9 @@
 #        after enforcement is active
 
 set -u
+# Unset ambient launcher env-vars that would mis-scope launchable.sh calls (fixture uses charter #1).
+unset CREWBOSS_CHARTER 2>/dev/null || true
+unset CREWBOSS_REQUIRE_COMPOSITION 2>/dev/null || true
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PARSER="$HERE/../runtime/acceptance-parse.sh"
 LAUNCHABLE_REF="$HERE/../launcher/launchable.sh"
