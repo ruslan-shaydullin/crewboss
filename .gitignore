@@ -3,3 +3,5 @@ dist/
 .DS_Store
 .crewboss-launcher.beat
 .claude/settings.local.json
+__pycache__/
+*.pyc
