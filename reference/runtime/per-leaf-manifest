@@ -100,6 +100,9 @@ EXCLUDED analysis-spawn
 EXCLUDED approval-gate
 # #334 convergence: analyst↔reviewer loop integration-stub driving the REAL launcher (heavy).
 EXCLUDED convergence
+# #382 plan-convergence: tech-lead↔analyst plan-review loop integration-stub driving the REAL
+#   launcher (background spawns, multi-tick poll loop) — heavy/launcher-context. EXCLUDED.
+EXCLUDED plan-convergence
 # #139 launchable-composition: pure-predicate unit test (Layer 1: stdin fixture → launchable.sh;
 #   Layer 2: board-gh.sh + gh stub synchronous). No launcher loop, no background processes,
 #   no timing/poll/sleep. Verdict = f(merged content only). Meets ALLOW criterion.
