@@ -1,24 +1,47 @@
 #!/usr/bin/env bash
-# plan-decomposition.test.sh — leaf-count gate for charter planning (#392).
+# plan-decomposition.test.sh — leaf-count gate for charter decomposition (#391/#393).
 #
 # When a tech-lead completes (charter reaches status:plan-review or status:approved),
 # the launcher counts type:agent leaves with "Charter: #N" in body.
-# 0 leaves + tries < RETRY_CAP → retry to status:needs-plan (re-plan request).
-# 0 leaves + tries >= RETRY_CAP → route to status:blocked.
-# ≥1 leaves → falls through to existing term=1 success path ("planned ->").
+# Gate behaviour depends on mode:
+#   Manifest-gated (_dc_leafn, #391): when require_decomp_leaves is set in manifest policy,
+#     0 leaves → re-route to needs-plan (retry) or status:blocked (RETRY_CAP exhausted).
+#   Unconditional (_leaf_count, #392): charter must have ≥1 type:agent leaves regardless of
+#     manifest; retry/block path identical.
+#   ≥1 leaves → falls through to existing term=1 success path ("planned ->").
 #
-# Class d integration-stub: gh stub file-board, REAL launcher + board-gh.sh.
-# CB_MANIFEST is NOT set → analysis/approval cycles disabled; isolates the leaf-count gate.
-# Charters are seeded at status:needs-plan + composition:approved (post-cto board state).
+# When a tech-lead completes planning with 0 leaf sub-issues the charter must NOT
+# reach status:approved.  It must be re-routed to status:needs-plan (retry) or
+# status:blocked (after RETRY_CAP exhausted).
 #
-# ZERO-LEAVES-BLOCKED:      CB_RETRY_CAP=1 → blocked on the first gate failure (no retry).
-# ZERO-LEAVES-RETRY:        CB_RETRY_CAP=2 → retried to needs-plan (tries=1 < 2), then blocked (tries=2 ≥ 2).
-# HAS-LEAVES:               1 type:agent leaf with "Charter: #5" in body → gate passes → term=1 success.
+# Class d integration-stub: gh stub + file-board, REAL launcher (crewboss-launcher-gh.sh)
+# + board-gh.sh + manifest.sh, hermetic flock shim.  Charters seeded at
+# status:needs-plan + composition:approved (post-cto state) to isolate the plan stage.
+# The file-board is a JSON array in $BOARD_STATE.
+#
+# CB_MANIFEST = copy of team-example with policy.require_decomp_leaves=true added
+# (the field that ARMS the manifest-gated leaf-count gate; absent → unconditional gate).
+#
+# A hermetic `flock` shim is injected into $BIN; single-launcher → exit 0.
+#
+# ZERO-LEAVES-BLOCKED:  CB_MANIFEST="" (unconditional gate), CB_RETRY_CAP=1 →
+#   blocked on first gate failure (no retry).
+# ZERO-LEAVES-RETRY:    CB_MANIFEST="" (unconditional gate), CB_RETRY_CAP=2 →
+#   retried to needs-plan (tries=1 < 2), then blocked (tries=2 ≥ 2).
+# HAS-LEAVES:           1 type:agent leaf with "Charter: #5" pre-seeded →
+#   gate passes → term=1 success.
+# STUB-WITH-LEAVES:     tech-lead stub creates 1 type:agent leaf + moves charter to
+#   plan-review; manifest gate passes → CB_AUTO_PLAN_APPROVE → status:approved.
+# STUB-NO-LEAVES:       tech-lead stub only moves charter to plan-review — zero leaves;
+#   manifest gate fires → retry → RETRY_CAP=2 → status:blocked;
+#   gate reason "decomposition incomplete" appears in gh stub log / board comments.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
+TEAM_EXAMPLE="$(cd "$HERE/../../team-example" && pwd)"
+MANIFEST_LIB_SRC="$HERE/../../reference/launcher/manifest.sh"
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 pass=0; fail=0
@@ -32,9 +55,18 @@ GH_LOG="$SANDBOX/gh.log"
 PLAN_LOG="$ROOT/plan.log"
 export SANDBOX BOARD_STATE GH_LOG PLAN_LOG
 
+# CB_MANIFEST: copy of team-example, with require_decomp_leaves added to policy
+# (the flag that ARMS the manifest-gated leaf-count gate; absent → unconditional gate)
+CB_MANIFEST_DIR="$ROOT/manifest"
+cp -r "$TEAM_EXAMPLE/." "$CB_MANIFEST_DIR"
+jq '.policy.require_decomp_leaves=true' "$CB_MANIFEST_DIR/org.json" \
+  > "$CB_MANIFEST_DIR/org.json.t" \
+  && mv "$CB_MANIFEST_DIR/org.json.t" "$CB_MANIFEST_DIR/org.json"
+export CB_MANIFEST_DIR MANIFEST_LIB_SRC
+
 BIN="$ROOT/bin"; mkdir -p "$BIN"
 
-# ── flock shim (single-launcher; macOS compat) ────────────────────────────────
+# ── hermetic flock shim (single-launcher, no macOS compat issues) ─────────────
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/flock"
 chmod +x "$BIN/flock"
 
@@ -44,11 +76,17 @@ has_label(){ [ "$(jq -r --argjson n "$1" 'map(select(.number==$n))[0].labels[]?.
 no_label(){  ! has_label "$1" "$2"; }
 issue_state(){ jq -r --argjson n "$1" 'map(select(.number==$n))[0]|
                 if .state=="CLOSED" then "done"
-                elif ([.labels[]?.name]|any(.=="status:blocked")) then "blocked"
+                elif ([.labels[]?.name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[]?.name]|any(.=="status:plan-review")) then "plan-review"
                 elif ([.labels[]?.name]|any(.=="status:needs-plan")) then "needs-plan"
-                elif ([.labels[]?.name]|any(.=="status:approved")) then "approved"
+                elif ([.labels[]?.name]|any(.=="status:blocked")) then "blocked"
                 else "open" end' "$BOARD_STATE" 2>/dev/null; }
+leaf_count_for(){ # count OPEN non-charter issues with Charter: #<id> in body and type:agent label
+  jq -r --argjson c "$1" '
+    [ .[] | select(.state=="OPEN")
+          | select(([.labels[].name] | any(. == "type:agent")))
+          | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))
+    ] | length' "$BOARD_STATE" 2>/dev/null || echo 0; }
 
 reset_sandbox(){
   rm -rf "$SANDBOX"; mkdir -p "$SANDBOX"
@@ -61,7 +99,10 @@ reset_sandbox(){
   chmod +x "$cbhome/board-gh.sh" "$cbhome/launchable.sh"
 }
 
-# ── gh stub (file-board) ──────────────────────────────────────────────────────
+# ── gh stub (file-board) ───────────────────────────────────────────────────────
+# gh issue list --state all -L 200 --json number,labels,body returns the current
+# file-board JSON — this is what the launcher's _dc_leafn/_leaf_count jq queries read.
+# Without this, the leaf-count would always fall back to 0, making the test non-deterministic.
 cat > "$BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 obj="$1"; verb="$2"; shift 2
@@ -145,9 +186,9 @@ exit 0
 GHEOF
 chmod +x "$BIN/gh"
 
-# ── plan stub (tech-lead) ─────────────────────────────────────────────────────
+# ── plan stub: logs to PLAN_LOG, NO leaves (for ZERO-LEAVES scenarios) ────────
 # Moves the charter from status:needs-plan → status:plan-review.
-# Does NOT create any leaves — leaf creation is tested separately via pre-seeded board state.
+# Does NOT create any leaves — leaf creation is tested separately.
 PLAN_STUB="$ROOT/plan-stub.sh"
 cat > "$PLAN_STUB" <<'PSEOF'
 #!/usr/bin/env bash
@@ -160,7 +201,41 @@ exit 0
 PSEOF
 chmod +x "$PLAN_STUB"
 
+# ── tech-lead stub WITH leaves (for STUB-WITH-LEAVES scenario) ────────────────
+# Creates 1 leaf issue (type:agent, body Charter: #CID) then moves charter to plan-review.
+PLAN_STUB_LEAVES="$ROOT/plan-stub-leaves.sh"
+cat > "$PLAN_STUB_LEAVES" <<'LEOF'
+#!/usr/bin/env bash
+CID="$1"
+gh issue create -R "test/repo" \
+  --title "implement feature for charter $CID" \
+  --body "Charter: #$CID
+Implement the required functionality." \
+  --label "type:agent"
+gh issue edit "$CID" -R "test/repo" \
+  --remove-label status:needs-plan \
+  --add-label status:plan-review
+exit 0
+LEOF
+chmod +x "$PLAN_STUB_LEAVES"
+
+# ── tech-lead stub WITHOUT leaves (for STUB-NO-LEAVES scenario) ───────────────
+# Only moves charter to plan-review — creates ZERO leaf issues.
+PLAN_STUB_NO_LEAVES="$ROOT/plan-stub-no-leaves.sh"
+cat > "$PLAN_STUB_NO_LEAVES" <<'NLEOF'
+#!/usr/bin/env bash
+CID="$1"
+gh issue edit "$CID" -R "test/repo" \
+  --remove-label status:needs-plan \
+  --add-label status:plan-review
+exit 0
+NLEOF
+chmod +x "$PLAN_STUB_NO_LEAVES"
+
 # ── loop runner ───────────────────────────────────────────────────────────────
+# Defaults: no manifest (CB_MANIFEST=""), no auto-approve (CB_AUTO_PLAN_APPROVE=0).
+# ZERO-LEAVES scenarios: use these defaults (unconditional _leaf_count gate).
+# STUB scenarios: pass "CB_MANIFEST=$CB_MANIFEST_DIR" "CB_AUTO_PLAN_APPROVE=1" etc.
 run_loop(){
   local cbhome="$1" logfile="${2:-/dev/null}"; shift 2
   : > "$PLAN_LOG"; : > "$GH_LOG"
@@ -171,13 +246,14 @@ run_loop(){
     CB_PLAN_SPAWN="$PLAN_STUB" \
     CB_MANIFEST="" \
     CB_MANIFEST_LIB="" \
+    CB_GIT_REMOTE="" \
     CB_POLL=0 \
     CB_MAX_TICKS=60 \
     CB_IDLE_CONFIRM=2 \
     CB_MAX_PARALLEL=4 \
     CB_RETRY_CAP=2 \
     CB_AUTO_PLAN_APPROVE=0 \
-    CREWBOSS_CHARTER= \
+    CREWBOSS_CHARTER="" \
     env "$@" \
     bash "$LAUNCHER" run >"$logfile" 2>&1 || true
 }
@@ -191,6 +267,12 @@ seed_no_leaves(){
 # Charter + 1 pre-seeded type:agent leaf with "Charter: #5" in body.
 seed_has_leaf(){
   printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"}],"body":"charter body","comments":[]},{"number":10,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"Charter: #5","comments":[]}]\n' \
+    > "$BOARD_STATE"
+}
+
+# Post-cto charter: needs-plan + composition:approved (isolates the PLAN stage)
+seed_needs_plan(){
+  printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"}],"body":"charter goal","comments":[]}]\n' \
     > "$BOARD_STATE"
 }
 
@@ -269,6 +351,62 @@ grep -q "needs-plan retry" "$LOG_H" \
 grep -q "planned ->" "$LOG_H" \
   && ok "HAS-LEAVES: 'planned ->' in log (gate fell through to existing success path)" \
   || ko "HAS-LEAVES: 'planned ->' NOT in log (success path not reached with leaf present)"
+
+# =============================================================================
+# STUB-WITH-LEAVES: tech-lead creates 1 leaf + moves to plan-review →
+#   leaf-count gate passes (≥1 leaf) → CB_AUTO_PLAN_APPROVE → status:approved.
+# =============================================================================
+echo "=== STUB-WITH-LEAVES: leaf created → gate passes → status:approved ==="
+CBHOME_L="$ROOT/cbhome_l"; LOG_L="$ROOT/loop_l.log"
+reset_sandbox "$CBHOME_L"
+seed_needs_plan
+
+run_loop "$CBHOME_L" "$LOG_L" \
+  "CB_MANIFEST=$CB_MANIFEST_DIR" \
+  "CB_MANIFEST_LIB=$MANIFEST_LIB_SRC" \
+  "CB_PLAN_SPAWN=$PLAN_STUB_LEAVES" \
+  "CB_SPAWN=$PLAN_STUB_LEAVES" \
+  "CB_AUTO_PLAN_APPROVE=1"
+
+_st_l=$(issue_state 5)
+[ "$_st_l" = "approved" ] \
+  && ok "STUB-WITH-LEAVES: charter #5 reached status:approved" \
+  || ko "STUB-WITH-LEAVES: charter #5 state=$_st_l (expected approved)"
+
+_lc_l=$(leaf_count_for 5)
+[ "${_lc_l:-0}" -ge 1 ] \
+  && ok "STUB-WITH-LEAVES: leaf issue exists with type:agent + Charter: #5 (count=${_lc_l})" \
+  || ko "STUB-WITH-LEAVES: leaf issue NOT found with type:agent label and Charter: #5 in body"
+
+# =============================================================================
+# STUB-NO-LEAVES: tech-lead moves to plan-review with 0 leaves →
+#   leaf-count gate fires → retry → RETRY_CAP → status:blocked.
+# =============================================================================
+echo "=== STUB-NO-LEAVES: 0 leaves → gate fires → retry → RETRY_CAP=2 → status:blocked ==="
+CBHOME_N="$ROOT/cbhome_n"; LOG_N="$ROOT/loop_n.log"
+reset_sandbox "$CBHOME_N"
+seed_needs_plan
+
+run_loop "$CBHOME_N" "$LOG_N" \
+  "CB_MANIFEST=$CB_MANIFEST_DIR" \
+  "CB_MANIFEST_LIB=$MANIFEST_LIB_SRC" \
+  "CB_PLAN_SPAWN=$PLAN_STUB_NO_LEAVES" \
+  "CB_SPAWN=$PLAN_STUB_NO_LEAVES" \
+  "CB_AUTO_PLAN_APPROVE=1"
+
+_st_n=$(issue_state 5)
+[ "$_st_n" != "approved" ] \
+  && ok "STUB-NO-LEAVES: charter #5 did NOT reach status:approved (state=$_st_n)" \
+  || ko "STUB-NO-LEAVES: charter #5 reached status:approved despite 0 leaves (gate bypassed)"
+
+[ "$_st_n" = "blocked" ] \
+  && ok "STUB-NO-LEAVES: charter #5 is status:blocked (gate + RETRY_CAP enforced)" \
+  || ko "STUB-NO-LEAVES: charter #5 is not blocked (state=$_st_n; expected blocked after RETRY_CAP)"
+
+# Gate reason appears in stub log (comment posted by the gate)
+grep -q "decomposition incomplete" "$GH_LOG" \
+  && ok "STUB-NO-LEAVES: gate reason 'decomposition incomplete' found in gh stub log" \
+  || ko "STUB-NO-LEAVES: gate reason 'decomposition incomplete' NOT found in gh stub log"
 
 # =============================================================================
 # Acceptance check: _leaf_count appears in launcher (gate is present)
