@@ -30,6 +30,8 @@ ANALYSIS_SPAWN="${CB_ANALYSIS_SPAWN:-$PLAN_SPAWN}"
 APPROVAL_SPAWN="${CB_APPROVAL_SPAWN:-$PLAN_SPAWN}"
 # CB_REVIEW_SPAWN: spawn script for the substance-review role (#334 convergence). Default = PLAN_SPAWN.
 REVIEW_SPAWN="${CB_REVIEW_SPAWN:-$PLAN_SPAWN}"
+# CB_PLAN_REVIEW_SPAWN: spawn script for the plan-review role (#382 plan-convergence). Default = PLAN_SPAWN.
+PLAN_REVIEW_SPAWN="${CB_PLAN_REVIEW_SPAWN:-$PLAN_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
@@ -888,6 +890,27 @@ cmd_run(){
           fi
           continue
         fi
+        # plan-review task (#382 plan-convergence): analyst reviews tech-lead's PLAN.
+        # success = plan:agreed set OR charter sent to needs-plan (critique → tech-lead re-plans).
+        if [ "$(sget "$id" kind)" = "plan-review" ]; then
+          cst=$(board get "$id" state)
+          _plok=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
+          if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then
+            sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            log "#$id plan-review done -> $([ "$_plok" = "true" ] && echo agreed || echo changes-requested)"
+          else
+            prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+            if [ "$tries" -ge "$RETRY_CAP" ]; then
+              board route "$id" blocked "plan-review failed $tries× (retry-cap $RETRY_CAP)" >/dev/null
+              sset "$id" pid ""; sset "$id" term 1
+              log "#$id plan-review failed ($tries) -> blocked"
+            else
+              sset "$id" pid ""
+              log "#$id plan-review failed ($tries) -> retry"
+            fi
+          fi
+          continue
+        fi
         # approval task: route by charter state; success = left team-review, fail = retry/blocked.
         # F-1 contract: successful approve (→needs-plan) or reject (→needs-analysis) both count as
         # success; CLEAR pid, term AND tries so the next stage can claim the charter without guards.
@@ -915,13 +938,21 @@ cmd_run(){
         if [ "$(sget "$id" kind)" = "charter" ]; then
           cst=$(board get "$id" state)
           if [ "$cst" = "plan-review" ] || [ "$cst" = "approved" ]; then
-            # AUTO plan-approval (opt-in, #366): perform the human plan-review gate automatically
-            # (release leaves via status:approved). Default off → plan-review stays a human gate.
-            if [ "${CB_AUTO_PLAN_APPROVE:-0}" = "1" ] && [ "$cst" = "plan-review" ]; then
-              gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
-              log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
+            # PLAN-convergence (#382): when plan_review_role is configured, the tech-lead's plan is
+            # NOT terminal at plan-review — the analyst reviews it (plan-review gate fires while term
+            # is unset). Released to status:approved only on plan:agreed. Default off → existing flow.
+            _plrr=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
+            _plag=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name]|index("plan:agreed")!=null' 2>/dev/null || echo false)
+            if [ -n "$_plrr" ] && [ "$cst" = "plan-review" ] && [ "$_plag" != "true" ]; then
+              log "#$id planned -> plan-review (awaiting plan-convergence)"   # term stays unset → gate picks up
+            else
+              # AUTO plan-approval (opt-in, #366): release leaves automatically (no plan-convergence).
+              if [ "${CB_AUTO_PLAN_APPROVE:-0}" = "1" ] && [ "$cst" = "plan-review" ] && [ -z "$_plrr" ]; then
+                gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
+                log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
+              fi
+              sset "$id" term 1; log "#$id planned -> $cst"
             fi
-            sset "$id" term 1; log "#$id planned -> $cst"
           else prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
             if [ "$tries" -ge "$RETRY_CAP" ]; then sset "$id" term 1; board route "$id" blocked "tech-lead failed to decompose ($tries×)" >/dev/null; log "#$id plan failed -> blocked"
             else log "#$id plan failed -> retry"; fi
@@ -1258,6 +1289,54 @@ Charter: #$cid"
           ( "$PLAN_SPAWN" "$cid" tech-lead >/dev/null 2>&1 ) & sset "$cid" pid "$!"
           running=$((running+1)); log "bg-spawn tech-lead for charter #$cid (running=$running/$MAXP)"
         done
+        # ── PLAN-convergence gate (#382): after tech-lead plans (plan-review), the analyst reviews
+        # the PLAN before execution. tech-lead ↔ analyst rounds until plan:agreed; CB_PLAN_CONVERGE_CAP
+        # → escalate. plan:agreed → status:approved (release leaves). Mirror of the #334 composition gate.
+        _plan_review_role=$(manifest_policy "$CB_MANIFEST" plan_review_role 2>/dev/null || true)
+        if [ -n "$_plan_review_role" ]; then
+          _plr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+            .[] | select([.labels[].name] | index("type:charter") != null)
+                | select([.labels[].name] | index("status:plan-review") != null)
+                | select([.labels[].name] | index("hold") == null)
+                | .number' 2>/dev/null || true)
+          for cid in $_plr_charters; do
+            [ "$running" -ge "$MAXP" ] && break
+            [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+            [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
+            if [ -n "$_q_order" ]; then [ -z "$_q_head" ] && break; [ "$cid" = "$_q_head" ] || continue; fi
+            [ -n "$(sget "$cid" pid)" ] && continue
+            [ -n "$(sget "$cid" term)" ] && continue
+            _plr_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
+            if [ "$_plr_agreed" = "true" ]; then
+              gh issue edit "$cid" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
+              sset "$cid" term 1
+              log "#$cid plan:agreed → status:approved (leaves released)"
+              continue
+            fi
+            _pround=$(sget "$cid" pround); _pround=${_pround:-0}
+            _pcap="${CB_PLAN_CONVERGE_CAP:-${CB_CONVERGE_CAP:-4}}"
+            if [ "$_pround" -ge "$_pcap" ]; then
+              _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+              _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
+              if [ "${_ex_hd:-0}" = "0" ]; then
+                gh issue create -R "$CB_REPO" \
+                  --title "Human decision: charter #$cid plan did not converge" \
+                  --body "## Plan convergence not reached
+Charter #$cid plan did not reach plan:agreed within CB_PLAN_CONVERGE_CAP=$_pcap rounds. Human call: approve the plan, give direction, or close.
+
+Charter: #$cid" \
+                  --label "type:human-decision" 2>/dev/null || true
+                log "#$cid plan-convergence: cap $_pcap reached → human-decision"
+              fi
+              continue
+            fi
+            [ "$running" -ge "$MAXP" ] && break
+            sset "$cid" kind plan-review; sset "$cid" pround "$((_pround+1))"; sset "$cid" starttime "$(now)"
+            ( CB_PLAN_REVIEW=1 "$PLAN_REVIEW_SPAWN" "$cid" "$_plan_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+            running=$((running+1))
+            log "bg-spawn plan-review ($_plan_review_role) round $((_pround+1)) for charter #$cid (running=$running/$MAXP)"
+          done
+        fi
         for id in $(board launchable); do
           [ "$running" -ge "$MAXP" ] && break
           # local authority over gh read-after-write lag: never re-handle an id that is

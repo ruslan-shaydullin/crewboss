@@ -23,6 +23,10 @@ export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH
 _IS_ANALYSIS_ROLE=0
 _IS_APPROVAL_ROLE=0
 _IS_REVIEW_ROLE=0
+# Plan-review mode (#382): launcher's plan-convergence gate exports CB_PLAN_REVIEW=1 → the analyst
+# reviews the tech-lead's PLAN (not produces a composition). Env-signalled (no extra board query).
+_IS_PLAN_REVIEW=0
+[ "${CB_PLAN_REVIEW:-0}" = "1" ] && _IS_PLAN_REVIEW=1
 _IS_MANIFEST_ROLE=0
 _MANIFEST_LOADED=0
 if [ -n "${CB_MANIFEST:-}" ]; then
@@ -74,7 +78,53 @@ fi
 # integrator could not find the PR). The loop-agent branch is ONLY for the NEW ops-roles
 # (git-resolver, observer, role-builder, test-planner). [fix: #275 L1 regression, 2026-06-17]
 case "$ROLE" in executor|tech-lead|analyst|boss|integrator|task-helper) _LOOP_AGENT_FILE="" ;; esac
-if [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
+if [ "$_IS_PLAN_REVIEW" = "1" ]; then
+  # Plan-review spawn (#382 plan-convergence): the analyst reviews the TECH-LEAD's PLAN before
+  # execution. AGREE -> plan:agreed (leaves released next tick). CRITIQUE -> feedback comment +
+  # route to needs-plan so the tech-lead revises (the tech-lead reads the critique on re-plan).
+  # Checked BEFORE _IS_ANALYSIS_ROLE because the plan-reviewer IS the analysis role in another mode.
+  TS=$(date +%s)
+  BRANCH="task/$ID-$TS"
+  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
+  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+  _PLAN_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+    | jq -r '[.comments[] | select(.body | test("Plan decomposition|plan-review|leaf"; "i"))] | last | .body // ""' \
+    2>/dev/null || true)
+  PROMPT="You are the $ROLE reviewing the TECH-LEAD's PLAN for charter #$ID in repo $PR_REPO.
+
+$_ROLE_PROMPT
+
+## Rubric (objective floor)
+\`\`\`json
+$_RUBRIC
+\`\`\`
+
+## The tech-lead's plan under review (latest)
+$_PLAN_BODY
+
+## Also read the leaf sub-issues the tech-lead created
+gh issue list -R $PR_REPO --search 'Charter: #$ID' --state open --json number,title,body
+
+## Judge the PLAN BY SUBSTANCE against four grounded anchors
+1. Rubric — does the leaf set respect the objective triggers (roles, tests, security…)?
+2. Real code — READ the repo (Read/Bash); is the decomposition feasible against reality? missing gotchas (sha regen, test classification, file conflicts, deploy steps)?
+3. Acceptance — does each leaf carry a concrete checkable acceptance block? is 'done' provable BEFORE work?
+4. Intent — does the plan still deliver what charter #$ID actually asks (no drift, right size, atomic leaves)?
+
+## Instructions
+1. Study the charter + plan + leaves + relevant code: gh issue view $ID -R $PR_REPO --comments
+2. Output ONE verdict (default to rigor — do NOT agree on a plausible-but-ungrounded plan):
+
+**AGREE** (plan genuinely sound on all four anchors):
+   gh issue comment $ID -R $PR_REPO --body 'PLAN-REVIEW: agreed — <one-line why>'
+   gh issue edit $ID -R $PR_REPO --add-label plan:agreed
+
+**CRITIQUE** (otherwise — feedback the tech-lead can act on, then send back):
+   gh issue comment $ID -R $PR_REPO --body 'PLAN-REVIEW: changes-requested
+- что: <concrete flaw in the plan> | почему: <which anchor + how> | фикс: <what the tech-lead should change>
+(one line per issue)'
+   gh issue edit $ID -R $PR_REPO --remove-label status:plan-review --add-label status:needs-plan"
+elif [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
   _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
@@ -214,7 +264,7 @@ elif [ "$ROLE" = "tech-lead" ]; then
 
 After creating each sub-issue N, add the required label: gh issue edit N -R $PR_REPO --add-label type:agent
 
-Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. Charter goal:
+Add 'Depends-on: #X' only if truly ordered. Then set the charter to plan-review: gh issue edit $ID -R $PR_REPO --add-label status:plan-review --remove-label status:needs-plan. Do not write code. If a prior 'PLAN-REVIEW: changes-requested' comment exists (gh issue view $ID -R $PR_REPO --comments), your NEW decomposition MUST address every 'фикс:' point — do NOT repeat the rejected plan. Charter goal:
 
 $(bash "$BOARD" get "$ID" prompt)"
   if [ -n "${CB_MANIFEST:-}" ]; then
