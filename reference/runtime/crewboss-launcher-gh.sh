@@ -1292,7 +1292,7 @@ Charter: #$cid"
         # ── PLAN-convergence gate (#382): after tech-lead plans (plan-review), the analyst reviews
         # the PLAN before execution. tech-lead ↔ analyst rounds until plan:agreed; CB_PLAN_CONVERGE_CAP
         # → escalate. plan:agreed → status:approved (release leaves). Mirror of the #334 composition gate.
-        _plan_review_role=$(manifest_policy "$CB_MANIFEST" plan_review_role 2>/dev/null || true)
+        _plan_review_role=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
         if [ -n "$_plan_review_role" ]; then
           _plr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
             .[] | select([.labels[].name] | index("type:charter") != null)
