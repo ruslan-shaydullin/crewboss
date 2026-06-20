@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .DS_Store
+*.log
 .crewboss-launcher.beat
 .claude/settings.local.json
 __pycache__/
