@@ -951,6 +951,28 @@ cmd_run(){
                 gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
                 log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
               fi
+              # Leaf-count gate (#392): charter must have ≥1 type:agent leaves; retry/block if 0.
+              _leaf_count=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+                --json number,labels,body 2>/dev/null \
+                | jq -r --argjson c "$id" \
+                  '[.[] | select([.labels[].name] | any(. == "type:agent"))
+                         | select((.body//"") | test("(?i)Charter:\\s*#?" + ($c|tostring)))] | length' \
+                2>/dev/null) || _leaf_count=0
+              if [ "${_leaf_count:-0}" -eq 0 ]; then
+                prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+                if [ "$tries" -ge "$RETRY_CAP" ]; then
+                  board route "$id" blocked "decomposition incomplete: 0 leaves created" >/dev/null
+                  sset "$id" term 1
+                  log "#$id planned but 0 leaves ($tries) -> blocked"
+                else
+                  gh issue edit "$id" -R "$CB_REPO" \
+                    --remove-label status:plan-review \
+                    --add-label status:needs-plan 2>/dev/null || true
+                  log "#$id planned but 0 leaves ($tries) -> needs-plan retry"
+                fi
+                sset "$id" pid ""; continue
+              fi
+              # _leaf_count >= 1 — fall through to existing term=1 logic
               sset "$id" term 1; log "#$id planned -> $cst"
             fi
           else prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
