@@ -18,6 +18,17 @@
 #   GREEN: CB_MANIFEST set, charter WITH composition:approved → leaf emitted.
 #   LEGACY: no CB_MANIFEST → leaf emitted without composition:approved (HD-1).
 set -u
+# Prevent ambient launcher env-vars from leaking into fixture calls:
+#   CREWBOSS_CHARTER — set by charter orchestration; would mis-scope Layer-1
+#     predicate calls whose fixture board uses charter #1, not the ambient charter.
+#   CB_MANIFEST — when set, board-gh.sh passes --require-composition; the L2-LEGACY
+#     test verifies behaviour with *no* CB_MANIFEST so must not inherit this var.
+#   CREWBOSS_REQUIRE_COMPOSITION — cleared for symmetry / test isolation.
+# Layer-2 RED/GREEN calls set CB_MANIFEST="$CB_MANIFEST_DIR" explicitly; they are
+# unaffected by this unset.
+unset CREWBOSS_CHARTER 2>/dev/null || true
+unset CREWBOSS_REQUIRE_COMPOSITION 2>/dev/null || true
+unset CB_MANIFEST 2>/dev/null || true
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PRED_R6="$HERE/../../proto/r6/launchable.sh"
 PRED_REF="$HERE/../launcher/launchable.sh"

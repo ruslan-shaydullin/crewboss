@@ -2,6 +2,10 @@
 # Smoke test for the `crewboss` CLI — deterministic, offline parts (help / init / status / errors).
 # gh-dependent paths (labels, branch protection) are not asserted here.
 set -u
+# Unset ambient launcher env-vars that would mis-scope launchable.sh calls inside
+# `crewboss status` (fixture board uses charter #1, not the ambient charter number).
+unset CREWBOSS_CHARTER 2>/dev/null || true
+unset CREWBOSS_REQUIRE_COMPOSITION 2>/dev/null || true
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CLI="$HERE/../bin/crewboss"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
