@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Deterministic test of the launchable predicate against a synthetic board (NO network).
+# Unset ambient launcher env-vars that would mis-scope the fixture board (uses charter #1).
+unset CREWBOSS_CHARTER 2>/dev/null || true
+unset CREWBOSS_REQUIRE_COMPOSITION 2>/dev/null || true
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PRED="$HERE/../launcher/launchable.sh"
 
