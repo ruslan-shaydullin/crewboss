@@ -835,7 +835,7 @@ running_count(){ local d id pid n=0
   echo "$n"; }
 cmd_run(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_plan_head="" _q_disp="" _qn="" _qst="" _id_ch=""
     reconcile   # STARTUP ONLY: requeue orphans from a previous run/reboot. Inside the loop,
                 # the launcher started its own spawns, so a dead pid = finished (route by
                 # status.json) — NOT an orphan; running reconcile per-tick would requeue every
@@ -1021,14 +1021,18 @@ cmd_run(){
       # claim new launchable up to the cap
       elif [ -z "$stop" ]; then
         # ── queue-mode detection (per tick) ──────────────────────────────────
-        # Read $RUN/queue.json; if .order[] is non-empty, restrict all new work
-        # to the head-of-queue charter (first in order not yet terminal-for-queue).
-        # Terminal-for-queue: done, blocked, or plan-review that is genuinely a human-park
-        # (no plan_review_role configured, OR plan:agreed already present).  A plan-review
-        # charter with plan_review_role AND without plan:agreed is non-terminal (#382).
-        # Empty/absent/unreadable → normal behaviour.
+        # Read $RUN/queue.json; if .order[] is non-empty, restrict new work to:
+        #   _q_head      (leaf-execution head): first charter not in plan-review/done/blocked
+        #   _q_plan_head (plan-conv head): first charter not in approved/done/blocked
+        # Two heads allow plan-convergence to advance independently of leaf execution:
+        # a charter in plan-review is NOT yet approved (its leaves are not launchable),
+        # so _q_head skips it — but _q_plan_head targets it so the plan-conv gate fires.
+        # Terminal-for-queue (_q_head): done, blocked, or plan-review that is genuinely a
+        # human-park (no plan_review_role configured, OR plan:agreed already present). A
+        # plan-review charter with plan_review_role AND without plan:agreed is non-terminal (#382).
+        # Empty/absent/unreadable → no queue mode → normal behaviour.
         _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
-        _q_head=""
+        _q_head=""; _q_plan_head=""
         if [ -n "$_q_order" ]; then
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
@@ -1046,8 +1050,13 @@ cmd_run(){
             esac
             _q_head="$_qn"; break
           done
+          for _qn in $_q_order; do
+            _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+            case "$_qst" in approved|done|blocked) continue ;; esac
+            _q_plan_head="$_qn"; break
+          done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
-          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none}"
+          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none}"
         fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
@@ -1332,7 +1341,7 @@ Charter: #$cid"
             [ "$running" -ge "$MAXP" ] && break
             [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
             [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
-            if [ -n "$_q_order" ]; then [ -z "$_q_head" ] && break; [ "$cid" = "$_q_head" ] || continue; fi
+            if [ -n "$_q_order" ]; then [ -z "$_q_plan_head" ] && break; [ "$cid" = "$_q_plan_head" ] || continue; fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
             _plr_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
