@@ -1,0 +1,44 @@
+You are reworking issue #423 onto the charter integration branch charter/420 in repo stratch1989/crewboss.
+You are ALREADY on branch rework/423-1782055567, based on origin/charter/420 — sibling leaves of charter #420 are ALREADY merged here (their changes are already present on this branch).
+Your earlier work for this issue is on origin/leaf/423-1782053994. Do this, in order:
+1. git merge --no-edit origin/leaf/423-1782053994
+2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
+3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
+4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
+5. gh pr create --base charter/420 --title "rework(#423): rebase onto charter/420" --body "Closes #423 — reworked onto integration branch, conflicts resolved as additive union."
+Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/420.
+
+Issue #423:
+Charter: #420
+
+## Context
+
+The queue-mode deadlock in charter #420 caused every charter with `plan_review_role` to strand on `status:plan-review` in a multi-charter queue — plan-convergence never fired for them. The launcher fix (sibling leaf-420-1) patches the head-calculation logic. This leaf adds the regression-preventing integration test so the bug cannot silently re-appear.
+
+Existing patterns to mirror:
+- `reference/tests/plan-convergence.test.sh` — single-charter plan-convergence fixture
+- `reference/tests/launcher-queue.test.sh` — multi-charter queue fixture
+
+## Task
+
+Create **`reference/tests/queue-plan-convergence.test.sh`** (exact filename; used by manifest leaf-420-3). The test must:
+
+1. **Setup (happy path)** — build a `queue.json` with ≥ 2 charter IDs; set `policy.plan_review_role` in manifest; seed both charters at `status:plan-review` + `composition:approved` with no `plan:agreed`.
+2. **Run** — invoke the real launcher for N ticks (match the budget in `launcher-queue.test.sh`).
+3. **Assert** — BOTH charters acquire `plan:agreed` and reach `status:approved`; if any charter remains on `plan-review` after N ticks increment `failed`.
+4. **Control case** — repeat without `plan_review_role`; assert launcher does NOT apply `plan:agreed` to either charter (park & advance unchanged); any spurious label increments `failed`.
+5. Emit `failed=0` on success, matching the convention used by all tests in this suite.
+
+Class: **EXCLUDED** (heavy launcher integration — same class as `plan-convergence.test.sh`, `launcher-queue.test.sh`). Manifest registration and sha-lock regen are handled in sibling leaf-420-3.
+
+Conventional Commits.
+
+## Files
+
+- `reference/tests/queue-plan-convergence.test.sh` (new)
+
+## Acceptance (machine)
+
+- check: `bash reference/tests/queue-plan-convergence.test.sh`
+- check: `bash reference/tests/plan-convergence.test.sh`
+- check: `bash reference/tests/launcher-queue.test.sh`
