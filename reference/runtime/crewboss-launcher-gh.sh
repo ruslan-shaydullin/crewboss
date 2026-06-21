@@ -780,14 +780,29 @@ cmd_once(){
     reconcile
     # ── queue-mode detection ─────────────────────────────────────────────────
     # Read $RUN/queue.json (.order[]); if non-empty, only the head-of-queue
-    # charter (first in order not yet in plan-review/done/blocked) may have
-    # leaves launched.  Absent/unreadable/empty order → no change in behaviour.
-    local _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+    # charter (first in order not yet terminal-for-queue) may have leaves launched.
+    # Terminal-for-queue: done, blocked, or plan-review that is genuinely a human-park
+    # (no plan_review_role configured, OR plan:agreed already present).  A plan-review
+    # charter with plan_review_role AND without plan:agreed is non-terminal — it is
+    # eligible to become head so the plan-convergence gate picks it up next tick (#382).
+    # Absent/unreadable/empty order → no change in behaviour.
+    local _q_order="" _q_head="" _q_disp="" _qn="" _qst="" _id_ch="" _prr_q="" _plag_q=""
     _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
     if [ -n "$_q_order" ]; then
       for _qn in $_q_order; do
         _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-        case "$_qst" in plan-review|done|blocked) continue ;; esac
+        case "$_qst" in
+          done|blocked) continue ;;
+          plan-review)
+            # Skip plan-review only when terminal: no plan_review_role (human-park path)
+            # or plan:agreed already set (convergence complete).
+            _prr_q=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
+            if [ -z "$_prr_q" ]; then continue; fi
+            _plag_q=$(gh issue view "$_qn" -R "$CB_REPO" --json labels 2>/dev/null \
+                      | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
+            [ "$_plag_q" = "true" ] && continue
+            ;;
+        esac
         _q_head="$_qn"; break
       done
       _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
@@ -1007,14 +1022,28 @@ cmd_run(){
       elif [ -z "$stop" ]; then
         # ── queue-mode detection (per tick) ──────────────────────────────────
         # Read $RUN/queue.json; if .order[] is non-empty, restrict all new work
-        # to the head-of-queue charter (first in order not yet terminal-for-queue:
-        # plan-review/done/blocked).  Empty/absent/unreadable → normal behaviour.
+        # to the head-of-queue charter (first in order not yet terminal-for-queue).
+        # Terminal-for-queue: done, blocked, or plan-review that is genuinely a human-park
+        # (no plan_review_role configured, OR plan:agreed already present).  A plan-review
+        # charter with plan_review_role AND without plan:agreed is non-terminal (#382).
+        # Empty/absent/unreadable → normal behaviour.
         _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
         _q_head=""
         if [ -n "$_q_order" ]; then
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in plan-review|done|blocked) continue ;; esac
+            case "$_qst" in
+              done|blocked) continue ;;
+              plan-review)
+                # Skip plan-review only when terminal: no plan_review_role (human-park path)
+                # or plan:agreed already set (convergence complete).
+                _prr_q=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
+                if [ -z "$_prr_q" ]; then continue; fi
+                _plag_q=$(gh issue view "$_qn" -R "$CB_REPO" --json labels 2>/dev/null \
+                          | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
+                [ "$_plag_q" = "true" ] && continue
+                ;;
+            esac
             _q_head="$_qn"; break
           done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
