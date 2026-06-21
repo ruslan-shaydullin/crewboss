@@ -83,6 +83,8 @@ if [ "$_IS_PLAN_REVIEW" = "1" ]; then
   # execution. AGREE -> plan:agreed (leaves released next tick). CRITIQUE -> feedback comment +
   # route to needs-plan so the tech-lead revises (the tech-lead reads the critique on re-plan).
   # Checked BEFORE _IS_ANALYSIS_ROLE because the plan-reviewer IS the analysis role in another mode.
+  # Ensure plan:agreed label exists (idempotent) — analyst can add labels but not create them (#425).
+  gh label create "plan:agreed" -R "$PR_REPO" --description "charter: plan approved by plan-reviewer" --color "0e8a16" 2>/dev/null || true
   TS=$(date +%s)
   BRANCH="task/$ID-$TS"
   _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
