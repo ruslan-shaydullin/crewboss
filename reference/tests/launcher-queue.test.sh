@@ -135,7 +135,11 @@ run_launcher(){
     export CB_REVIEW_STALE_TICKS=999
     # Isolate from caller's environment so unscoped runs are not accidentally
     # scoped, and non-CB_SPAWN spawn scripts default to the test stub.
-    unset CREWBOSS_CHARTER CB_PLAN_SPAWN CB_ANALYSIS_SPAWN CB_APPROVAL_SPAWN CB_CONFLICT_SPAWN CB_REWORK_SPAWN
+    # CB_MANIFEST/CB_MANIFEST_LIB must also be cleared: an inherited CB_MANIFEST
+    # pointing to a box-local path would fail manifest_validate and exit 65 before
+    # any queue logic runs (and would inject --require-composition into launchable,
+    # silently making all leaves non-launchable even when the path exists).
+    unset CREWBOSS_CHARTER CB_PLAN_SPAWN CB_ANALYSIS_SPAWN CB_APPROVAL_SPAWN CB_CONFLICT_SPAWN CB_REWORK_SPAWN CB_MANIFEST CB_MANIFEST_LIB
     # Apply explicit overrides.
     for kv in "$@"; do export "${kv?}"; done
     PATH="$BIN:$PATH" bash "$LAUNCHER" "$sub"
