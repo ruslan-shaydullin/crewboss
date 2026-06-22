@@ -1,106 +1,66 @@
-You are reworking issue #449 onto the charter integration branch charter/444 in repo stratch1989/crewboss.
-You are ALREADY on branch rework/449-1782112548, based on origin/charter/444 — sibling leaves of charter #444 are ALREADY merged here (their changes are already present on this branch).
-Your earlier work for this issue is on origin/leaf/449-1782110805. Do this, in order:
-1. git merge --no-edit origin/leaf/449-1782110805
-2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
-3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
-4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/444 --title "rework(#449): rebase onto charter/444" --body "Closes #449 — reworked onto integration branch, conflicts resolved as additive union."
-Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/444.
+You are the executor for issue #450 in repo stratch1989/crewboss.
+Hard rules for THIS run:
+- You are ALREADY on branch leaf/450-1782112885, based on the charter integration branch 'charter/444' (NOT main). Sibling leaves of charter #444 may already be merged into 'charter/444'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/444 --title '<short>' --body 'Closes #450'. The PR base MUST be 'charter/444', NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
 
-Issue #449:
+---- TASK (issue #450) ----
 Charter: #444
+Depends-on: #448, #449
 
 ## Context
 
-Charter #444 (stale-leaf GC) adds logic to `/work/reference/runtime/crewboss-launcher-gh.sh`
-that closes all open `type:agent` leaves of a charter when the plan-reviewer routes it back to
-`needs-plan`.  The GC filter uses `numsAfter` (numeric equality on the `Charter: #N` field) so
-that charter #5 does NOT accidentally match leaves of charter #50.
+Charter #444 (stale-leaf GC on re-plan) has two implementation leaves:
+- **#448 (444-gc-impl)**: adds a nested `cst=needs-plan` GC guard to
+  `/work/reference/runtime/crewboss-launcher-gh.sh` with a `numsAfter` numeric-equality filter.
+- **#449 (444-gc-test)**: writes `gc-stale-leaves.test.sh` with two-charter prefix isolation
+  (charters #5 and #50) and updates manifest counters.
 
-This leaf writes the deterministic regression test for that fix, updates manifest counters, and
-re-locks the SHA manifest.
+This leaf reviews both PRs for correctness and merges them once all checks pass.
 
 ## Task
 
-### 1. Write `/work/reference/tests/gc-stale-leaves.test.sh`
+Review the PRs opened by leaves #448 and #449. Verify all of the following before approving:
 
-Mirror the structure of `/work/reference/tests/plan-convergence.test.sh` (class:
-integration-stub — real launcher + board-gh.sh, stubbed `gh`).
+### (a) Nested guard placement — impl PR
 
-The test file must contain **two test scenarios**:
+In `/work/reference/runtime/crewboss-launcher-gh.sh`, the GC logic must be inside a **nested**
+`if [ "$cst" = "needs-plan" ]; then … fi` block that sits within the compound success block
+at line 913 (`if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then`).
 
----
+Confirm the GC code is NOT reachable when `_plok=true` (plan:agreed path).  If it fires on
+plan:agreed it would close the freshly-created correct leaves before launch.
 
-**Scenario A — single-charter happy path**
+### (b) Word-boundary-safe filter — impl PR
 
-Setup:
-- Configure manifest with `plan_review_role` set (arms the plan-convergence gate).
-- Seed board: charter #5 at `status:plan-review`, plus 2 open `type:agent` stale leaves
-  whose bodies start with `Charter: #5`.
-- Plan-reviewer stub returns "needs-plan" (critique path).
+The jq predicate for identifying stale leaves must use `numsAfter` + numeric equality (or
+an equivalent regex with word-boundary: `test("Charter: #" + ($cid|tostring) + "([^0-9]|$)")`).
 
-Run one launcher loop tick.
+Specifically confirm: if `$id = 5`, the filter does NOT match a leaf whose body contains
+`Charter: #50`.  A bare `contains("Charter: #5")` substring match would fail this test.
 
-Assertions:
-- Both stale leaves are CLOSED (`state == "CLOSED"` in board state).
-- Neither leaf appears in `board launchable` output.
+### (c) Prefix-isolation scenario — test PR
 
----
+`gc-stale-leaves.test.sh` must contain Scenario B: two charters seeded with IDs **#5** and
+**#50** (string-prefix pair), stale leaves for each, needs-plan triggered for #5 only.
+Assertions must cover: #5 leaf CLOSED AND #50 leaf remains OPEN.
 
-**Scenario B — multi-charter prefix isolation (mandatory)**
+### (d) Manifest counter updates — test PR
 
-This scenario proves the word-boundary-safe filter works correctly.
+Confirm all four of:
+1. `leaf-verifier.test.sh` line 266: `[ "$_excl_count" -eq 51 ]` (was 50)
+2. `leaf-verifier.test.sh` line 270: `[ "$_actual_count" -eq 71 ]` (was 70)
+3. `per-leaf-manifest` line 17 header: `ALLOW=20, EXCLUDED=51, union=71`
+4. `per-leaf-manifest` EXCLUDED section: entry for `gc-stale-leaves` present
 
-Setup:
-- Seed board: charter **#5** AND charter **#50** (both at `status:plan-review`).
-- Seed stale leaves for **both** charters:
-  - At least one leaf whose body contains `Charter: #5` (child of charter 5)
-  - At least one leaf whose body contains `Charter: #50` (child of charter 50)
-- Trigger needs-plan for charter **#5** only.
+### (e) SHA manifest — test PR
 
-Assertions:
-- Charter #5's stale leaf is CLOSED.
-- Charter #50's stale leaf remains OPEN.
+`runtime-manifest.tsv` has updated SHA rows for every canonical runtime file changed in both PRs.
 
-The IDs #5 and #50 are the critical choice: "Charter: #5" is a string-prefix of "Charter: #50",
-so a naive `contains("Charter: #5")` match would incorrectly close the #50 leaf.  The
-`numsAfter` numeric-equality filter must NOT do that.
+### (f) verify-merged ALL-GREEN
 
----
-
-### 2. Update `leaf-verifier.test.sh`
-
-File: `/work/reference/tests/leaf-verifier.test.sh`
-
-- Line 244 heading comment: change `EXCLUDED=50` to `EXCLUDED=51`
-- Line 266: change `[ "$_excl_count" -eq 50 ]` to `[ "$_excl_count" -eq 51 ]`
-- Line 270: change `[ "$_actual_count" -eq 70 ]` to `[ "$_actual_count" -eq 71 ]`
-
-### 3. Update `per-leaf-manifest` header comment
-
-File: `/work/reference/runtime/per-leaf-manifest`
-
-- Line 17: change `ALLOW=20, EXCLUDED=50, union=70` to `ALLOW=20, EXCLUDED=51, union=71`
-
-### 4. Register the new test as EXCLUDED
-
-In `/work/reference/runtime/per-leaf-manifest`, add to the EXCLUDED section:
-
-```
-EXCLUDED gc-stale-leaves
-```
-
-### 5. Regenerate SHA manifest
-
-Run the canonical sha-regen tooling (`regen-manifest.sh` or equivalent) after all file changes
-to update SHA locks in `/work/reference/runtime/runtime-manifest.tsv`.
+Run `reference/tests/verify-merged.sh`.  All tests must pass (no FAIL lines, exit 0).
 
 ## Acceptance (machine)
 
-- check: test -f /work/reference/tests/gc-stale-leaves.test.sh
-- check: grep -q 'Charter: #50' /work/reference/tests/gc-stale-leaves.test.sh
-- check: grep -q 'EXCLUDED gc-stale-leaves' /work/reference/runtime/per-leaf-manifest
-- check: grep -q 'EXCLUDED=51' /work/reference/runtime/per-leaf-manifest
-- check: grep -q 'eq 51' /work/reference/tests/leaf-verifier.test.sh
 - test: reference/tests/verify-merged.sh
