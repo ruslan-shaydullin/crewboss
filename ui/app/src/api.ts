@@ -180,11 +180,12 @@ export async function setCheck(n: number, index: number, checked: boolean): Prom
 }
 
 export async function postQueue(order: number[]): Promise<void> {
-  await fetch(config.url + '/api/queue', {
+  const r = await fetch(config.url + '/api/queue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
     body: JSON.stringify({ order }),
   })
+  if (!r.ok) throw new Error('postQueue failed: ' + r.status)
 }
 
 export type CmdResult = { ok: boolean; msg: string }
