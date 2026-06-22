@@ -203,3 +203,17 @@ export async function command(action: string, number?: number, comment?: string)
     return { ok: false, msg: 'request failed: ' + e }
   }
 }
+
+export type ChainStep = {
+  role: string
+  status: string
+  plan: string
+  step_index: number
+}
+export type ChainData = ChainStep[]
+
+export async function fetchChain(n: number): Promise<ChainData> {
+  const r = await fetch(config.url + '/api/chain/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
+  if (!r.ok) throw new Error('fetchChain failed: ' + r.status)
+  return (await r.json()) as ChainData
+}
