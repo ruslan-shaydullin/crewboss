@@ -23,7 +23,21 @@
 input="$(cat)"
 jqr() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
 
-[ "$(jqr '.tool_name')" = "Bash" ] || exit 0
+# Edit / Write / MultiEdit: deny executor from writing test files
+# (independent test authorship, charter #523). All three tools expose the
+# target path at .tool_input.file_path at the top level; tool_input.edits[].file_path
+# is null on real MultiEdit payloads — top-level file_path is the reliable field.
+_ita_tool="$(jqr '.tool_name')"
+if [ "$_ita_tool" != "Bash" ]; then
+  if [ "$_ita_tool" = "Edit" ] || [ "$_ita_tool" = "Write" ] || [ "$_ita_tool" = "MultiEdit" ]; then
+    _ita_fp="$(jqr '.tool_input.file_path')"
+    _ita_role="$(jqr '.agent_type')"; [ -n "$_ita_role" ] && [ "$_ita_role" != "null" ] || _ita_role="dev-assistant"
+    if printf '%s' "$_ita_fp" | grep -Eq '(\.test\.(sh|ts|js|py)$|(^|/)tests/)'; then
+      [ "$_ita_role" = "executor" ] && { printf 'crewboss BLOCK [%s]: test-file writes are test-author-only (independent test authorship, charter #523) — %s\n' "$_ita_role" "$_ita_fp" >&2; exit 2; }
+    fi
+  fi
+  exit 0
+fi
 
 role="$(jqr '.agent_type')"
 [ -n "$role" ] && [ "$role" != "null" ] || role="dev-assistant"
