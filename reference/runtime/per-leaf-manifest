@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=21, EXCLUDED=54, union=75  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=22, EXCLUDED=54, union=76  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -52,6 +52,10 @@ ALLOW role-spawn
 # #131 P2/Ф1 manifest pipeline — pure-content tests (no launcher loop/spawn/sleep):
 ALLOW board-states
 ALLOW composition-parse
+
+# #574 verify-ui-artifact-detect: pure unit (git diff in temp repo, no network/browser/launcher);
+#   calls _detect_ui_artifact() directly, not cmd_verify_merged. Meets ALLOW criterion.
+ALLOW verify-ui-artifact-detect
 
 # ── EXCLUDED (54 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness

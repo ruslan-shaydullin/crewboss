@@ -70,6 +70,26 @@
 #                           L4 (#177) wires this to the production env.
 set -uo pipefail
 
+# git shim: when sourced for testing, intercept 'git update-ref MERGE_HEAD SHA'
+# which git 2.45+ refuses via update-ref (pseudoref protection). In production
+# execution this block never runs — git merge --no-commit writes .git/MERGE_HEAD
+# automatically. Only active when sourced (BASH_SOURCE[0] != ${0}).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  git() {
+    if [ "${1:-}" = "-C" ] && [ "${3:-}" = "update-ref" ] && \
+       { [ "${4:-}" = "MERGE_HEAD" ] || [ "${4:-}" = "ORIG_HEAD" ]; } && [ -n "${5:-}" ]; then
+      local _gd; _gd="$(command git -C "$2" rev-parse --absolute-git-dir 2>/dev/null)"
+      [ -n "$_gd" ] && { printf '%s\n' "$5" > "$_gd/$4"; return 0; }
+    fi
+    if [ "${1:-}" = "update-ref" ] && \
+       { [ "${2:-}" = "MERGE_HEAD" ] || [ "${2:-}" = "ORIG_HEAD" ]; } && [ -n "${3:-}" ]; then
+      local _gd; _gd="$(command git rev-parse --absolute-git-dir 2>/dev/null)"
+      [ -n "$_gd" ] && { printf '%s\n' "$3" > "$_gd/$2"; return 0; }
+    fi
+    command git "$@"
+  }
+fi
+
 log() { printf '[integrator] %s\n' "$*"; }
 
 # ── subcommand: close-leaf ────────────────────────────────────────────────────
@@ -274,6 +294,22 @@ _resolve_verify_cache_dir() {
   fi
 }
 
+# _detect_ui_artifact: detect UI-touching diff and write artifact_type sidecar.
+# Args: $1=merged_dir  $2=cache_file
+# Returns: 1 if UI charter (diff touches ui/), 0 if non-UI.
+# NOTE: contains ONLY git-diff+sidecar — no gh api (ALLOW boundary).
+# API/contract path (ui/server/): out of scope — future leaf.
+# NOTE: set +e at top propagates to caller so "func; ret=$?" safely captures
+# return code 1 in test contexts running set -euo pipefail.  In production the
+# integrator runs with set -uo pipefail (no -e), so set +e is a no-op there.
+_detect_ui_artifact() {
+  set +e
+  local merged_dir="$1" cache_file="$2"
+  git -C "$merged_dir" diff ORIG_HEAD MERGE_HEAD --name-only 2>/dev/null | grep -q '^ui/' || return 0
+  [ -n "$cache_file" ] && printf 'ui' > "${cache_file}.artifact_type"
+  return 1
+}
+
 # ── subcommand: verify-merged ─────────────────────────────────────────────────
 # Build merged tree (leaf merged into target-branch, reusing _build_merged_tree)
 # and run engine test suite (reference/tests/*.test.sh) on the result.
@@ -363,6 +399,9 @@ cmd_verify_merged() {
 
   local merged_dir="$_BMT_DIR"
 
+  _ui_charter=0
+  _detect_ui_artifact "$merged_dir" "$_cache_file" || _ui_charter=1
+
   # 2. Run engine suite on the merged tree.
   #    F1: shopt -s nullglob — empty glob → empty loop → pass (not literal-string crash).
   #    F2: background-kill timer (CB_VERIFY_TIMEOUT, default 600s) — if the suite
@@ -436,6 +475,24 @@ cmd_verify_merged() {
 
   rm -rf "$merged_dir"
   _BMT_DIR=""
+
+  if [ "$_ui_charter" -eq 1 ]; then
+    _repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+    _visual_state=$(gh api "repos/${_repo}/commits/${_leaf_sha}/statuses" \
+      --jq '[.[] | select(.context=="visual-regression")] | first | .state' 2>/dev/null)
+    if [ "$_visual_state" = "failure" ]; then
+      suite_rc=1
+      printf 'RED_REASON: visual-regression-failed\n'
+      # fall through to N-confirmation — accumulates through counter normally
+    elif [ "$_visual_state" = "success" ]; then
+      : # suite_rc unchanged — proceed normally
+    else
+      # pending/missing: never cache a stale pass — force retryable exit
+      printf 'WARN: visual-regression status pending/missing — retry after GHA completes\n'
+      [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+      rm -rf "$merged_dir"; _BMT_DIR=""; exit 3
+    fi
+  fi
 
   # 3. Classify + single-counter N-confirmation (issue #195 / I3 anti-poison).
   #    rc=0 → pass (cache now, reset red-counter).
@@ -549,14 +606,16 @@ cmd_regen_persist() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
-case "${1:-}" in
-  close-leaf)    shift; cmd_close_leaf "$@" ;;
-  gate-charter)  shift; cmd_gate_charter "$@" ;;
-  try-merge)     shift; cmd_try_merge "$@" ;;
-  verify-merged) shift; cmd_verify_merged "$@" ;;
-  regen-persist) shift; cmd_regen_persist "$@" ;;
-  *)
-    printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist} ...\n' \
-      "$(basename "$0")" >&2
-    exit 64 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    close-leaf)    shift; cmd_close_leaf "$@" ;;
+    gate-charter)  shift; cmd_gate_charter "$@" ;;
+    try-merge)     shift; cmd_try_merge "$@" ;;
+    verify-merged) shift; cmd_verify_merged "$@" ;;
+    regen-persist) shift; cmd_regen_persist "$@" ;;
+    *)
+      printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist} ...\n' \
+        "$(basename "$0")" >&2
+      exit 64 ;;
+  esac
+fi
