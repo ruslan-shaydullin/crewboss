@@ -988,6 +988,30 @@ cmd_run(){
                 gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
                 log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
               fi
+              # Leaf-count gate: require_decomp_leaves policy (default OFF — zero regression).
+              _rdl=$(manifest_policy "${CB_MANIFEST:-}" require_decomp_leaves 2>/dev/null || true)
+              if [ -n "$_rdl" ]; then
+                _leaf_count=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+                  --json number,labels,body 2>/dev/null \
+                  | jq -r --argjson c "$id" \
+                    '[.[] | select([.labels[].name] | any(. == "type:agent"))
+                           | select((.body // "") | test("(?i)Charter:\\s*#?" + ($c|tostring)))] | length' \
+                  2>/dev/null) || _leaf_count=0
+                if [ "${_leaf_count:-0}" -eq 0 ]; then
+                  prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
+                  if [ "$tries" -ge "$RETRY_CAP" ]; then
+                    board route "$id" blocked "decomposition incomplete: 0 leaves created" >/dev/null
+                    sset "$id" pid ""; sset "$id" term 1
+                    log "#$id leaf-count gate: 0 leaves, tries=$tries >= RETRY_CAP -> blocked"
+                  else
+                    gh issue edit "$id" -R "$CB_REPO" \
+                      --remove-label status:plan-review --add-label status:needs-plan 2>/dev/null || true
+                    sset "$id" pid ""
+                    log "#$id leaf-count gate: 0 leaves, tries=$tries -> re-route to needs-plan"
+                  fi
+                  continue
+                fi
+              fi
               sset "$id" term 1; log "#$id planned -> $cst"
             fi
           else prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
