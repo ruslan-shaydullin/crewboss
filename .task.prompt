@@ -1,66 +1,74 @@
-You are the executor for issue #450 in repo stratch1989/crewboss.
-Hard rules for THIS run:
-- You are ALREADY on branch leaf/450-1782112885, based on the charter integration branch 'charter/444' (NOT main). Sibling leaves of charter #444 may already be merged into 'charter/444'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/444 --title '<short>' --body 'Closes #450'. The PR base MUST be 'charter/444', NOT main. Then STOP — do not merge, do not touch other issues.
-- This issue is self-contained; everything you need is below.
+You are reworking issue #490 onto the charter integration branch charter/401 in repo stratch1989/crewboss.
+You are ALREADY on branch rework/490-1782126168, based on origin/charter/401 — sibling leaves of charter #401 are ALREADY merged here (their changes are already present on this branch).
+Your earlier work for this issue is on origin/leaf/490-1782124894. Do this, in order:
+1. git merge --no-edit origin/leaf/490-1782124894
+2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
+3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
+4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
+5. gh pr create --base charter/401 --title "rework(#490): rebase onto charter/401" --body "Closes #490 — reworked onto integration branch, conflicts resolved as additive union."
+Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/401.
 
----- TASK (issue #450) ----
-Charter: #444
-Depends-on: #448, #449
+Issue #490:
+Charter: #401
 
-## Context
+## Task: Write deterministic integration test for per-charter auto-gate
 
-Charter #444 (stale-leaf GC on re-plan) has two implementation leaves:
-- **#448 (444-gc-impl)**: adds a nested `cst=needs-plan` GC guard to
-  `/work/reference/runtime/crewboss-launcher-gh.sh` with a `numsAfter` numeric-equality filter.
-- **#449 (444-gc-test)**: writes `gc-stale-leaves.test.sh` with two-charter prefix isolation
-  (charters #5 and #50) and updates manifest counters.
+**Role:** qa-engineer
+**Files:** `reference/tests/per-charter-auto-gate.test.sh` (new), `reference/runtime/per-leaf-manifest`, `reference/tests/leaf-verifier.test.sh`
 
-This leaf reviews both PRs for correctness and merges them once all checks pass.
+### Background
 
-## Task
+Charter #401 adds per-charter labels `auto:plan-approve` and `auto:merge` that OR with global env flags to control gate progression. This leaf adds a deterministic integration test covering all four acceptance paths, updates the per-leaf-manifest inventory, and keeps leaf-verifier.test.sh Test 7 consistent.
 
-Review the PRs opened by leaves #448 and #449. Verify all of the following before approving:
+Follow the plan-convergence.test.sh stub-agent pattern: real launcher binary, file-based board, stub gh binary that records calls. The test runner must exit with failed=0.
 
-### (a) Nested guard placement — impl PR
+### Verified current baseline (from HEAD -- verify again before editing)
 
-In `/work/reference/runtime/crewboss-launcher-gh.sh`, the GC logic must be inside a **nested**
-`if [ "$cst" = "needs-plan" ]; then … fi` block that sits within the compound success block
-at line 913 (`if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then`).
+- reference/runtime/per-leaf-manifest header: ALLOW=20, EXCLUDED=53, union=73
+- reference/tests/leaf-verifier.test.sh Test 7 assertions: [  -eq 53 ] and [  -eq 73 ]
 
-Confirm the GC code is NOT reachable when `_plok=true` (plan:agreed path).  If it fires on
-plan:agreed it would close the freshly-created correct leaves before launch.
+After adding the new test file the new counts will be: EXCLUDED=54, union=74.
 
-### (b) Word-boundary-safe filter — impl PR
+### New test file: reference/tests/per-charter-auto-gate.test.sh
 
-The jq predicate for identifying stale leaves must use `numsAfter` + numeric equality (or
-an equivalent regex with word-boundary: `test("Charter: #" + ($cid|tostring) + "([^0-9]|$)")`).
+Four scenarios (all: stub gh, real launcher, file board):
 
-Specifically confirm: if `$id = 5`, the filter does NOT match a leaf whose body contains
-`Charter: #50`.  A bare `contains("Charter: #5")` substring match would fail this test.
+**Scenario 1 -- per-charter auto:plan-approve, no global env:**
+- Setup: charter issue has label auto:plan-approve; CB_AUTO_PLAN_APPROVE unset (or 0)
+- Expected: launcher advances charter from status:plan-review to status:approved automatically
+- Verify: board state shows status:approved
 
-### (c) Prefix-isolation scenario — test PR
+**Scenario 2 -- no auto label, no env -> manual gate stays:**
+- Setup: charter has neither auto:plan-approve label nor CB_AUTO_PLAN_APPROVE=1
+- Expected: charter remains at status:plan-review after a launcher tick (human gate not cleared)
+- Verify: board state still shows status:plan-review
 
-`gc-stale-leaves.test.sh` must contain Scenario B: two charters seeded with IDs **#5** and
-**#50** (string-prefix pair), stale leaves for each, needs-plan triggered for #5 only.
-Assertions must cover: #5 leaf CLOSED AND #50 leaf remains OPEN.
+**Scenario 3 -- per-charter auto:merge + green CI -> merged (RED-b pattern):**
+- Setup: charter has label auto:merge; CB_AUTO_MERGE unset (or 0); seed ci_state=pending (or omit the file) in the finale dir; provide a valid pr_ts; stub gh pr checks exits 0 (all checks passed)
+- Expected: the pr-merge command is recorded in the stub log
+- CRITICAL -- do NOT pre-seed ci_state=green: _finale_check_ci has an early-return guard (lines 442-446) that short-circuits on cached terminal states (green, red) BEFORE reaching the auto-merge gate at line 487. Pre-seeding ci_state=green would make the test pass vacuously without exercising the code under test. The pending->green transition driven by stubbed gh pr checks returning 0 is the path that reaches line 487.
+- Verify: stub log contains pr merge invocation
 
-### (d) Manifest counter updates — test PR
+**Scenario 4 -- per-charter auto:merge + red CI -> NOT merged (RED-b pattern):**
+- Setup: same as Scenario 3 except stub gh pr checks exits non-zero with failure output
+- Expected: pr-merge is NOT called; PR stays open/draft
+- Verify: stub log does NOT contain pr merge invocation
 
-Confirm all four of:
-1. `leaf-verifier.test.sh` line 266: `[ "$_excl_count" -eq 51 ]` (was 50)
-2. `leaf-verifier.test.sh` line 270: `[ "$_actual_count" -eq 71 ]` (was 70)
-3. `per-leaf-manifest` line 17 header: `ALLOW=20, EXCLUDED=51, union=71`
-4. `per-leaf-manifest` EXCLUDED section: entry for `gc-stale-leaves` present
+### Updates required
 
-### (e) SHA manifest — test PR
+**reference/runtime/per-leaf-manifest:**
+1. Add EXCLUDED entry: EXCLUDED per-charter-auto-gate  # integration test: real launcher + per-charter label stubs; heavy process -> EXCLUDED
+2. Update header comment from ALLOW=20, EXCLUDED=53, union=73 to ALLOW=20, EXCLUDED=54, union=74
 
-`runtime-manifest.tsv` has updated SHA rows for every canonical runtime file changed in both PRs.
+**reference/tests/leaf-verifier.test.sh Test 7:**
+- Find the assertion containing 53 for EXCLUDED count and change it to 54
+- Find the assertion containing 73 for actual *.test.sh count and change it to 74
+- (Search for the literal values rather than relying on line numbers, which shift with edits)
 
-### (f) verify-merged ALL-GREEN
-
-Run `reference/tests/verify-merged.sh`.  All tests must pass (no FAIL lines, exit 0).
+### Commit message
+Conventional Commits: test(auto-gate): per-charter auto:plan-approve and auto:merge integration test
 
 ## Acceptance (machine)
-
-- test: reference/tests/verify-merged.sh
+- check: bash reference/tests/per-charter-auto-gate.test.sh
+- check: grep -q EXCLUDED=54 reference/runtime/per-leaf-manifest
+- check: bash reference/tests/leaf-verifier.test.sh
