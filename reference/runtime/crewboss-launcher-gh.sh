@@ -912,6 +912,20 @@ cmd_run(){
           _plok=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
           if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then
             sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
+            if [ "$cst" = "needs-plan" ]; then
+              _stale=$(gh issue list -R "$CB_REPO" --state open --label "type:agent" --json number,body --limit 200 \
+                | jq -r --argjson cid "$id" '
+                  def numsAfter($body; $kw):
+                    [($body//"") | split("\n")[]
+                     | select(test("(?i)^[\\s*_>#-]*"+$kw+"\\s*:"))]
+                    | join(" ") | [scan("\\d+") | tonumber];
+                  .[] | select((numsAfter(.body;"Charter")|first) == $cid) | .number
+                ' 2>/dev/null || true)
+              for _sn in $_stale; do
+                gh issue close "$_sn" -R "$CB_REPO" --comment "Stale leaf from prior plan round (charter #$id re-plan)" 2>/dev/null || true
+                log "#$_sn stale leaf closed (charter #$id re-plan)"
+              done
+            fi
             log "#$id plan-review done -> $([ "$_plok" = "true" ] && echo agreed || echo changes-requested)"
           else
             prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
