@@ -12,6 +12,7 @@ export type Task = {
   milestone?: number | null   // #186 — present only on charter tasks
   git_status?: string | null  // #258 — 'clean' | 'needs-conflict-resolution'; charter only
   blast_radius?: string | null  // #265 — 'high' | 'low'; charter only
+  finale_pr?: string            // #473 — PR number for charter finale merge
 }
 export type Agent = {
   task: number | null
