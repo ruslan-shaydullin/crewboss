@@ -482,9 +482,12 @@ _finale_check_ci(){
     green)
       log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
       gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
-      # AUTO merge (opt-in, #366): perform the final charter→main human gate automatically once
-      # CI is green. Default off → charter PR waits for a human merge.
-      if [ "${CB_AUTO_MERGE:-0}" = "1" ]; then
+      # AUTO merge (opt-in, #366/#401): perform the final charter→main human gate automatically
+      # once CI is green. Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label on the charter
+      # issue (per-charter, #401). Default off → charter PR waits for a human merge.
+      _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+        | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
+      if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
         if gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null; then
           log "charter-finale: #$cid PR #$pr_num AUTO-merged → main (CB_AUTO_MERGE)"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
@@ -979,7 +982,10 @@ cmd_run(){
             # NOT terminal at plan-review — the analyst reviews it (plan-review gate fires while term
             # is unset). Released to status:approved only on plan:agreed. Default off → existing flow.
             _plrr=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
-            _plag=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name]|index("plan:agreed")!=null' 2>/dev/null || echo false)
+            _raw_labels_json=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+            _plag=$(printf '%s' "$_raw_labels_json" | jq -r 'index("plan:agreed")!=null' 2>/dev/null || echo false)
+            # Per-charter auto:plan-approve label (OR with global CB_AUTO_PLAN_APPROVE env var, #401).
+            _auto_plan_approve_label=$(printf '%s' "$_raw_labels_json" | jq -r 'index("auto:plan-approve")!=null' 2>/dev/null || echo false)
             if [ -n "$_plrr" ] && [ "$cst" = "plan-review" ] && [ "$_plag" != "true" ]; then
               log "#$id planned -> plan-review (awaiting plan-convergence)"   # term stays unset → gate picks up
             else
@@ -1009,10 +1015,12 @@ cmd_run(){
                   continue
                 fi
               fi
-              # AUTO plan-approval (opt-in, #366): release leaves automatically (no plan-convergence).
-              if [ "${CB_AUTO_PLAN_APPROVE:-0}" = "1" ] && [ "$cst" = "plan-review" ] && [ -z "$_plrr" ]; then
+              # AUTO plan-approval (opt-in, #366/#401): release leaves automatically (no plan-convergence).
+              # Opt-in via CB_AUTO_PLAN_APPROVE=1 (global) OR auto:plan-approve label on the charter
+              # issue (per-charter, #401). Default off → charter waits for human plan approval.
+              if ([ "${CB_AUTO_PLAN_APPROVE:-0}" = "1" ] || [ "$_auto_plan_approve_label" = "true" ]) && [ "$cst" = "plan-review" ] && [ -z "$_plrr" ]; then
                 gh issue edit "$id" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
-                log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE) -> approved"
+                log "#$id plan auto-approved (CB_AUTO_PLAN_APPROVE or auto:plan-approve label) -> approved"
               fi
               sset "$id" term 1; log "#$id planned -> $cst"
             fi

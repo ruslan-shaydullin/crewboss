@@ -263,13 +263,13 @@ else
     && ok "guard: ALLOW count=20" \
     || ko "guard: ALLOW count expected 20, got $_allow_count"
 
-  [ $_excl_count -eq 53 ] \
-    && ok "guard: EXCLUDED count=53" \
-    || ko "guard: EXCLUDED count expected 53, got $_excl_count"
+  [ $_excl_count -eq 54 ] \
+    && ok "guard: EXCLUDED count=54" \
+    || ko "guard: EXCLUDED count expected 54, got $_excl_count"
 
-  [ $_actual_count -eq 73 ] \
-    && ok "guard: actual *.test.sh count=73" \
-    || ko "guard: actual *.test.sh count expected 73, got $_actual_count"
+  [ $_actual_count -eq 74 ] \
+    && ok "guard: actual *.test.sh count=74" \
+    || ko "guard: actual *.test.sh count expected 74, got $_actual_count"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"
