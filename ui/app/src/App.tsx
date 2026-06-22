@@ -611,6 +611,7 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
   const gridRef = useRef<HTMLDivElement>(null)
   useFlip(gridRef)
   const bodyId = `charter-body-${c?.n ?? 0}`
+  const [mergeErr, setMergeErr] = useState<string | null>(null)
   return (
     <div className="charter">
       <div className="charter-head">
@@ -697,6 +698,16 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
             (reason) => onAction('request-changes', c.n, reason),
             true)}>Request changes</button>
         </>}
+        {c && c.state === 'approved' && c.finale_pr && (
+          <>
+            <button className="btn sm pri" onClick={async () => {
+              setMergeErr(null)
+              const r = await command('merge', c.n)
+              if (!r.ok) setMergeErr(r.msg || 'merge failed')
+            }}>Merge</button>
+            {mergeErr && <span className="err-inline">{mergeErr}</span>}
+          </>
+        )}
       </div>
       <div id={bodyId} style={expanded ? undefined : { display: 'none' }}>
         {total > 0 && (
@@ -952,6 +963,7 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [sending, setSending] = useState(false)
   const [resolveText, setResolveText] = useState('')
   const [resolving, setResolving] = useState(false)
+  const [mergeErr, setMergeErr] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1069,6 +1081,16 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
                 (reason) => onAction('request-changes', n, reason),
                 true)}>Request changes</button>
             </>}
+            {task.state === 'approved' && task.finale_pr && (
+              <>
+                <button className="btn sm pri" onClick={async () => {
+                  setMergeErr(null)
+                  const r = await command('merge', n)
+                  if (!r.ok) setMergeErr(r.msg || 'merge failed')
+                }}>Merge</button>
+                {mergeErr && <span className="err-inline">{mergeErr}</span>}
+              </>
+            )}
             {task.state === 'held'
               ? <button className="btn sm" onClick={() => onAction('unhold', n)}>Un-hold</button>
               : <button className="btn sm ghost" onClick={() => onAction('hold', n)}>Hold</button>}
