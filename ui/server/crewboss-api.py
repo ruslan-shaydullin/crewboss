@@ -517,7 +517,7 @@ def do_command(body):
                 try: os.unlink(tmp_comment)
                 except Exception: pass
         return {"ok":True,"msg":f"checkbox {index} updated"}
-    elif a == "merge":
+    elif a=="merge":
         if not n.isdigit():
             return {"ok": False, "msg": "invalid issue number"}
         pr_num_path = os.path.join(RUN, "state", f"finale-{n}", "pr_num")
