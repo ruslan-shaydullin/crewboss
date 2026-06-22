@@ -1,60 +1,51 @@
-You are reworking issue #416 onto the charter integration branch charter/305 in repo stratch1989/crewboss.
-You are ALREADY on branch rework/416-1782132385, based on origin/charter/305 — sibling leaves of charter #305 are ALREADY merged here (their changes are already present on this branch).
-Your earlier work for this issue is on origin/leaf/416-1782131606. Do this, in order:
-1. git merge --no-edit origin/leaf/416-1782131606
-2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
-3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
-4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/305 --title "rework(#416): rebase onto charter/305" --body "Closes #416 — reworked onto integration branch, conflicts resolved as additive union."
-Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/305.
+You are the executor for issue #533 in repo stratch1989/crewboss.
+Hard rules for THIS run:
+- You are ALREADY on branch leaf/533-1782151006, based on the charter integration branch 'charter/523' (NOT main). Sibling leaves of charter #523 may already be merged into 'charter/523'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/523 --title '<short>' --body 'Closes #533'. The PR base MUST be 'charter/523', NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
 
-Issue #416:
-Charter: #305
-Depends-on: #415
+---- TASK (issue #533) ----
+Charter: #523
 
 ## Context
+Charter #523 goal: separate test authorship from implementation. Tests must be derived from charter/analysis INTENT by a role that does NOT write the implementation code. This leaf runs FIRST; all implementation leaves depend on it. This leaf is assigned to qa-engineer. Derive tests from the charter body and analysis comment on issue #523 ONLY - do NOT read any executor leaf spec.
 
-Part of charter #305 (Queue visibility & state machine overhaul). This leaf restructures the QueuePanel layout so it is always visible regardless of scroll position or number of agents.
+## Key facts from analysis comment on #523
+- crewboss-gate.sh currently only fires for tool_name=Bash (line 26); no handling for Edit/Write/MultiEdit.
+- .claude/settings.json has a single PreToolUse entry with matcher Bash (lines 11-22).
+- reference/runtime/per-leaf-manifest has ALLOW=20, EXCLUDED=54, union=74.
+- leaf-verifier.test.sh Test 7 hard-codes those counts at lines 244, 264, 267, 270.
+- All three tools (Edit, Write, MultiEdit) share tool_input.file_path at the top level. tool_input.edits[].file_path is null on real MultiEdit payloads.
 
-**Prerequisite:** issue #415 (leaf-327) must be merged first — the final QueuePanel prop interface is established there and must be stable before the render tree is restructured here.
+## Task
 
-## Background / problem
+### 1. Write reference/tests/independent-test-authorship.test.sh
 
-When there are many agents in the loop (synthetic + real), the queue panel is embedded inside the scrollable agent/charter board and gets lost. Operators cannot see the queue. The fix: move QueuePanel into a dedicated, always-visible block (sticky sidebar or fixed top panel).
+**(a) Gate blocks executor from editing test files via Edit, Write, and MultiEdit.**
+For each tool name, construct JSON with tool_input.file_path pointing to a protected path (e.g. foo.test.sh, foo.test.ts, src/tests/bar.sh) and role=executor. Pipe to .claude/hooks/crewboss-gate.sh and assert exit 2 (deny). Also assert a legitimate executor path (e.g. src/tests-utils.ts) exits 0 (no false-deny).
 
-## Changes required
+**(c) verify-merged presence check.**
+Assert reference/tests/independent-test-authorship.test.sh exists on disk.
 
-### 1. `ui/app/src/App.tsx` — layout restructure
+Assertion (b) gh-pr-ready interlock is intentionally omitted - enforced structurally by launcher Depends-on; no gate extension needed.
 
-Find the render section where `<QueuePanel .../>` currently lives inside the scrollable board container. Extract it to a sibling element that is outside (and rendered independently of) the scrollable area. The queue panel must be visible at all times, not just when the user scrolls to it.
+### 2. Update reference/runtime/per-leaf-manifest
+Add independent-test-authorship as ALLOW (pure stdin JSON against gate binary, no network, no gh-shim). Include criterion justification comment matching existing ALLOW entry format.
 
-### 2. `ui/app/src/styles.css` — sticky/fixed positioning
+### 3. Update reference/tests/leaf-verifier.test.sh Test 7 counts
+- Line ~244 label: update to ALLOW=21 EXCLUDED=54
+- Line ~264: eq 20 -> eq 21
+- Line ~267: eq 54 (unchanged)
+- Line ~270: eq 74 -> eq 75
+New totals: ALLOW=21, EXCLUDED=54, union=75.
 
-Add a CSS class (e.g. `.queue-panel--sticky`) that positions the panel as a sticky sidebar or fixed top block. Requirements:
-- Panel is always visible (does not scroll away with agent cards)
-- Does not overlap or conflict with agent-card / charter-card layout
-- Works correctly at various viewport widths (responsive at minimum to the widths already supported by the app)
-
-### Prop interface to use (from leaf-327 / issue #415)
-
-```typescript
-interface QueuePanelProps {
-  queueOrder: number[]
-  savedOrder: number[]
-  board: Milestone[]
-  isLoopRunning: boolean
-  onQueueChange: (order: number[]) => Promise<void>
-  onLaunch: () => Promise<void>
-}
-```
-
-Do not change these props — leaf-329 also depends on them.
-
-## Scope boundary
-
-UI-only: `ui/app/src/App.tsx` and `ui/app/src/styles.css`. Gateway and launcher untouched.
+### 4. Post a crewboss-digest comment on this issue
+Summarise assertions covered, ALLOW rationale, and updated counts.
 
 ## Acceptance (machine)
-
-- check: cd ui/app && npm run build
-- check: cd ui/app && npx tsc --noEmit
+- test: reference/tests/independent-test-authorship.test.sh
+- check: bash reference/tests/independent-test-authorship.test.sh
+- check: grep -q independent-test-authorship reference/runtime/per-leaf-manifest
+- check: grep -q "eq 21" reference/tests/leaf-verifier.test.sh
+- check: grep -q "eq 75" reference/tests/leaf-verifier.test.sh
+- check: bash reference/tests/leaf-verifier.test.sh
