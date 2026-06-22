@@ -1,44 +1,66 @@
-You are reworking issue #423 onto the charter integration branch charter/420 in repo stratch1989/crewboss.
-You are ALREADY on branch rework/423-1782055567, based on origin/charter/420 — sibling leaves of charter #420 are ALREADY merged here (their changes are already present on this branch).
-Your earlier work for this issue is on origin/leaf/423-1782053994. Do this, in order:
-1. git merge --no-edit origin/leaf/423-1782053994
-2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
-3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
-4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/420 --title "rework(#423): rebase onto charter/420" --body "Closes #423 — reworked onto integration branch, conflicts resolved as additive union."
-Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/420.
+You are the executor for issue #450 in repo stratch1989/crewboss.
+Hard rules for THIS run:
+- You are ALREADY on branch leaf/450-1782112885, based on the charter integration branch 'charter/444' (NOT main). Sibling leaves of charter #444 may already be merged into 'charter/444'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/444 --title '<short>' --body 'Closes #450'. The PR base MUST be 'charter/444', NOT main. Then STOP — do not merge, do not touch other issues.
+- This issue is self-contained; everything you need is below.
 
-Issue #423:
-Charter: #420
+---- TASK (issue #450) ----
+Charter: #444
+Depends-on: #448, #449
 
 ## Context
 
-The queue-mode deadlock in charter #420 caused every charter with `plan_review_role` to strand on `status:plan-review` in a multi-charter queue — plan-convergence never fired for them. The launcher fix (sibling leaf-420-1) patches the head-calculation logic. This leaf adds the regression-preventing integration test so the bug cannot silently re-appear.
+Charter #444 (stale-leaf GC on re-plan) has two implementation leaves:
+- **#448 (444-gc-impl)**: adds a nested `cst=needs-plan` GC guard to
+  `/work/reference/runtime/crewboss-launcher-gh.sh` with a `numsAfter` numeric-equality filter.
+- **#449 (444-gc-test)**: writes `gc-stale-leaves.test.sh` with two-charter prefix isolation
+  (charters #5 and #50) and updates manifest counters.
 
-Existing patterns to mirror:
-- `reference/tests/plan-convergence.test.sh` — single-charter plan-convergence fixture
-- `reference/tests/launcher-queue.test.sh` — multi-charter queue fixture
+This leaf reviews both PRs for correctness and merges them once all checks pass.
 
 ## Task
 
-Create **`reference/tests/queue-plan-convergence.test.sh`** (exact filename; used by manifest leaf-420-3). The test must:
+Review the PRs opened by leaves #448 and #449. Verify all of the following before approving:
 
-1. **Setup (happy path)** — build a `queue.json` with ≥ 2 charter IDs; set `policy.plan_review_role` in manifest; seed both charters at `status:plan-review` + `composition:approved` with no `plan:agreed`.
-2. **Run** — invoke the real launcher for N ticks (match the budget in `launcher-queue.test.sh`).
-3. **Assert** — BOTH charters acquire `plan:agreed` and reach `status:approved`; if any charter remains on `plan-review` after N ticks increment `failed`.
-4. **Control case** — repeat without `plan_review_role`; assert launcher does NOT apply `plan:agreed` to either charter (park & advance unchanged); any spurious label increments `failed`.
-5. Emit `failed=0` on success, matching the convention used by all tests in this suite.
+### (a) Nested guard placement — impl PR
 
-Class: **EXCLUDED** (heavy launcher integration — same class as `plan-convergence.test.sh`, `launcher-queue.test.sh`). Manifest registration and sha-lock regen are handled in sibling leaf-420-3.
+In `/work/reference/runtime/crewboss-launcher-gh.sh`, the GC logic must be inside a **nested**
+`if [ "$cst" = "needs-plan" ]; then … fi` block that sits within the compound success block
+at line 913 (`if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then`).
 
-Conventional Commits.
+Confirm the GC code is NOT reachable when `_plok=true` (plan:agreed path).  If it fires on
+plan:agreed it would close the freshly-created correct leaves before launch.
 
-## Files
+### (b) Word-boundary-safe filter — impl PR
 
-- `reference/tests/queue-plan-convergence.test.sh` (new)
+The jq predicate for identifying stale leaves must use `numsAfter` + numeric equality (or
+an equivalent regex with word-boundary: `test("Charter: #" + ($cid|tostring) + "([^0-9]|$)")`).
+
+Specifically confirm: if `$id = 5`, the filter does NOT match a leaf whose body contains
+`Charter: #50`.  A bare `contains("Charter: #5")` substring match would fail this test.
+
+### (c) Prefix-isolation scenario — test PR
+
+`gc-stale-leaves.test.sh` must contain Scenario B: two charters seeded with IDs **#5** and
+**#50** (string-prefix pair), stale leaves for each, needs-plan triggered for #5 only.
+Assertions must cover: #5 leaf CLOSED AND #50 leaf remains OPEN.
+
+### (d) Manifest counter updates — test PR
+
+Confirm all four of:
+1. `leaf-verifier.test.sh` line 266: `[ "$_excl_count" -eq 51 ]` (was 50)
+2. `leaf-verifier.test.sh` line 270: `[ "$_actual_count" -eq 71 ]` (was 70)
+3. `per-leaf-manifest` line 17 header: `ALLOW=20, EXCLUDED=51, union=71`
+4. `per-leaf-manifest` EXCLUDED section: entry for `gc-stale-leaves` present
+
+### (e) SHA manifest — test PR
+
+`runtime-manifest.tsv` has updated SHA rows for every canonical runtime file changed in both PRs.
+
+### (f) verify-merged ALL-GREEN
+
+Run `reference/tests/verify-merged.sh`.  All tests must pass (no FAIL lines, exit 0).
 
 ## Acceptance (machine)
 
-- check: `bash reference/tests/queue-plan-convergence.test.sh`
-- check: `bash reference/tests/plan-convergence.test.sh`
-- check: `bash reference/tests/launcher-queue.test.sh`
+- test: reference/tests/verify-merged.sh

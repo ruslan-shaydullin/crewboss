@@ -913,6 +913,28 @@ cmd_run(){
           if [ "$_plok" = "true" ] || [ "$cst" = "needs-plan" ]; then
             sset "$id" pid ""; sset "$id" term ""; sset "$id" tries ""
             log "#$id plan-review done -> $([ "$_plok" = "true" ] && echo agreed || echo changes-requested)"
+            # ── GC stale type:agent leaves (#444) ────────────────────────────────────
+            # When the plan-reviewer routes the charter back to needs-plan (critique
+            # path), the current plan is superseded by the tech-lead's re-plan.  Close
+            # all open type:agent leaves of THIS charter so stale work-items do not
+            # execute against the outdated decomposition.
+            # numsAfter numeric equality: "Charter: #5" does NOT match "Charter: #50".
+            if [ "$cst" = "needs-plan" ]; then
+              _gc_snap=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+                         --json number,state,labels,body 2>/dev/null || echo "[]")
+              for _gc_lid in $(printf '%s' "$_gc_snap" | jq -r --argjson c "$id" '
+                def numsAfter($b; $k):
+                  [ ($b // "") | split("\n")[]
+                    | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:")) ]
+                  | join(" ") | [scan("\\d+") | tonumber];
+                .[] | select(.state == "OPEN")
+                    | select([.labels[].name] | index("type:agent") != null)
+                    | select((numsAfter(.body; "Charter") | first) == ($c | tonumber))
+                    | .number' 2>/dev/null); do
+                gh issue close "$_gc_lid" -R "$CB_REPO" 2>/dev/null || true
+                log "gc-stale-leaves: closed type:agent leaf #$_gc_lid (charter #$id critique → needs-plan)"
+              done
+            fi
           else
             prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
             if [ "$tries" -ge "$RETRY_CAP" ]; then
