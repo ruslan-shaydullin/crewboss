@@ -26,4 +26,8 @@ mklabel "hold"               "d93f0b" "veto: never launch (manual hold)"
 mklabel "blast-radius:high"  "b60205" "charter: active high blast-radius — serializes launcher (unscoped)"
 mklabel "blast-radius:low"   "c5def5" "charter: normal parallel launch (default if no blast-radius label)"
 
+# per-charter auto-gate labels (#401)
+mklabel "auto:plan-approve" "0075ca" "per-charter: auto-approve plan gate"
+mklabel "auto:merge"        "0075ca" "per-charter: auto-merge on green CI"
+
 echo "✓ crewboss board labels ready"

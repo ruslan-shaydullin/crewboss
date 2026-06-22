@@ -565,11 +565,13 @@ def do_issue(body):
         return {"ok": False, "msg": "kind and title required"}
 
     if kind == "charter":
-        what        = (body.get("what")        or "").strip()
-        why         = (body.get("why")         or "").strip()
-        scope       = (body.get("scope")       or "").strip()
-        constraints = (body.get("constraints") or "").strip()
-        acceptance  = (body.get("acceptance")  or "").strip()
+        what             = (body.get("what")        or "").strip()
+        why              = (body.get("why")         or "").strip()
+        scope            = (body.get("scope")       or "").strip()
+        constraints      = (body.get("constraints") or "").strip()
+        acceptance       = (body.get("acceptance")  or "").strip()
+        auto_plan_approve = bool(body.get("auto_plan_approve", False))
+        auto_merge        = bool(body.get("auto_merge", False))
         if not what or not why:
             return {"ok": False, "msg": "what and why are required for charter"}
         text = (
@@ -584,6 +586,10 @@ def do_issue(body):
             f"{acceptance}\n"
         )
         label = "type:charter,status:needs-plan"
+        if auto_plan_approve:
+            label += ",auto:plan-approve"
+        if auto_merge:
+            label += ",auto:merge"
     elif kind == "task":
         desc      = (body.get("description") or "").strip()
         charter_n = body.get("charter")

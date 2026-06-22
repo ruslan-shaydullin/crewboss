@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=20, EXCLUDED=53, union=73  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=20, EXCLUDED=54, union=74  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -28,7 +28,7 @@
 # #206 also adds charter-finale-regen (the A-persistence integration test): heavy
 #   git (clone/merge/push to prove persistence on MAIN) ⇒ EXCLUDED. union 45→46.
 
-# ── ALLOW (14 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
+# ── ALLOW (20 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
 ALLOW acceptance-block
 ALLOW cli-smoke
 ALLOW gate-comment-payload
@@ -53,7 +53,7 @@ ALLOW role-spawn
 ALLOW board-states
 ALLOW composition-parse
 
-# ── EXCLUDED (36 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
+# ── EXCLUDED (54 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness
 EXCLUDED charter-branch
 EXCLUDED charter-finale
@@ -152,3 +152,5 @@ EXCLUDED plan-decomposition
 #   Background/timing-sensitive -- same class as ui-loop-mode, ui-run-contract.
 #   EXCLUDED (fail-closed).
 EXCLUDED merge-action
+# #490 per-charter-auto-gate: integration test: real launcher + per-charter label stubs; heavy process -> EXCLUDED
+EXCLUDED per-charter-auto-gate
