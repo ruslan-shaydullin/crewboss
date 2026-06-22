@@ -1,44 +1,106 @@
-You are reworking issue #423 onto the charter integration branch charter/420 in repo stratch1989/crewboss.
-You are ALREADY on branch rework/423-1782055567, based on origin/charter/420 — sibling leaves of charter #420 are ALREADY merged here (their changes are already present on this branch).
-Your earlier work for this issue is on origin/leaf/423-1782053994. Do this, in order:
-1. git merge --no-edit origin/leaf/423-1782053994
+You are reworking issue #449 onto the charter integration branch charter/444 in repo stratch1989/crewboss.
+You are ALREADY on branch rework/449-1782112548, based on origin/charter/444 — sibling leaves of charter #444 are ALREADY merged here (their changes are already present on this branch).
+Your earlier work for this issue is on origin/leaf/449-1782110805. Do this, in order:
+1. git merge --no-edit origin/leaf/449-1782110805
 2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
 3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
 4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/420 --title "rework(#423): rebase onto charter/420" --body "Closes #423 — reworked onto integration branch, conflicts resolved as additive union."
-Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/420.
+5. gh pr create --base charter/444 --title "rework(#449): rebase onto charter/444" --body "Closes #449 — reworked onto integration branch, conflicts resolved as additive union."
+Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/444.
 
-Issue #423:
-Charter: #420
+Issue #449:
+Charter: #444
 
 ## Context
 
-The queue-mode deadlock in charter #420 caused every charter with `plan_review_role` to strand on `status:plan-review` in a multi-charter queue — plan-convergence never fired for them. The launcher fix (sibling leaf-420-1) patches the head-calculation logic. This leaf adds the regression-preventing integration test so the bug cannot silently re-appear.
+Charter #444 (stale-leaf GC) adds logic to `/work/reference/runtime/crewboss-launcher-gh.sh`
+that closes all open `type:agent` leaves of a charter when the plan-reviewer routes it back to
+`needs-plan`.  The GC filter uses `numsAfter` (numeric equality on the `Charter: #N` field) so
+that charter #5 does NOT accidentally match leaves of charter #50.
 
-Existing patterns to mirror:
-- `reference/tests/plan-convergence.test.sh` — single-charter plan-convergence fixture
-- `reference/tests/launcher-queue.test.sh` — multi-charter queue fixture
+This leaf writes the deterministic regression test for that fix, updates manifest counters, and
+re-locks the SHA manifest.
 
 ## Task
 
-Create **`reference/tests/queue-plan-convergence.test.sh`** (exact filename; used by manifest leaf-420-3). The test must:
+### 1. Write `/work/reference/tests/gc-stale-leaves.test.sh`
 
-1. **Setup (happy path)** — build a `queue.json` with ≥ 2 charter IDs; set `policy.plan_review_role` in manifest; seed both charters at `status:plan-review` + `composition:approved` with no `plan:agreed`.
-2. **Run** — invoke the real launcher for N ticks (match the budget in `launcher-queue.test.sh`).
-3. **Assert** — BOTH charters acquire `plan:agreed` and reach `status:approved`; if any charter remains on `plan-review` after N ticks increment `failed`.
-4. **Control case** — repeat without `plan_review_role`; assert launcher does NOT apply `plan:agreed` to either charter (park & advance unchanged); any spurious label increments `failed`.
-5. Emit `failed=0` on success, matching the convention used by all tests in this suite.
+Mirror the structure of `/work/reference/tests/plan-convergence.test.sh` (class:
+integration-stub — real launcher + board-gh.sh, stubbed `gh`).
 
-Class: **EXCLUDED** (heavy launcher integration — same class as `plan-convergence.test.sh`, `launcher-queue.test.sh`). Manifest registration and sha-lock regen are handled in sibling leaf-420-3.
+The test file must contain **two test scenarios**:
 
-Conventional Commits.
+---
 
-## Files
+**Scenario A — single-charter happy path**
 
-- `reference/tests/queue-plan-convergence.test.sh` (new)
+Setup:
+- Configure manifest with `plan_review_role` set (arms the plan-convergence gate).
+- Seed board: charter #5 at `status:plan-review`, plus 2 open `type:agent` stale leaves
+  whose bodies start with `Charter: #5`.
+- Plan-reviewer stub returns "needs-plan" (critique path).
+
+Run one launcher loop tick.
+
+Assertions:
+- Both stale leaves are CLOSED (`state == "CLOSED"` in board state).
+- Neither leaf appears in `board launchable` output.
+
+---
+
+**Scenario B — multi-charter prefix isolation (mandatory)**
+
+This scenario proves the word-boundary-safe filter works correctly.
+
+Setup:
+- Seed board: charter **#5** AND charter **#50** (both at `status:plan-review`).
+- Seed stale leaves for **both** charters:
+  - At least one leaf whose body contains `Charter: #5` (child of charter 5)
+  - At least one leaf whose body contains `Charter: #50` (child of charter 50)
+- Trigger needs-plan for charter **#5** only.
+
+Assertions:
+- Charter #5's stale leaf is CLOSED.
+- Charter #50's stale leaf remains OPEN.
+
+The IDs #5 and #50 are the critical choice: "Charter: #5" is a string-prefix of "Charter: #50",
+so a naive `contains("Charter: #5")` match would incorrectly close the #50 leaf.  The
+`numsAfter` numeric-equality filter must NOT do that.
+
+---
+
+### 2. Update `leaf-verifier.test.sh`
+
+File: `/work/reference/tests/leaf-verifier.test.sh`
+
+- Line 244 heading comment: change `EXCLUDED=50` to `EXCLUDED=51`
+- Line 266: change `[ "$_excl_count" -eq 50 ]` to `[ "$_excl_count" -eq 51 ]`
+- Line 270: change `[ "$_actual_count" -eq 70 ]` to `[ "$_actual_count" -eq 71 ]`
+
+### 3. Update `per-leaf-manifest` header comment
+
+File: `/work/reference/runtime/per-leaf-manifest`
+
+- Line 17: change `ALLOW=20, EXCLUDED=50, union=70` to `ALLOW=20, EXCLUDED=51, union=71`
+
+### 4. Register the new test as EXCLUDED
+
+In `/work/reference/runtime/per-leaf-manifest`, add to the EXCLUDED section:
+
+```
+EXCLUDED gc-stale-leaves
+```
+
+### 5. Regenerate SHA manifest
+
+Run the canonical sha-regen tooling (`regen-manifest.sh` or equivalent) after all file changes
+to update SHA locks in `/work/reference/runtime/runtime-manifest.tsv`.
 
 ## Acceptance (machine)
 
-- check: `bash reference/tests/queue-plan-convergence.test.sh`
-- check: `bash reference/tests/plan-convergence.test.sh`
-- check: `bash reference/tests/launcher-queue.test.sh`
+- check: test -f /work/reference/tests/gc-stale-leaves.test.sh
+- check: grep -q 'Charter: #50' /work/reference/tests/gc-stale-leaves.test.sh
+- check: grep -q 'EXCLUDED gc-stale-leaves' /work/reference/runtime/per-leaf-manifest
+- check: grep -q 'EXCLUDED=51' /work/reference/runtime/per-leaf-manifest
+- check: grep -q 'eq 51' /work/reference/tests/leaf-verifier.test.sh
+- test: reference/tests/verify-merged.sh
