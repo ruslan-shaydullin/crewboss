@@ -91,7 +91,7 @@ export async function fetchTask(n: number): Promise<TaskDetail | null> {
 }
 
 export type IssuePayload =
-  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string; acceptance_block?: string }
+  | { kind: 'charter'; title: string; what: string; why: string; scope?: string; constraints?: string; acceptance?: string; acceptance_block?: string; auto_plan_approve?: boolean; auto_merge?: boolean }
   | { kind: 'task'; title: string; description: string; charter: number; depends_on?: string; acceptance_block?: string }
 
 export type FacilitateMessage = { role: 'user' | 'facilitator'; content: string }

@@ -1260,6 +1260,8 @@ function NewIssueModal({ state, onClose, onToast }: {
   const [description, setDescription] = useState('')
   const [charterN, setCharterN] = useState('')
   const [dependsOn, setDependsOn] = useState('')
+  const [autoPlanApprove, setAutoPlanApprove] = useState(false)
+  const [autoMerge, setAutoMerge] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [step, setStep] = useState<'form' | 'discuss' | 'summary'>('form')
   const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
@@ -1310,7 +1312,7 @@ function NewIssueModal({ state, onClose, onToast }: {
   const handleSubmit = async () => {
     if (!isValid || submitting) return
     const p: IssuePayload = kind === 'charter'
-      ? { kind: 'charter', title, what, why, scope, constraints, acceptance, acceptance_block: acceptanceBlock.trim() || undefined }
+      ? { kind: 'charter', title, what, why, scope, constraints, acceptance, acceptance_block: acceptanceBlock.trim() || undefined, auto_plan_approve: autoPlanApprove, auto_merge: autoMerge }
       : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined, acceptance_block: acceptanceBlock.trim() || undefined }
     setSubmitting(true)
     try {
@@ -1563,6 +1565,16 @@ function NewIssueModal({ state, onClose, onToast }: {
             <label className="fld">Scope<textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="In-scope / out-of-scope" rows={2} /></label>
             <label className="fld">Constraints<textarea value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="Technical, time, or budget constraints" rows={2} /></label>
             <label className="fld">Acceptance<textarea value={acceptance} onChange={(e) => setAcceptance(e.target.value)} placeholder="Acceptance criteria (checklist)" rows={3} /></label>
+            <label>
+              <input type="checkbox" checked={autoPlanApprove}
+                     onChange={e => setAutoPlanApprove(e.target.checked)} />
+              {" "}Auto-approve plan (skip manual plan-review gate for this charter)
+            </label>
+            <label>
+              <input type="checkbox" checked={autoMerge}
+                     onChange={e => setAutoMerge(e.target.checked)} />
+              {" "}Auto-merge on green CI (skip manual merge gate for this charter)
+            </label>
           </>
         ) : (
           <>
