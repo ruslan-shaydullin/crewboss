@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=20, EXCLUDED=52, union=72  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=20, EXCLUDED=53, union=73  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -147,3 +147,8 @@ EXCLUDED gc-stale-leaves
 #   the leaf-count gate (require_decomp_leaves manifest fixture; stub with/without leaves,
 #   multi-tick poll loop) — heavy/launcher-context. EXCLUDED (fail-closed).
 EXCLUDED plan-decomposition
+# #400 merge-action: starts crewboss-api.py as background process to test
+#   merge write-action HTTP scenarios (happy/no-pr/red-gate/merge-fails).
+#   Background/timing-sensitive -- same class as ui-loop-mode, ui-run-contract.
+#   EXCLUDED (fail-closed).
+EXCLUDED merge-action

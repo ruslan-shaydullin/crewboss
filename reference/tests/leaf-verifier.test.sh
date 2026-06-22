@@ -135,7 +135,7 @@ setup_bare_remote "$REMOTE3" "charter/5" "leaf/42" "fail"
 
 rc=0
 CB_VERIFY_CONFIRM_N=1 bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
-  --remote "$REMOTE3" --verdict-file "$VERDICT3" 2>/dev/null || rc=$?
+  --remote "$REMOTE3" --verdict-file "$VERDICT3" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] \
   && ok "RED-class2: exit 1 (engine RED — catches blind merge without real CI)" \
   || ko "RED-class2: expected exit 1, got $rc"
@@ -241,7 +241,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=20 EXCLUDED=52) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=20 EXCLUDED=53) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -263,13 +263,13 @@ else
     && ok "guard: ALLOW count=20" \
     || ko "guard: ALLOW count expected 20, got $_allow_count"
 
-  [ "$_excl_count" -eq 52 ] \
-    && ok "guard: EXCLUDED count=52" \
-    || ko "guard: EXCLUDED count expected 52, got $_excl_count"
+  [ $_excl_count -eq 53 ] \
+    && ok "guard: EXCLUDED count=53" \
+    || ko "guard: EXCLUDED count expected 53, got $_excl_count"
 
-  [ "$_actual_count" -eq 72 ] \
-    && ok "guard: actual *.test.sh count=72" \
-    || ko "guard: actual *.test.sh count expected 72, got $_actual_count"
+  [ $_actual_count -eq 73 ] \
+    && ok "guard: actual *.test.sh count=73" \
+    || ko "guard: actual *.test.sh count expected 73, got $_actual_count"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"
