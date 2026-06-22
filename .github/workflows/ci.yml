@@ -54,3 +54,39 @@ jobs:
         run: node scripts/repro-jitter.mjs
       - name: facilitator stage (discuss step + acceptance block gate)
         run: node scripts/test-facilitator-stage.mjs
+      - name: Detect UI-touching PR
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        run: |
+          git diff --name-only origin/$GITHUB_BASE_REF -- ui/ | grep -q . && echo "UI_CHANGED=true" >> $GITHUB_ENV || true
+      - name: Synthetic visual regression acceptance test
+        if: github.event_name == 'pull_request' && env.UI_CHANGED == 'true'
+        run: |
+          # Mutate dist/ CSS to hide the board panel
+          # dist/ is gitignored — use cp/mv, not git checkout -- dist/ (which cannot restore gitignored files)
+          BROKEN_CSS=$(find dist -name '*.css' | head -1)
+          cp "$BROKEN_CSS" "${BROKEN_CSS}.bak"
+          echo ".charter{display:none!important}" >> "$BROKEN_CSS"
+          # Assert visual-regression.mjs exits 1 (regression detected)
+          # Use 'if node ...; then exit 1; fi' — NOT '|| true' which swallows failures
+          if node scripts/visual-regression.mjs; then
+            echo "ERROR: Expected exit 1 from visual-regression.mjs on broken panel — regression not detected"
+            mv "${BROKEN_CSS}.bak" "$BROKEN_CSS"
+            exit 1
+          fi
+          # Restore
+          mv "${BROKEN_CSS}.bak" "$BROKEN_CSS"
+      - name: Visual regression
+        if: github.event_name == 'pull_request' && env.UI_CHANGED == 'true'
+        run: node scripts/visual-regression.mjs
+      - name: Post visual-regression commit status
+        if: always() && github.event_name == 'pull_request' && env.UI_CHANGED == 'true'
+        run: |
+          STATE=success
+          [ "${{ job.status }}" != "success" ] && STATE=failure
+          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+            -f state=$STATE \
+            -f context=visual-regression \
+            -f description="Visual regression check"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
