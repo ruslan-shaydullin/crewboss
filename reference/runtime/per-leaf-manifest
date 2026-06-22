@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=20, EXCLUDED=54, union=74  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=21, EXCLUDED=54, union=75  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -154,3 +154,7 @@ EXCLUDED plan-decomposition
 EXCLUDED merge-action
 # #490 per-charter-auto-gate: integration test: real launcher + per-charter label stubs; heavy process -> EXCLUDED
 EXCLUDED per-charter-auto-gate
+# #533 independent-test-authorship: pure stdin JSON piped to gate binary; no network, no gh-shim,
+#   no launcher loops, no background processes, no timing/poll/sleep. Verdict = f(merged content only).
+#   Tests Edit/Write/MultiEdit blocking for executor on test-file paths (charter #523 ITA gate).
+ALLOW independent-test-authorship
