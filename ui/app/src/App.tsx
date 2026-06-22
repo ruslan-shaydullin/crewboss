@@ -192,17 +192,21 @@ export default function App() {
           <div className="layout">
             <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
               queueOrder={queueOrder} onQueueChange={handleQueueChange} />
-            <aside className="sidebar">
-              <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
-              <QueuePanel
-                queueOrder={queueOrder}
-                savedOrder={savedOrder}
-                board={state?.board ?? []}
-                isLoopRunning={isLoopRunning}
-                onQueueChange={handleQueueChange}
-                onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
-              />
-            </aside>
+            <div className="sidebar-col">
+              <aside className="sidebar">
+                <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+              </aside>
+              <div className="queue-panel--sticky">
+                <QueuePanel
+                  queueOrder={queueOrder}
+                  savedOrder={savedOrder}
+                  board={state?.board ?? []}
+                  isLoopRunning={isLoopRunning}
+                  onQueueChange={handleQueueChange}
+                  onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
+                />
+              </div>
+            </div>
           </div>
         </>
       ) : view === 'human' ? (
