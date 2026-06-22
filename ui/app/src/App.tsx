@@ -1314,7 +1314,7 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
 }
 
 // ── RoleChain: pre-approval composition view ─────────────────────────────
-function RoleChain({ n }: { n: number }) {
+export function RoleChain({ n }: { n: number }) {
   const [chain, setChain] = useState<ChainData | null>(null)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
@@ -1356,7 +1356,7 @@ function RoleChain({ n }: { n: number }) {
 }
 
 // ── PipelineView: post-approval GHA-style pipeline ───────────────────────
-function PipelineView({ n }: { n: number }) {
+export function PipelineView({ n }: { n: number }) {
   const [chain, setChain] = useState<ChainData | null>(null)
 
   useEffect(() => {
