@@ -775,6 +775,136 @@ def save_role(body):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+def build_chain(n):
+    """Build the pipeline chain for charter/issue n.
+
+    Returns a list of {"role", "status", "plan", "step_index"} dicts, or None if
+    the issue does not exist / cannot be fetched.
+    """
+    if not REPO:
+        return None
+    try:
+        raw = sh(["gh", "issue", "view", str(n), "-R", REPO,
+                  "--json", "body,comments,labels,state"]) or ""
+        if not raw.strip():
+            return None
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    body     = data.get("body", "") or ""
+    comments = data.get("comments", []) or []
+    labels   = [l["name"] for l in (data.get("labels") or [])]
+    state_gh = data.get("state", "")  # "OPEN" or "CLOSED"
+
+    # Map to the same state labels used by build_state()
+    if state_gh == "CLOSED":
+        st = "done"
+    elif "hold" in labels:
+        st = "held"
+    elif "status:blocked" in labels:
+        st = "blocked"
+    elif "status:review" in labels:
+        st = "review"
+    elif "status:in-progress" in labels:
+        st = "in-progress"
+    elif "status:approved" in labels:
+        st = "approved"
+    elif "status:plan-review" in labels:
+        st = "plan-review"
+    elif "status:needs-plan" in labels:
+        st = "needs-plan"
+    else:
+        st = "open"
+
+    # rework_n: integer from run/state/<n>/rework_n (default 0)
+    rw_path = os.path.join(RUN, "state", str(n), "rework_n")
+    try:
+        rework_n = int(open(rw_path).read().strip())
+    except Exception:
+        rework_n = 0
+
+    # Find most-recent comment containing ## Composition (machine); fall back to body
+    composition_src = body
+    for c in reversed(comments):
+        cbody = c.get("body", "") or ""
+        if "## Composition (machine)" in cbody:
+            composition_src = cbody
+            break
+
+    # Parse execution_roles from the Composition block
+    execution_roles = []
+    in_composition = False
+    for line in composition_src.splitlines():
+        if re.match(r"^#{1,3}\s+Composition \(machine\)", line):
+            in_composition = True
+            continue
+        if in_composition:
+            if line.startswith("#"):
+                break
+            m = re.match(r"^\s*-\s+role:\s*(.+)", line)
+            if m:
+                execution_roles.append(m.group(1).strip())
+
+    # Full step list: convergence rounds + execution roles
+    convergence_steps = ["analyst", "tech-lead"] * (rework_n + 1)
+    chain_roles = convergence_steps + execution_roles
+    chain_len   = len(chain_roles)
+
+    # Plan text: most-recent comment with ## Plan (tech-lead), fall back to body
+    def _extract_plan(text):
+        in_plan = False
+        plan_lines = []
+        for line in text.splitlines():
+            if re.match(r"^#{1,3}\s+Plan \(tech-lead\)", line):
+                in_plan = True
+                continue
+            if in_plan:
+                if line.startswith("#"):
+                    break
+                plan_lines.append(line)
+        return "\n".join(plan_lines).strip()
+
+    plan_text = ""
+    for c in reversed(comments):
+        cbody = c.get("body", "") or ""
+        if "## Plan (tech-lead)" in cbody:
+            plan_text = _extract_plan(cbody)
+            break
+    if not plan_text and "## Plan (tech-lead)" in body:
+        plan_text = _extract_plan(body)
+
+    # Compute active_index according to the state table
+    n_roles = len(execution_roles)
+    if st == "done":
+        active_index = chain_len          # all steps done
+    elif st in ("needs-plan", "needs-analysis", "open"):
+        active_index = rework_n * 2
+    elif st == "plan-review":
+        active_index = rework_n * 2 + 1
+    elif st in ("approved", "in-progress"):
+        active_index = (rework_n + 1) * 2
+    elif st == "review":
+        active_index = (rework_n + 1) * 2 + max(n_roles - 1, 0)
+    else:
+        active_index = rework_n * 2       # held / blocked / unknown → analyst slot
+
+    # Build chain list
+    chain = []
+    for i, role in enumerate(chain_roles):
+        if st == "done":
+            status = "done"
+        elif i < active_index:
+            status = "done"
+        elif i == active_index:
+            status = "active"
+        else:
+            status = "pending"
+        chain.append({"role": role, "status": status,
+                      "plan": plan_text, "step_index": i})
+    return chain
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _cors(self):
@@ -825,6 +955,12 @@ class H(BaseHTTPRequestHandler):
             tail = path.rsplit("/",1)[-1]
             if not tail.isdigit(): return self._send(400,{"ok":False,"msg":"bad issue id"})
             return self._send(200, build_comments(int(tail)))
+        if path.startswith("/api/chain/"):
+            tail = path.rsplit("/",1)[-1]
+            if not tail.isdigit(): return self._send(404,{"error":"not found"})
+            result = build_chain(int(tail))
+            if result is None: return self._send(404,{"error":"not found"})
+            return self._send(200, result)
         if path=="/api/team": return self._send(200, build_team())
         if path.startswith("/api/role/"):
             name = path[len("/api/role/"):]
