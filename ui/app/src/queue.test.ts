@@ -140,6 +140,99 @@ describe('State type queue field', () => {
 })
 
 // ---------------------------------------------------------------------------
+// postQueue error-handling tests (issue #415 — throw on !response.ok)
+// ---------------------------------------------------------------------------
+describe('postQueue HTTP error handling', () => {
+  it('throws when response status is 500', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}), text: async () => '' })
+    await expect(postQueue([1, 2])).rejects.toThrow('postQueue failed: 500')
+  })
+
+  it('throws when response status is 404', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({}), text: async () => '' })
+    await expect(postQueue([1])).rejects.toThrow('postQueue failed: 404')
+  })
+
+  it('does NOT throw when response is ok', async () => {
+    makeFetchOk()
+    await expect(postQueue([1, 2, 3])).resolves.toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// savedOrder dirty-check logic (issue #415 — dirty indicator)
+// ---------------------------------------------------------------------------
+describe('savedOrder dirty-check logic', () => {
+  it('is dirty when queueOrder differs from savedOrder', () => {
+    const queueOrder = [1, 2, 3]
+    const savedOrder = [1, 2]
+    const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
+    expect(isDirty).toBe(true)
+  })
+
+  it('is dirty when order is the same elements but different sequence', () => {
+    const queueOrder = [2, 1, 3]
+    const savedOrder = [1, 2, 3]
+    const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
+    expect(isDirty).toBe(true)
+  })
+
+  it('is clean when queueOrder matches savedOrder exactly', () => {
+    const queueOrder = [1, 2, 3]
+    const savedOrder = [1, 2, 3]
+    const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
+    expect(isDirty).toBe(false)
+  })
+
+  it('is clean when both are empty', () => {
+    const queueOrder: number[] = []
+    const savedOrder: number[] = []
+    const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
+    expect(isDirty).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isLoopRunning derivation (issue #415 — derive from SSE state)
+// ---------------------------------------------------------------------------
+describe('isLoopRunning derivation', () => {
+  it('returns false when state is null', () => {
+    const state = null as import('./api').State | null
+    const isLoopRunning = state?.loop?.running ?? false
+    expect(isLoopRunning).toBe(false)
+  })
+
+  it('returns false when loop field is absent', () => {
+    const state: import('./api').State = {
+      board: [], agents: [], budget: { spent: 0, cap: 0, runs: [] },
+      flags: { paused: false, killed: false }, autonomy: { repo: '' },
+    }
+    const isLoopRunning = state?.loop?.running ?? false
+    expect(isLoopRunning).toBe(false)
+  })
+
+  it('returns true when loop.running is true', () => {
+    const state: import('./api').State = {
+      board: [], agents: [], budget: { spent: 0, cap: 0, runs: [] },
+      flags: { paused: false, killed: false }, autonomy: { repo: '' },
+      loop: { running: true, integrate: false, max_ticks: 10, max_parallel: 4, stage: 'idle' },
+    }
+    const isLoopRunning = state?.loop?.running ?? false
+    expect(isLoopRunning).toBe(true)
+  })
+
+  it('returns false when loop.running is false', () => {
+    const state: import('./api').State = {
+      board: [], agents: [], budget: { spent: 0, cap: 0, runs: [] },
+      flags: { paused: false, killed: false }, autonomy: { repo: '' },
+      loop: { running: false, integrate: true, max_ticks: 5, max_parallel: 2, stage: 'idle' },
+    }
+    const isLoopRunning = state?.loop?.running ?? false
+    expect(isLoopRunning).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Queue order manipulation logic (pure functions mirroring App.tsx logic)
 // ---------------------------------------------------------------------------
 describe('queue order manipulation', () => {

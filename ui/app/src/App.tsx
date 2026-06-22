@@ -134,7 +134,10 @@ export default function App() {
 
   // Queue state
   const [queueOrder, setQueueOrder] = useState<number[]>([])
+  const [savedOrder, setSavedOrder] = useState<number[]>([])
   const dirtyRef = useRef(false)
+
+  const isLoopRunning = state?.loop?.running ?? false
 
   useEffect(() => subscribe((s) => {
     setState(s)
@@ -150,8 +153,10 @@ export default function App() {
     setQueueOrder(newOrder)
     try {
       await postQueue(newOrder)
-    } finally {
       dirtyRef.current = false
+      setSavedOrder(newOrder)
+    } catch {
+      dirtyRef.current = true
     }
   }, [])
 
@@ -191,7 +196,9 @@ export default function App() {
               <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
               <QueuePanel
                 queueOrder={queueOrder}
+                savedOrder={savedOrder}
                 board={state?.board ?? []}
+                isLoopRunning={isLoopRunning}
                 onQueueChange={handleQueueChange}
                 onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
               />
@@ -814,13 +821,17 @@ function SkeletonBoard() {
   )
 }
 
-function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
+function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch }: {
   queueOrder: number[]
+  savedOrder: number[]
   board: Task[]
-  onQueueChange: (order: number[]) => void
-  onLaunch: () => void
+  isLoopRunning: boolean
+  onQueueChange: (order: number[]) => Promise<void>
+  onLaunch: () => Promise<void>
 }) {
+  const [isEditing, setIsEditing] = useState(false)
   const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
+  const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
   const move = (idx: number, dir: -1 | 1) => {
     const newOrder = [...queueOrder]
     const target = idx + dir
@@ -832,11 +843,28 @@ function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
     const newOrder = queueOrder.filter((_, i) => i !== idx)
     onQueueChange(newOrder)
   }
+  const launchLabel = isEditing
+    ? '💾 Сохранить'
+    : isLoopRunning
+    ? '✎ Редактировать'
+    : '▶ Запустить очередь'
+  const handleLaunchBtn = async () => {
+    if (isEditing) {
+      setIsEditing(false)
+    } else if (isLoopRunning) {
+      setIsEditing(true)
+    } else {
+      await onLaunch()
+    }
+  }
   return (
     <div className="queue-panel" data-testid="queue-panel">
       <div className="queue-panel__head">
         <span>Queue</span>
         <span className="queue-panel__count">{queueOrder.length}</span>
+        {isDirty && (
+          <span className="queue-panel__dirty" data-testid="queue-dirty-indicator" title="Unsaved changes">●</span>
+        )}
       </div>
       {queueOrder.length === 0 ? (
         <div className="queue-panel__empty" data-testid="queue-empty">
@@ -865,11 +893,11 @@ function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
       )}
       <button
         className="queue-btn--launch"
-        disabled={queueOrder.length === 0}
+        disabled={!isEditing && !isLoopRunning && queueOrder.length === 0}
         data-testid="queue-launch-btn"
-        onClick={onLaunch}
+        onClick={handleLaunchBtn}
       >
-        ▶ Launch Queue
+        {launchLabel}
       </button>
     </div>
   )
