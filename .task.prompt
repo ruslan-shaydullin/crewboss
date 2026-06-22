@@ -1,74 +1,60 @@
-You are reworking issue #490 onto the charter integration branch charter/401 in repo stratch1989/crewboss.
-You are ALREADY on branch rework/490-1782126168, based on origin/charter/401 — sibling leaves of charter #401 are ALREADY merged here (their changes are already present on this branch).
-Your earlier work for this issue is on origin/leaf/490-1782124894. Do this, in order:
-1. git merge --no-edit origin/leaf/490-1782124894
+You are reworking issue #416 onto the charter integration branch charter/305 in repo stratch1989/crewboss.
+You are ALREADY on branch rework/416-1782132385, based on origin/charter/305 — sibling leaves of charter #305 are ALREADY merged here (their changes are already present on this branch).
+Your earlier work for this issue is on origin/leaf/416-1782131606. Do this, in order:
+1. git merge --no-edit origin/leaf/416-1782131606
 2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
 3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
 4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/401 --title "rework(#490): rebase onto charter/401" --body "Closes #490 — reworked onto integration branch, conflicts resolved as additive union."
-Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/401.
+5. gh pr create --base charter/305 --title "rework(#416): rebase onto charter/305" --body "Closes #416 — reworked onto integration branch, conflicts resolved as additive union."
+Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/305.
 
-Issue #490:
-Charter: #401
+Issue #416:
+Charter: #305
+Depends-on: #415
 
-## Task: Write deterministic integration test for per-charter auto-gate
+## Context
 
-**Role:** qa-engineer
-**Files:** `reference/tests/per-charter-auto-gate.test.sh` (new), `reference/runtime/per-leaf-manifest`, `reference/tests/leaf-verifier.test.sh`
+Part of charter #305 (Queue visibility & state machine overhaul). This leaf restructures the QueuePanel layout so it is always visible regardless of scroll position or number of agents.
 
-### Background
+**Prerequisite:** issue #415 (leaf-327) must be merged first — the final QueuePanel prop interface is established there and must be stable before the render tree is restructured here.
 
-Charter #401 adds per-charter labels `auto:plan-approve` and `auto:merge` that OR with global env flags to control gate progression. This leaf adds a deterministic integration test covering all four acceptance paths, updates the per-leaf-manifest inventory, and keeps leaf-verifier.test.sh Test 7 consistent.
+## Background / problem
 
-Follow the plan-convergence.test.sh stub-agent pattern: real launcher binary, file-based board, stub gh binary that records calls. The test runner must exit with failed=0.
+When there are many agents in the loop (synthetic + real), the queue panel is embedded inside the scrollable agent/charter board and gets lost. Operators cannot see the queue. The fix: move QueuePanel into a dedicated, always-visible block (sticky sidebar or fixed top panel).
 
-### Verified current baseline (from HEAD -- verify again before editing)
+## Changes required
 
-- reference/runtime/per-leaf-manifest header: ALLOW=20, EXCLUDED=53, union=73
-- reference/tests/leaf-verifier.test.sh Test 7 assertions: [  -eq 53 ] and [  -eq 73 ]
+### 1. `ui/app/src/App.tsx` — layout restructure
 
-After adding the new test file the new counts will be: EXCLUDED=54, union=74.
+Find the render section where `<QueuePanel .../>` currently lives inside the scrollable board container. Extract it to a sibling element that is outside (and rendered independently of) the scrollable area. The queue panel must be visible at all times, not just when the user scrolls to it.
 
-### New test file: reference/tests/per-charter-auto-gate.test.sh
+### 2. `ui/app/src/styles.css` — sticky/fixed positioning
 
-Four scenarios (all: stub gh, real launcher, file board):
+Add a CSS class (e.g. `.queue-panel--sticky`) that positions the panel as a sticky sidebar or fixed top block. Requirements:
+- Panel is always visible (does not scroll away with agent cards)
+- Does not overlap or conflict with agent-card / charter-card layout
+- Works correctly at various viewport widths (responsive at minimum to the widths already supported by the app)
 
-**Scenario 1 -- per-charter auto:plan-approve, no global env:**
-- Setup: charter issue has label auto:plan-approve; CB_AUTO_PLAN_APPROVE unset (or 0)
-- Expected: launcher advances charter from status:plan-review to status:approved automatically
-- Verify: board state shows status:approved
+### Prop interface to use (from leaf-327 / issue #415)
 
-**Scenario 2 -- no auto label, no env -> manual gate stays:**
-- Setup: charter has neither auto:plan-approve label nor CB_AUTO_PLAN_APPROVE=1
-- Expected: charter remains at status:plan-review after a launcher tick (human gate not cleared)
-- Verify: board state still shows status:plan-review
+```typescript
+interface QueuePanelProps {
+  queueOrder: number[]
+  savedOrder: number[]
+  board: Milestone[]
+  isLoopRunning: boolean
+  onQueueChange: (order: number[]) => Promise<void>
+  onLaunch: () => Promise<void>
+}
+```
 
-**Scenario 3 -- per-charter auto:merge + green CI -> merged (RED-b pattern):**
-- Setup: charter has label auto:merge; CB_AUTO_MERGE unset (or 0); seed ci_state=pending (or omit the file) in the finale dir; provide a valid pr_ts; stub gh pr checks exits 0 (all checks passed)
-- Expected: the pr-merge command is recorded in the stub log
-- CRITICAL -- do NOT pre-seed ci_state=green: _finale_check_ci has an early-return guard (lines 442-446) that short-circuits on cached terminal states (green, red) BEFORE reaching the auto-merge gate at line 487. Pre-seeding ci_state=green would make the test pass vacuously without exercising the code under test. The pending->green transition driven by stubbed gh pr checks returning 0 is the path that reaches line 487.
-- Verify: stub log contains pr merge invocation
+Do not change these props — leaf-329 also depends on them.
 
-**Scenario 4 -- per-charter auto:merge + red CI -> NOT merged (RED-b pattern):**
-- Setup: same as Scenario 3 except stub gh pr checks exits non-zero with failure output
-- Expected: pr-merge is NOT called; PR stays open/draft
-- Verify: stub log does NOT contain pr merge invocation
+## Scope boundary
 
-### Updates required
-
-**reference/runtime/per-leaf-manifest:**
-1. Add EXCLUDED entry: EXCLUDED per-charter-auto-gate  # integration test: real launcher + per-charter label stubs; heavy process -> EXCLUDED
-2. Update header comment from ALLOW=20, EXCLUDED=53, union=73 to ALLOW=20, EXCLUDED=54, union=74
-
-**reference/tests/leaf-verifier.test.sh Test 7:**
-- Find the assertion containing 53 for EXCLUDED count and change it to 54
-- Find the assertion containing 73 for actual *.test.sh count and change it to 74
-- (Search for the literal values rather than relying on line numbers, which shift with edits)
-
-### Commit message
-Conventional Commits: test(auto-gate): per-charter auto:plan-approve and auto:merge integration test
+UI-only: `ui/app/src/App.tsx` and `ui/app/src/styles.css`. Gateway and launcher untouched.
 
 ## Acceptance (machine)
-- check: bash reference/tests/per-charter-auto-gate.test.sh
-- check: grep -q EXCLUDED=54 reference/runtime/per-leaf-manifest
-- check: bash reference/tests/leaf-verifier.test.sh
+
+- check: cd ui/app && npm run build
+- check: cd ui/app && npx tsc --noEmit

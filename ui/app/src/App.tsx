@@ -134,7 +134,15 @@ export default function App() {
 
   // Queue state
   const [queueOrder, setQueueOrder] = useState<number[]>([])
+  const [savedOrder, setSavedOrder] = useState<number[]>([])
+  const [pendingQueue, setPendingQueue] = useState<number[]>([])
   const dirtyRef = useRef(false)
+
+  const isLoopRunning = state?.loop?.running ?? false
+
+  const onPendingAdd = useCallback((n: number) => {
+    setPendingQueue(prev => [...prev, n])
+  }, [])
 
   useEffect(() => subscribe((s) => {
     setState(s)
@@ -150,8 +158,10 @@ export default function App() {
     setQueueOrder(newOrder)
     try {
       await postQueue(newOrder)
-    } finally {
       dirtyRef.current = false
+      setSavedOrder(newOrder)
+    } catch {
+      dirtyRef.current = true
     }
   }, [])
 
@@ -186,16 +196,25 @@ export default function App() {
           <Hero state={state} />
           <div className="layout">
             <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
-              queueOrder={queueOrder} onQueueChange={handleQueueChange} />
-            <aside className="sidebar">
-              <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
-              <QueuePanel
-                queueOrder={queueOrder}
-                board={state?.board ?? []}
-                onQueueChange={handleQueueChange}
-                onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
-              />
-            </aside>
+              queueOrder={queueOrder} onQueueChange={handleQueueChange}
+              loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} />
+            <div className="sidebar-col">
+              <aside className="sidebar">
+                <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+              </aside>
+              <div className="queue-panel--sticky">
+                <QueuePanel
+                  queueOrder={queueOrder}
+                  savedOrder={savedOrder}
+                  board={state?.board ?? []}
+                  isLoopRunning={isLoopRunning}
+                  onQueueChange={handleQueueChange}
+                  onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
+                  pendingQueue={pendingQueue}
+                  onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
+                />
+              </div>
+            </div>
           </div>
         </>
       ) : view === 'human' ? (
@@ -321,10 +340,11 @@ const CHARTER_SECTIONS = [
   { key: 'sec-done',       label: 'Выполнено',  states: new Set(['done','CLOSED']),                                       defaultExpanded: false },
 ] as const
 
-function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }: {
+function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
+  loopRunning: boolean; onPendingAdd: (n: number) => void
 }) {
   // Collapse state — always call hooks before any early return
   const [collapseMap, setCollapseMap] = useState<Record<string, boolean>>(readCollapseMap)
@@ -388,6 +408,8 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
             doToggle={doToggle}
             queueOrder={queueOrder}
             onQueueChange={onQueueChange}
+            loopRunning={loopRunning}
+            onPendingAdd={onPendingAdd}
           />
         )
       })}
@@ -403,6 +425,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
           onAction={onAction} ask={ask} onOpen={onOpen}
           getExpanded={getExpanded} doToggle={doToggle}
           queueOrder={queueOrder} onQueueChange={onQueueChange}
+          loopRunning={loopRunning} onPendingAdd={onPendingAdd}
         />
       ))}
       {orphans.length > 0 && (
@@ -416,13 +439,15 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange }
           onToggle={() => doToggle(0, true)}
           queueOrder={queueOrder}
           onQueueChange={onQueueChange}
+          loopRunning={loopRunning}
+          onPendingAdd={onPendingAdd}
         />
       )}
     </section>
   )
 }
 
-function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange }: {
+function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
   sectionKey: string; label: string; charters: Task[]; leaves: Task[]
   expanded: boolean; onToggle: () => void
   onAction: (a: string, n?: number, comment?: string) => void
@@ -431,6 +456,7 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
   getExpanded: (n: number, def: boolean) => boolean
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
+  loopRunning: boolean; onPendingAdd: (n: number) => void
 }) {
   if (charters.length === 0) return null
   const bodyId = `charter-section-body-${sectionKey}`
@@ -451,14 +477,15 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
           <CharterCard key={c.n} c={c} leaves={childrenOf(c.n)}
             onAction={onAction} ask={ask} onOpen={onOpen}
             expanded={getExpanded(c.n, true)} onToggle={() => doToggle(c.n, true)}
-            queueOrder={queueOrder} onQueueChange={onQueueChange} />
+            queueOrder={queueOrder} onQueueChange={onQueueChange}
+            loopRunning={loopRunning} onPendingAdd={onPendingAdd} />
         ))}
       </div>
     </div>
   )
 }
 
-function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange }: {
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
   milestone: Task; charters: Task[]; leaves: Task[]
   onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -467,6 +494,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
   getExpanded: (n: number, def: boolean) => boolean
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
+  loopRunning: boolean; onPendingAdd: (n: number) => void
 }) {
   const bodyId = `milestone-body-${milestone.n}`
   const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
@@ -500,6 +528,8 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
             onToggle={() => doToggle(c.n, true)}
             queueOrder={queueOrder}
             onQueueChange={onQueueChange}
+            loopRunning={loopRunning}
+            onPendingAdd={onPendingAdd}
           />
         ))}
       </div>
@@ -599,11 +629,12 @@ function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) 
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   expanded: boolean; onToggle: () => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
+  loopRunning: boolean; onPendingAdd: (n: number) => void
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
@@ -682,7 +713,13 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
               data-testid="queue-add-btn"
               data-charter-n={c.n}
               onClick={() => {
-                if (!isQueued) onQueueChange([...queueOrder, c.n])
+                if (!isQueued) {
+                  if (loopRunning) {
+                    onPendingAdd(c.n)
+                  } else {
+                    onQueueChange([...queueOrder, c.n])
+                  }
+                }
               }}
             >
               {isQueued ? '✓ Queued' : '+ Queue'}
@@ -814,13 +851,19 @@ function SkeletonBoard() {
   )
 }
 
-function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
+function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending }: {
   queueOrder: number[]
+  savedOrder: number[]
   board: Task[]
-  onQueueChange: (order: number[]) => void
-  onLaunch: () => void
+  isLoopRunning: boolean
+  onQueueChange: (order: number[]) => Promise<void>
+  onLaunch: () => Promise<void>
+  pendingQueue: number[]
+  onRemovePending: (n: number) => void
 }) {
+  const [isEditing, setIsEditing] = useState(false)
   const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
+  const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
   const move = (idx: number, dir: -1 | 1) => {
     const newOrder = [...queueOrder]
     const target = idx + dir
@@ -832,11 +875,28 @@ function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
     const newOrder = queueOrder.filter((_, i) => i !== idx)
     onQueueChange(newOrder)
   }
+  const launchLabel = isEditing
+    ? '💾 Сохранить'
+    : isLoopRunning
+    ? '✎ Редактировать'
+    : '▶ Запустить очередь'
+  const handleLaunchBtn = async () => {
+    if (isEditing) {
+      setIsEditing(false)
+    } else if (isLoopRunning) {
+      setIsEditing(true)
+    } else {
+      await onLaunch()
+    }
+  }
   return (
     <div className="queue-panel" data-testid="queue-panel">
       <div className="queue-panel__head">
         <span>Queue</span>
         <span className="queue-panel__count">{queueOrder.length}</span>
+        {isDirty && (
+          <span className="queue-panel__dirty" data-testid="queue-dirty-indicator" title="Unsaved changes">●</span>
+        )}
       </div>
       {queueOrder.length === 0 ? (
         <div className="queue-panel__empty" data-testid="queue-empty">
@@ -865,12 +925,38 @@ function QueuePanel({ queueOrder, board, onQueueChange, onLaunch }: {
       )}
       <button
         className="queue-btn--launch"
-        disabled={queueOrder.length === 0}
+        disabled={!isEditing && !isLoopRunning && queueOrder.length === 0}
         data-testid="queue-launch-btn"
-        onClick={onLaunch}
+        onClick={handleLaunchBtn}
       >
-        ▶ Launch Queue
+        {launchLabel}
       </button>
+      {pendingQueue.length > 0 && (
+        <div className="queue-panel__pending" data-testid="queue-pending-section">
+          <div className="queue-panel__pending-head">Pending</div>
+          <ol className="queue-panel__list">
+            {pendingQueue.map((n) => {
+              const charter = charterMap.get(n)
+              return (
+                <li key={n} className="queue-panel__item queue-panel__item--pending" data-testid="queue-pending-item" data-n={n}>
+                  <span className="queue-panel__label">
+                    <span className="num">#{n}</span>
+                    {charter && <span className="queue-panel__title"> — {charter.title}</span>}
+                  </span>
+                  <button
+                    className="btn sm pri"
+                    data-testid="queue-pending-confirm-btn"
+                    onClick={() => {
+                      onQueueChange([...queueOrder, n])
+                      onRemovePending(n)
+                    }}
+                  >Подтвердить добавление</button>
+                </li>
+              )
+            })}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }
