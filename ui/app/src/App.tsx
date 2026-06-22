@@ -198,19 +198,23 @@ export default function App() {
             <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
               queueOrder={queueOrder} onQueueChange={handleQueueChange}
               loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} />
-            <aside className="sidebar">
-              <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
-              <QueuePanel
-                queueOrder={queueOrder}
-                savedOrder={savedOrder}
-                board={state?.board ?? []}
-                isLoopRunning={isLoopRunning}
-                onQueueChange={handleQueueChange}
-                onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
-                pendingQueue={pendingQueue}
-                onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
-              />
-            </aside>
+            <div className="sidebar-col">
+              <aside className="sidebar">
+                <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+              </aside>
+              <div className="queue-panel--sticky">
+                <QueuePanel
+                  queueOrder={queueOrder}
+                  savedOrder={savedOrder}
+                  board={state?.board ?? []}
+                  isLoopRunning={isLoopRunning}
+                  onQueueChange={handleQueueChange}
+                  onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
+                  pendingQueue={pendingQueue}
+                  onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
+                />
+              </div>
+            </div>
           </div>
         </>
       ) : view === 'human' ? (
