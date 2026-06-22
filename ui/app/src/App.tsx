@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, facilitateMessage, fetchChain, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type ChainData, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 // ── Lifecycle stage badge helpers ──────────────────────────────────────────
@@ -1158,6 +1158,20 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
           </div>
         )}
 
+        {task?.kind === 'charter' && (task.state === 'needs-plan' || task.state === 'plan-review') && (
+          <>
+            <div className="drawer-section">Role Chain</div>
+            <RoleChain n={n} />
+          </>
+        )}
+
+        {task?.kind === 'charter' && ['approved', 'in-progress', 'review', 'done'].includes(task.state) && (
+          <>
+            <div className="drawer-section">Pipeline</div>
+            <PipelineView n={n} />
+          </>
+        )}
+
         {task && task.state !== 'done' && (
           <div className="drawer-actions">
             {task.state === 'plan-review' && <>
@@ -1295,6 +1309,75 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
         <div className="drawer-section">Agent log {d?.alive && <span className="muted">· live</span>}</div>
         <pre className="log" ref={logRef}>{d?.log?.trim() || (d?.alive ? 'agent working… (output appears when it streams/finishes)' : 'no log yet')}</pre>
       </div>
+    </div>
+  )
+}
+
+// ── RoleChain: pre-approval composition view ─────────────────────────────
+function RoleChain({ n }: { n: number }) {
+  const [chain, setChain] = useState<ChainData | null>(null)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+
+  useEffect(() => {
+    let active = true
+    fetchChain(n).then((data) => { if (active) setChain(data) }).catch(() => {})
+    return () => { active = false }
+  }, [n])
+
+  if (!chain || chain.length === 0) return <div className="role-chain-empty muted">нет данных о цепочке ролей</div>
+
+  const toggle = (idx: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx); else next.add(idx)
+      return next
+    })
+  }
+
+  return (
+    <div className="role-chain" data-testid="role-chain">
+      {chain.map((step, i) => (
+        <div key={step.step_index} className="role-chain-node" onClick={() => toggle(step.step_index)} title="Нажмите для просмотра плана">
+          <div className="role-chain-node-inner">
+            <span className="role-chain-index">{i + 1}</span>
+            <span className="role-chain-label">{step.role}</span>
+            <span className="role-chain-chevron">{expanded.has(step.step_index) ? '▾' : '▸'}</span>
+          </div>
+          {expanded.has(step.step_index) && (
+            <div className="role-chain-plan">
+              {step.plan ? step.plan : 'в планировании'}
+            </div>
+          )}
+          {i < chain.length - 1 && <div className="role-chain-connector" aria-hidden="true" />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── PipelineView: post-approval GHA-style pipeline ───────────────────────
+function PipelineView({ n }: { n: number }) {
+  const [chain, setChain] = useState<ChainData | null>(null)
+
+  useEffect(() => {
+    let active = true
+    fetchChain(n).then((data) => { if (active) setChain(data) }).catch(() => {})
+    return () => { active = false }
+  }, [n])
+
+  if (!chain || chain.length === 0) return <div className="pipeline-empty muted">нет данных о пайплайне</div>
+
+  return (
+    <div className="pipeline-view" data-testid="pipeline-view">
+      {chain.map((step, i) => (
+        <div key={i} className="pipeline-step-wrap">
+          <div className={'pipeline-step pipeline-step--' + step.status} title={step.role + ' · ' + step.status}>
+            <span className="pipeline-step-role">{step.role}</span>
+            <span className={'pipeline-step-dot pipeline-dot--' + step.status} />
+          </div>
+          {i < chain.length - 1 && <div className="pipeline-arrow" aria-hidden="true">→</div>}
+        </div>
+      ))}
     </div>
   )
 }

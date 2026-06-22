@@ -537,6 +537,145 @@ body {
   text-align: center;
 }
 
+/* ── RoleChain: pre-approval composition view ──────────────────────────── */
+.role-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-bottom: 12px;
+}
+.role-chain-empty { font-size: 12px; font-style: italic; padding: 4px 0; }
+.role-chain-node {
+  cursor: pointer;
+  position: relative;
+}
+.role-chain-node-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--card), #0e0e12);
+  transition: border-color .15s, background .15s;
+  user-select: none;
+}
+.role-chain-node:hover .role-chain-node-inner {
+  border-color: rgba(255,255,255,.22);
+  background: var(--raise);
+}
+.role-chain-index {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--mut);
+  min-width: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.role-chain-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 620;
+  text-transform: capitalize;
+  color: var(--mut2);
+}
+.role-chain-chevron {
+  font-size: 12px;
+  color: var(--mut);
+}
+.role-chain-plan {
+  margin: 4px 0 0 24px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--mut2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.role-chain-connector {
+  width: 1px;
+  height: 8px;
+  background: var(--line2);
+  margin: 2px 0 2px 19px;
+}
+
+/* ── PipelineView: post-approval GHA-style pipeline ─────────────────────── */
+.pipeline-view {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--card), #0e0e12);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.pipeline-empty { font-size: 12px; font-style: italic; padding: 4px 0; }
+.pipeline-step-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.pipeline-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  min-width: 80px;
+  cursor: default;
+  transition: border-color .15s;
+}
+.pipeline-step--done {
+  opacity: 0.45;
+  border-color: var(--line);
+}
+.pipeline-step--active {
+  border-color: var(--prog);
+  background: rgba(91,156,240,.10);
+  box-shadow: 0 0 0 1px rgba(91,156,240,.25);
+}
+.pipeline-step--pending {
+  opacity: 0.35;
+  border-color: var(--line);
+}
+.pipeline-step-role {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: capitalize;
+  color: var(--mut2);
+  letter-spacing: .01em;
+}
+.pipeline-step--active .pipeline-step-role {
+  color: var(--prog);
+  font-weight: 700;
+}
+.pipeline-step--done .pipeline-step-role {
+  color: var(--mut);
+}
+.pipeline-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pipeline-dot--done    { background: var(--done); }
+.pipeline-dot--active  { background: var(--prog); animation: pulse 1.4s ease-in-out infinite; }
+.pipeline-dot--pending { background: var(--mut); }
+.pipeline-arrow {
+  font-size: 13px;
+  color: var(--mut);
+  padding: 0 4px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
 /* ── prefers-reduced-motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
