@@ -233,6 +233,106 @@ describe('isLoopRunning derivation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// pendingQueue state logic (issue #417 — pending confirmation flow)
+// ---------------------------------------------------------------------------
+describe('pendingQueue state logic', () => {
+  it('onPendingAdd appends charter n to pendingQueue', () => {
+    const prev: number[] = [1, 2]
+    const n = 3
+    const next = [...prev, n]
+    expect(next).toEqual([1, 2, 3])
+  })
+
+  it('onPendingAdd can add same charter multiple times (dedup is not enforced here)', () => {
+    const prev: number[] = [1]
+    const n = 1
+    const next = [...prev, n]
+    expect(next).toEqual([1, 1])
+  })
+
+  it('onRemovePending filters out the charter n', () => {
+    const prev: number[] = [1, 2, 3]
+    const n = 2
+    const next = prev.filter(x => x !== n)
+    expect(next).toEqual([1, 3])
+  })
+
+  it('onRemovePending is a no-op when n is not present', () => {
+    const prev: number[] = [1, 3]
+    const n = 99
+    const next = prev.filter(x => x !== n)
+    expect(next).toEqual([1, 3])
+  })
+
+  it('confirm pending: appends to queueOrder and removes from pendingQueue', () => {
+    const queueOrder: number[] = [10, 20]
+    const pendingQueue: number[] = [30, 40]
+    const n = 30
+    const newQueueOrder = [...queueOrder, n]
+    const newPendingQueue = pendingQueue.filter(x => x !== n)
+    expect(newQueueOrder).toEqual([10, 20, 30])
+    expect(newPendingQueue).toEqual([40])
+  })
+
+  it('conditional add: when loopRunning, appends to pending instead of confirmed queue', () => {
+    const loopRunning = true
+    const queueOrder: number[] = [1]
+    const pendingQueue: number[] = []
+    const n = 5
+    const isQueued = queueOrder.includes(n)
+    let newQueueOrder = queueOrder
+    let newPendingQueue = pendingQueue
+    if (!isQueued) {
+      if (loopRunning) {
+        newPendingQueue = [...pendingQueue, n]
+      } else {
+        newQueueOrder = [...queueOrder, n]
+      }
+    }
+    expect(newQueueOrder).toEqual([1])
+    expect(newPendingQueue).toEqual([5])
+  })
+
+  it('conditional add: when !loopRunning, appends directly to confirmed queue', () => {
+    const loopRunning = false
+    const queueOrder: number[] = [1]
+    const pendingQueue: number[] = []
+    const n = 5
+    const isQueued = queueOrder.includes(n)
+    let newQueueOrder = queueOrder
+    let newPendingQueue = pendingQueue
+    if (!isQueued) {
+      if (loopRunning) {
+        newPendingQueue = [...pendingQueue, n]
+      } else {
+        newQueueOrder = [...queueOrder, n]
+      }
+    }
+    expect(newQueueOrder).toEqual([1, 5])
+    expect(newPendingQueue).toEqual([])
+  })
+
+  it('conditional add: when already queued, neither pending nor confirmed changes', () => {
+    const loopRunning = true
+    const queueOrder: number[] = [1, 5]
+    const pendingQueue: number[] = []
+    const n = 5
+    const isQueued = queueOrder.includes(n)
+    let newQueueOrder = queueOrder
+    let newPendingQueue = pendingQueue
+    if (!isQueued) {
+      if (loopRunning) {
+        newPendingQueue = [...pendingQueue, n]
+      } else {
+        newQueueOrder = [...queueOrder, n]
+      }
+    }
+    expect(newQueueOrder).toEqual([1, 5])
+    expect(newPendingQueue).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Queue order manipulation logic (pure functions mirroring App.tsx logic)
 // ---------------------------------------------------------------------------
 describe('queue order manipulation', () => {
