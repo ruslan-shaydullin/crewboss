@@ -215,12 +215,22 @@ def build_state():
                 blast_radius = None
         else:
             blast_radius = None
+        finale_pr = ""
+        if kind == "charter":
+            fp_path = os.path.join(RUN, "state", f"finale-{n}", "pr_num")
+            try:
+                fp_val = open(fp_path).read().strip()
+                if fp_val:
+                    finale_pr = fp_val
+            except Exception:
+                pass
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
                           charter=(_charter_of(body) if kind=="leaf" else None),
                           milestone=(_milestone_of(body) if kind=="charter" else None),
-                          git_status=git_status, blast_radius=blast_radius))
+                          git_status=git_status, blast_radius=blast_radius,
+                          finale_pr=finale_pr))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
@@ -507,6 +517,44 @@ def do_command(body):
                 try: os.unlink(tmp_comment)
                 except Exception: pass
         return {"ok":True,"msg":f"checkbox {index} updated"}
+    elif a=="merge":
+        if not n.isdigit():
+            return {"ok": False, "msg": "invalid issue number"}
+        pr_num_path = os.path.join(RUN, "state", f"finale-{n}", "pr_num")
+        try:
+            pr_num = open(pr_num_path).read().strip()
+        except Exception:
+            pr_num = ""
+        if not pr_num:
+            return {"ok": False, "msg": "no finale PR found"}
+        # CI gate
+        r = subprocess.run(
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "statusCheckRollup",
+             "--jq", '[.statusCheckRollup[]?.state] | all(. == "SUCCESS")'],
+            capture_output=True, text=True, timeout=30)
+        try:
+            ci_ok = r.stdout.strip() == "true"
+        except Exception:
+            ci_ok = False
+        if not ci_ok:
+            return {"ok": False, "msg": "CI gate not green — merge blocked"}
+        # Promote draft
+        r = subprocess.run(["gh", "pr", "ready", pr_num, "-R", REPO],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok": False, "msg": r.stderr.strip() or "pr ready failed"}
+        # Merge
+        r = subprocess.run(["gh", "pr", "merge", pr_num, "-R", REPO, "--merge"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok": False, "msg": r.stderr.strip() or "merge failed"}
+        # Close issue (best-effort)
+        r2 = subprocess.run(
+            ["gh", "issue", "close", n, "-R", REPO, "--comment", "Charter merged and closed."],
+            capture_output=True, text=True, timeout=30)
+        if r2.returncode != 0:
+            print(f"WARNING: merge succeeded but issue close failed: {r2.stderr.strip()}", file=sys.stderr)
+        return {"ok": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
