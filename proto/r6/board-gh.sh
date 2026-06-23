@@ -18,22 +18,34 @@ LAUNCHABLE="${CB_LAUNCHABLE:-$HERE/launchable.sh}"
 ensure_label(){ gh label create "$1" -R "$REPO" --color "${2:-ededed}" 2>/dev/null || true; }
 iview(){ gh issue view "$1" -R "$REPO" --json number,state,labels,body; }
 haslabel(){ jq -e --arg l "$1" '[.labels[].name]|any(.==$l)' >/dev/null; }
+_read_board_cache() {
+  local cache="$CB_HOME/run/board-cache.json"
+  local ttl="${CB_BOARD_TTL:-5}"
+  # check mtime freshness via stat
+  if [[ -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) < ttl )); then
+    cat "$cache"
+  else
+    # canonical fallback: ALWAYS --state all -L 200, NEVER --state open
+    gh issue list -R "$REPO" --state all -L 200 --json number,title,state,labels,body \
+      | tee "$cache.tmp" && mv "$cache.tmp" "$cache" && cat "$cache"
+  fi
+}
 
 cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
-    gh issue list -R "$REPO" --state all -L 200 --json number,state,labels,body \
+    _read_board_cache \
       | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${CB_MANIFEST:+--require-composition} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
-    gh issue list -R "$REPO" --state open -L 200 --json number,labels | jq -r '
-      .[] | select([.labels[].name] as $l
+    _read_board_cache | jq -r '
+      .[] | select(.state == "OPEN") | select([.labels[].name] as $l
         | ($l|index("type:charter")) and ($l|index("status:needs-plan")) and (($l|index("hold"))|not))
       | .number' ;;
 
   review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
     # body is fetched to parse Charter: line; CREWBOSS_CHARTER scopes to one charter if set.
-    gh issue list -R "$REPO" --state open -L 200 --json number,state,labels,body | jq -r \
+    _read_board_cache | jq -r \
         --argjson cs "${CREWBOSS_CHARTER:-0}" '
       .[] | select(.state == "OPEN")
            | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))
