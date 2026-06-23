@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=54, union=76  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=22, EXCLUDED=56, union=78  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -110,6 +110,14 @@ EXCLUDED plan-convergence
 # #423 queue-plan-convergence: queue-mode variant of the plan-convergence integration-stub
 #   (drives the REAL launcher, background spawns, poll loop) — heavy/launcher-context. EXCLUDED.
 EXCLUDED queue-plan-convergence
+# #588 acceptance-convergence: integration-stub driving the REAL launcher through the
+#   acceptance-convergence gate (Change A/B/C/D in charter #522). Git bare remote + PRDIR,
+#   acceptance-reviewer stub, multi-tick poll loop — heavy/launcher-context. EXCLUDED.
+EXCLUDED acceptance-convergence
+# #588 queue-acceptance-convergence: queue-mode variant of the acceptance-convergence
+#   integration-stub (CB_QUEUE, two charters [50,100]). Drives the REAL launcher, background
+#   spawns, poll loop — heavy/launcher-context. EXCLUDED.
+EXCLUDED queue-acceptance-convergence
 # #139 launchable-composition: pure-predicate unit test (Layer 1: stdin fixture → launchable.sh;
 #   Layer 2: board-gh.sh + gh stub synchronous). No launcher loop, no background processes,
 #   no timing/poll/sleep. Verdict = f(merged content only). Meets ALLOW criterion.
