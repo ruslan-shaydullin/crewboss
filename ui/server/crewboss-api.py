@@ -23,6 +23,10 @@ TOKEN  = os.environ.get("CB_API_TOKEN", "")
 PORT   = int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else int(os.environ.get("CB_API_PORT","8787"))
 BOARD  = os.path.join(CB_HOME, "board-gh.sh")
 
+# In-process board cache: shared across threads, guarded by _cache_lock.
+_board_cache = {"data": None, "fetched_at": 0}
+_cache_lock = threading.Lock()
+
 def sh(args, timeout=30):
     try: return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
     except Exception: return ""
@@ -171,13 +175,64 @@ def build_loop_info(board=None):
     return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel,
                 running=running, stage=stage)
 
+def _gh_issues_cmd():
+    """Return the unified gh issue list command args.
+    Full form: gh issue list -R <REPO> --state all -L 200 --json number,title,state,labels,body
+    Key points vs. old query:
+      --state all  → include closed issues (Bash subcommands filter state in jq)
+      -L 200       → avoid silent data loss for repos with >100 issues
+      title        → build_state() calls .get("title",""); dropping it silently empties board titles
+    """
+    return ["gh","issue","list","-R",REPO,"--state","all","-L","200",
+            "--json","number,title,state,labels,body"]
+
+def _write_board_cache_file(data):
+    """Atomically write board-cache.json via tmp + os.rename for Bash launcher read-after-write guarantee."""
+    os.makedirs(RUN, exist_ok=True)
+    cache_path = os.path.join(RUN, "board-cache.json")
+    fd, tmp = tempfile.mkstemp(dir=RUN, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.rename(tmp, cache_path)
+    except Exception:
+        try: os.remove(tmp)
+        except Exception: pass
+
+def invalidate_and_refresh_cache():
+    """Synchronously re-fetch all issues, update in-process cache, and atomically write board-cache.json.
+    Must be called after every successful POST mutation so the Bash launcher sees changes immediately."""
+    if not REPO:
+        return
+    try:
+        raw = sh(_gh_issues_cmd()) or "[]"
+        data = json.loads(raw)
+    except Exception:
+        return
+    with _cache_lock:
+        _board_cache["data"] = data
+        _board_cache["fetched_at"] = time.time()
+    _write_board_cache_file(data)
+
 def build_state():
     issues = []
     if REPO:
         try:
-            raw = sh(["gh","issue","list","-R",REPO,"--state","all","-L","100",
-                      "--json","number,title,labels,state,body"]) or "[]"
-            issues = json.loads(raw)
+            ttl = int(os.environ.get("CB_BOARD_TTL", "5"))
+            now = time.time()
+            cached_data = None
+            with _cache_lock:
+                if _board_cache["data"] is not None and (now - _board_cache["fetched_at"]) < ttl:
+                    cached_data = _board_cache["data"]
+            if cached_data is not None:
+                issues = cached_data
+            else:
+                raw = sh(_gh_issues_cmd()) or "[]"
+                issues = json.loads(raw)
+                with _cache_lock:
+                    _board_cache["data"] = issues
+                    _board_cache["fetched_at"] = time.time()
+                _write_board_cache_file(issues)
         except Exception: issues = []
     board = []
     for it in issues:
@@ -851,9 +906,19 @@ class H(BaseHTTPRequestHandler):
         n=int(self.headers.get("Content-Length",0) or 0)
         try: body=json.loads(self.rfile.read(n) or b"{}")
         except Exception: body={}
-        if path=="/api/command": return self._send(200, do_command(body))
+        if path=="/api/command":
+            result = do_command(body)
+            if result.get("ok") and body.get("action") in (
+                "approve","hold","unhold","comment","request-changes",
+                "delete-comment","resolve-decision","set-check","merge"):
+                invalidate_and_refresh_cache()
+            return self._send(200, result)
         if path=="/api/team":    return self._send(200, save_team(body))
-        if path=="/api/issue":   return self._send(200, do_issue(body))
+        if path=="/api/issue":
+            result = do_issue(body)
+            if result.get("ok"):
+                invalidate_and_refresh_cache()
+            return self._send(200, result)
         if path=="/api/role":    return self._send(200, save_role(body))
         if path=="/api/queue":
             order = body.get("order")
