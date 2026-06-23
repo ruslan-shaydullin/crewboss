@@ -56,6 +56,7 @@ cp -r "$TEAM_EXAMPLE/." "$CB_MANIFEST_PLAIN"
 
 export MANIFEST_LIB_SRC
 BIN="$ROOT/bin"; mkdir -p "$BIN"
+export BIN
 
 # ── flock shim ───────────────────────────────────────────────────────────────
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/flock"
@@ -366,8 +367,8 @@ ghlog_has "pr-merged 5100" \
   || ko "HAPPY-PATH: auto-merge NOT fired for charter #100"
 
 # Reviewer spawned at least once per charter
-_spawn_50=$(grep -c '^50 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || echo 0)
-_spawn_100=$(grep -c '^100 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || echo 0)
+_spawn_50=$(grep -c '^50 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || true)
+_spawn_100=$(grep -c '^100 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || true)
 [ "${_spawn_50:-0}" -ge 1 ] \
   && ok "HAPPY-PATH: reviewer spawned for charter #50" \
   || ko "HAPPY-PATH: reviewer NOT spawned for charter #50"
@@ -400,8 +401,8 @@ run_loop "$CBHOME_X" "$LOG_X" \
   "CB_QUEUE=$SANDBOX/queue.json"
 
 # Reviewer NOT spawned for either charter
-_spawn_c50=$(grep -c '^50 ' "$ACCEPT_LOG" 2>/dev/null || echo 0)
-_spawn_c100=$(grep -c '^100 ' "$ACCEPT_LOG" 2>/dev/null || echo 0)
+_spawn_c50=$(grep -c '^50 ' "$ACCEPT_LOG" 2>/dev/null || true)
+_spawn_c100=$(grep -c '^100 ' "$ACCEPT_LOG" 2>/dev/null || true)
 [ "${_spawn_c50:-0}" -eq 0 ] && [ "${_spawn_c100:-0}" -eq 0 ] \
   && ok "CONTROL: acceptance reviewer NOT spawned (gate correctly disarmed)" \
   || ko "CONTROL: reviewer spuriously spawned (50:${_spawn_c50}x 100:${_spawn_c100}x)"

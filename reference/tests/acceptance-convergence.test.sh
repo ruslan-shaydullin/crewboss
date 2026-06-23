@@ -59,6 +59,7 @@ cp -r "$TEAM_EXAMPLE/." "$CB_MANIFEST_PLAIN"
 
 export MANIFEST_LIB_SRC
 BIN="$ROOT/bin"; mkdir -p "$BIN"
+export BIN
 
 # ── flock shim ───────────────────────────────────────────────────────────────
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/flock"
@@ -357,7 +358,7 @@ _term_c=$(cat "$CBHOME_C/run/state/7/term" 2>/dev/null || echo "")
   || ko "ACCEPT-CONVERGE: term NOT cleared (still '$_term_c')"
 
 # Reviewer spawned exactly 2× (CRITIQUE then AGREE)
-_spawn_c=$(grep -c '^7 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || echo 0)
+_spawn_c=$(grep -c '^7 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || true)
 [ "$_spawn_c" -eq 2 ] \
   && ok "ACCEPT-CONVERGE: reviewer spawned 2x (critique then agree)" \
   || ko "ACCEPT-CONVERGE: reviewer spawn count=$_spawn_c (expected 2)"
@@ -379,7 +380,7 @@ ghlog_has "pr-merged 5007" \
 
 # critique comment recorded
 _crit_c=$(jq -r --argjson n 7 'map(select(.number==$n))[0].comments[]?.body' \
-  "$BOARD_STATE" 2>/dev/null | grep -c "ACCEPT-REVIEW: changes-requested" || echo 0)
+  "$BOARD_STATE" 2>/dev/null | grep -c "ACCEPT-REVIEW: changes-requested" || true)
 [ "${_crit_c:-0}" -ge 1 ] \
   && ok "ACCEPT-CONVERGE: critique comment recorded" \
   || ko "ACCEPT-CONVERGE: critique comment missing"
@@ -407,7 +408,7 @@ run_loop "$CBHOME_E" "$LOG_E" \
   "CB_ACCEPT_CONVERGE_CAP=3"
 
 # Reviewer spawned exactly cap=3 times
-_spawn_e=$(grep -c '^5 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || echo 0)
+_spawn_e=$(grep -c '^5 solution-analyst' "$ACCEPT_LOG" 2>/dev/null || true)
 [ "$_spawn_e" -eq 3 ] \
   && ok "ACCEPT-ESCALATE: reviewer spawned exactly cap=3 times" \
   || ko "ACCEPT-ESCALATE: reviewer spawn count=$_spawn_e (expected 3)"
@@ -453,7 +454,7 @@ run_loop "$CBHOME_D" "$LOG_D" \
   "CB_AUTO_MERGE=1"
 
 # Reviewer NOT spawned
-_spawn_d=$(grep -c '^9 ' "$ACCEPT_LOG" 2>/dev/null || echo 0)
+_spawn_d=$(grep -c '^9 ' "$ACCEPT_LOG" 2>/dev/null || true)
 [ "${_spawn_d:-0}" -eq 0 ] \
   && ok "DEFAULT-OFF: reviewer NOT spawned (gate correctly disarmed)" \
   || ko "DEFAULT-OFF: reviewer spuriously spawned ${_spawn_d}x"
