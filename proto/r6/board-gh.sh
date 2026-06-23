@@ -25,8 +25,10 @@ haslabel(){ jq -e --arg l "$1" '[.labels[].name]|any(.==$l)' >/dev/null; }
 _read_board_cache() {
   local cache="${CB_HOME:+$CB_HOME/run/board-cache.json}"
   local ttl="${CB_BOARD_TTL:-5}"
-  # check mtime freshness via stat
-  if [[ -n "$cache" && -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) < ttl )); then
+  # check mtime freshness via stat. "$1" == "fresh" forces a live read for
+  # correctness-critical callers (launchable predicate) while still repopulating
+  # the cache below, so same-tick secondary reads (plannable/review-leaves) reuse it.
+  if [[ "$1" != "fresh" && -n "$cache" && -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) < ttl )); then
     cat "$cache"
   else
     # canonical fallback: ALWAYS --state all -L 200, NEVER --state open
@@ -42,7 +44,7 @@ _read_board_cache() {
 cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
-    _read_board_cache \
+    _read_board_cache fresh \
       | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${CB_MANIFEST:+--require-composition} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
