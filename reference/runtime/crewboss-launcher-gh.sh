@@ -11,7 +11,9 @@
 #      CB_HARNESS (optional local cmd for gate-charter; default = marker-grep only),
 #      CB_GATE_REPO_DIR (repo dir for marker-grep; default = .),
 #      CB_FINALE_CHECKS_TIMEOUT (seconds to wait for draft-PR CI; default 300),
-#      CB_FINALE_CHECKS_POLL (seconds between gh pr checks polls; default 15)
+#      CB_FINALE_CHECKS_POLL (seconds between gh pr checks polls; default 15),
+#      CB_PLAN_CONVERGE_CAP (max plan-review rounds before human-decision; default CB_CONVERGE_CAP or 4),
+#      CB_ACCEPT_CONVERGE_CAP (max acceptance-review rounds before human-decision; default CB_CONVERGE_CAP or 4)
 set -uo pipefail
 : "${CB_REPO:?set CB_REPO=owner/repo}"; export CB_REPO
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
@@ -32,6 +34,8 @@ APPROVAL_SPAWN="${CB_APPROVAL_SPAWN:-$PLAN_SPAWN}"
 REVIEW_SPAWN="${CB_REVIEW_SPAWN:-$PLAN_SPAWN}"
 # CB_PLAN_REVIEW_SPAWN: spawn script for the plan-review role (#382 plan-convergence). Default = PLAN_SPAWN.
 PLAN_REVIEW_SPAWN="${CB_PLAN_REVIEW_SPAWN:-$PLAN_SPAWN}"
+# CB_ACCEPT_REVIEW_SPAWN: spawn script for the acceptance-review role (#522 acceptance-convergence). Default = PLAN_REVIEW_SPAWN.
+ACCEPT_REVIEW_SPAWN="${CB_ACCEPT_REVIEW_SPAWN:-$PLAN_REVIEW_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
@@ -488,6 +492,27 @@ _finale_check_ci(){
       _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
         | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
       if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
+        # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
+        # Parse acceptance_review_role from manifest (same pattern as plan_review_role).
+        # If role is set AND accept:agreed label is absent: route to status:acceptance-review,
+        # clear term (CRITICAL: erases term=1 left by plan-approval paths), post idempotent
+        # comment, and return 0 to block merge.  If role absent or accept:agreed present: fall through.
+        _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
+        if [ -n "$_acc_review_role" ]; then
+          _acc_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+            | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
+          if [ "$_acc_agreed" != "true" ]; then
+            gh issue edit "$cid" -R "$CB_REPO" --add-label status:acceptance-review 2>/dev/null || true
+            sset "$cid" term ""
+            if [ "$last_comment" != "acceptance-pending" ]; then
+              gh issue comment "$cid" -R "$CB_REPO" \
+                --body "charter-finale: acceptance-convergence gate active — routing to acceptance review (acceptance_review_role=$_acc_review_role)" \
+                2>/dev/null || true
+              printf '%s' "acceptance-pending" > "$_fin_dir/last_comment"
+            fi
+            return 0
+          fi
+        fi
         if gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null; then
           log "charter-finale: #$cid PR #$pr_num AUTO-merged → main (CB_AUTO_MERGE or auto:merge label)"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
@@ -838,7 +863,7 @@ running_count(){ local d id pid n=0
   echo "$n"; }
 cmd_run(){
   ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_plan_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_plan_head="" _q_accept_head="" _q_disp="" _qn="" _qst="" _id_ch=""
     reconcile   # STARTUP ONLY: requeue orphans from a previous run/reboot. Inside the loop,
                 # the launcher started its own spawns, so a dead pid = finished (route by
                 # status.json) — NOT an orphan; running reconcile per-tick would requeue every
@@ -948,6 +973,20 @@ cmd_run(){
               sset "$id" pid ""
               log "#$id plan-review failed ($tries) -> retry"
             fi
+          fi
+          continue
+        fi
+        # acceptance-review task (#522 acceptance-convergence): route by accept:agreed label.
+        # Purpose: prevent fall-through to status.json reader for charter ids with no status.json.
+        # Clears pid unconditionally; if accept:agreed is set, also clears term and aound.
+        # UNCONDITIONAL continue — last statement before closing fi.
+        if [ "$(sget "$id" kind)" = "acceptance-review" ]; then
+          sset "$id" pid ""
+          _acrd_agreed=$(gh issue view "$id" -R "$CB_REPO" --json labels 2>/dev/null \
+            | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
+          if [ "$_acrd_agreed" = "true" ]; then
+            sset "$id" term ""
+            sset "$id" aound 0
           fi
           continue
         fi
@@ -1088,7 +1127,7 @@ cmd_run(){
         # plan-review charter with plan_review_role AND without plan:agreed is non-terminal (#382).
         # Empty/absent/unreadable → no queue mode → normal behaviour.
         _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
-        _q_head=""; _q_plan_head=""
+        _q_head=""; _q_plan_head=""; _q_accept_head=""
         if [ -n "$_q_order" ]; then
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
@@ -1111,8 +1150,16 @@ cmd_run(){
             case "$_qst" in approved|done|blocked) continue ;; esac
             _q_plan_head="$_qn"; break
           done
+          # _q_accept_head: first charter not in done/blocked state.
+          # Do NOT skip charters with accept:agreed — they still need the acceptance-convergence
+          # step (Change B) to remove the label and reset ci_state; excluding them strands the charter.
+          for _qn in $_q_order; do
+            _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+            case "$_qst" in done|blocked) continue ;; esac
+            _q_accept_head="$_qn"; break
+          done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
-          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none}"
+          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none} accept-head=#${_q_accept_head:-none}"
         fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
@@ -1429,6 +1476,59 @@ Charter: #$cid" \
             ( CB_PLAN_REVIEW=1 "$PLAN_REVIEW_SPAWN" "$cid" "$_plan_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
             running=$((running+1))
             log "bg-spawn plan-review ($_plan_review_role) round $((_pround+1)) for charter #$cid (running=$running/$MAXP)"
+          done
+        fi
+        # ── ACCEPTANCE-convergence gate (#522): after finale CI green + CB_AUTO_MERGE, the
+        # acceptance-reviewer reviews before the charter merges to main.  acceptance_review_role
+        # in manifest → active; mirrors plan-convergence (#382). accept:agreed → release to merge.
+        _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
+        if [ -n "$_acc_review_role" ]; then
+          _acr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+            .[] | select([.labels[].name] | index("type:charter") != null)
+                | select([.labels[].name] | index("status:acceptance-review") != null)
+                | select([.labels[].name] | index("hold") == null)
+                | .number' 2>/dev/null || true)
+          for cid in $_acr_charters; do
+            [ "$running" -ge "$MAXP" ] && break
+            [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+            [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
+            if [ -n "$_q_order" ]; then [ -z "$_q_accept_head" ] && break; [ "$cid" = "$_q_accept_head" ] || continue; fi
+            [ -n "$(sget "$cid" pid)" ] && continue
+            [ -n "$(sget "$cid" term)" ] && continue
+            _acr_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+              | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
+            if [ "$_acr_agreed" = "true" ]; then
+              # Convergence complete: remove label and reset ci_state to pending so the charter-finale
+              # cycle re-polls CI; on re-poll green, Change A sees accept:agreed and falls through to merge.
+              gh issue edit "$cid" -R "$CB_REPO" --remove-label status:acceptance-review 2>/dev/null || true
+              local _acr_fin_dir="$STATE/finale-$cid"
+              mkdir -p "$_acr_fin_dir"
+              printf '%s' "pending" > "$_acr_fin_dir/ci_state"
+              sset "$cid" aound 0
+              log "#$cid accept:agreed → acceptance-convergence complete (ci_state reset to pending for merge)"
+              continue
+            fi
+            _aound=$(sget "$cid" aound); _aound=${_aound:-0}
+            _acap="${CB_ACCEPT_CONVERGE_CAP:-${CB_CONVERGE_CAP:-4}}"
+            if [ "$_aound" -ge "$_acap" ]; then
+              _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+              _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
+              if [ "${_ex_hd:-0}" = "0" ]; then
+                gh issue create -R "$CB_REPO" \
+                  --title "Human decision: charter #$cid acceptance did not converge" \
+                  --body "## Acceptance convergence not reached
+Charter #$cid did not reach accept:agreed within CB_ACCEPT_CONVERGE_CAP=$_acap rounds. Human call: approve acceptance, give direction, or close.
+
+Charter: #$cid" \
+                  --label "type:human-decision" 2>/dev/null || true
+                log "#$cid acceptance-convergence: cap $_acap reached → human-decision"
+              fi
+              continue
+            fi
+            sset "$cid" aound "$((_aound+1))"; sset "$cid" kind acceptance-review; sset "$cid" starttime "$(now)"
+            ( CB_ACCEPTANCE_REVIEW=1 "$ACCEPT_REVIEW_SPAWN" "$cid" "$_acc_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
+            running=$((running+1))
+            log "bg-spawn acceptance-review ($_acc_review_role) round $((_aound+1)) for charter #$cid (running=$running/$MAXP)"
           done
         fi
         for id in $(board launchable); do
