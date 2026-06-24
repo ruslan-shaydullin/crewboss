@@ -13,6 +13,7 @@ Endpoints (all under /api, bearer-auth except /api/health):
     POST /api/command {action,...}   -> run | pause | resume | kill | unkill | approve(#) | hold(#) | unhold(#)
 Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate origin).
 """
+import hmac, hashlib
 import json, os, shutil, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,6 +24,10 @@ TOKEN  = os.environ.get("CB_API_TOKEN", "")
 PORT   = int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else int(os.environ.get("CB_API_PORT","8787"))
 BOARD  = os.path.join(CB_HOME, "board-gh.sh")
 CB_INTEGRATOR = os.environ.get('CB_INTEGRATOR') or os.path.join(CB_HOME, 'crewboss-integrator.sh')
+
+_webhook_kick = threading.Event()
+_etag_store = {}  # keyed by resource path
+_cached_issues = None
 
 def sh(args, timeout=30):
     try: return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
@@ -173,12 +178,30 @@ def build_loop_info(board=None):
                 running=running, stage=stage)
 
 def build_state():
+    global _cached_issues
     issues = []
     if REPO:
         try:
-            raw = sh(["gh","issue","list","-R",REPO,"--state","all","-L","100",
-                      "--json","number,title,labels,state,body"]) or "[]"
-            issues = json.loads(raw)
+            cmd = ["gh", "api", f"/repos/{REPO}/issues", "--include", "-X", "GET",
+                   "-F", "state=all", "-F", "per_page=100"]
+            if _etag_store.get("issues"):
+                cmd += ["-H", f"If-None-Match: {_etag_store['issues']}"]
+            raw = sh(cmd)
+            # Split on first blank line (headers / body separator)
+            sep = "\r\n\r\n" if "\r\n\r\n" in raw else "\n\n"
+            parts = raw.split(sep, 1)
+            headers_block = parts[0] if len(parts) > 1 else ""
+            body = parts[1] if len(parts) > 1 else raw
+            # 304 Not Modified → return cached state, zero rate-limit cost
+            if "304" in (headers_block.splitlines()[0] if headers_block else ""):
+                return _cached_issues  # skip refresh
+            # Extract and store ETag for next call
+            for line in headers_block.splitlines():
+                if line.lower().startswith("etag:"):
+                    _etag_store["issues"] = line.split(":", 1)[1].strip()
+                    break
+            _cached_issues = json.loads(body)
+            issues = _cached_issues
         except Exception: issues = []
     board = []
     for it in issues:
@@ -853,12 +876,16 @@ class H(BaseHTTPRequestHandler):
                     # the dominant RL burner (~1200 reads/hr/tab) that silently
                     # exhausted the GraphQL budget (#526). 10s stays responsive
                     # while cutting that ~3x. Override via env for live debugging.
-                    time.sleep(int(os.environ.get("CB_API_POLL","10")))
+                    _webhook_kick.wait(timeout=int(os.environ.get("CB_API_POLL","10")))
+                    _webhook_kick.clear()
             except Exception: return
         return self._send(404,{"ok":False,"msg":"not found"})
     def do_POST(self):
-        if not self._auth_ok(): return self._send(401,{"ok":False,"msg":"unauthorized"})
-        path = self.path.split("?",1)[0]
+        path = self.path.split("?",1)[0]          # 1. extract path first
+        if path == "/api/gh-webhook":              # 2. webhook bypass (before Bearer check)
+            return self._handle_webhook()
+        if not self._auth_ok():                    # 3. auth gate for all other routes
+            return self._send(401,{"ok":False,"msg":"unauthorized"})
         n=int(self.headers.get("Content-Length",0) or 0)
         try: body=json.loads(self.rfile.read(n) or b"{}")
         except Exception: body={}
@@ -875,6 +902,27 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"ok":False,"msg":"order values must be integers"})
             return self._send(200, save_queue(order))
         return self._send(404,{"ok":False,"msg":"not found"})
+    def _handle_webhook(self):
+        secret = os.environ.get("CB_WEBHOOK_SECRET", "")
+        if not secret:
+            return self._send(500, {"ok": False, "msg": "server error"})
+        length = int(self.headers.get("Content-Length", 0))
+        body_bytes = self.rfile.read(length)
+        sig_header = self.headers.get("X-Hub-Signature-256", "")
+        # CRITICAL: GitHub sends "sha256=<hexdigest>", not bare hex.
+        # Strip prefix before comparing; bare-hex or absent prefix → 401.
+        expected = sig_header[len("sha256="):] if sig_header.startswith("sha256=") else ""
+        computed = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+        if not expected or not hmac.compare_digest(computed, expected):
+            return self._send(401, {"ok": False, "msg": "unauthorized"})
+        # Never log body_bytes or secret.
+        try:
+            event_type = self.headers.get("X-GitHub-Event", "")
+        except Exception:
+            event_type = ""
+        if event_type in ("issues", "pull_request"):
+            _webhook_kick.set()
+        return self._send(200, {"ok": True})
 
 if __name__=="__main__":
     if "--selftest-synthetic-gate" in sys.argv:
@@ -918,4 +966,4 @@ if __name__=="__main__":
         sys.exit(0)
 
     print(f"crewboss-api on :{PORT}  repo={REPO}  auth={'on' if TOKEN else 'OFF'}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1",PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("CB_API_HOST","127.0.0.1"), PORT), H).serve_forever()
