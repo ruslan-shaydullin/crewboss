@@ -30,4 +30,10 @@ mklabel "blast-radius:low"   "c5def5" "charter: normal parallel launch (default 
 mklabel "auto:plan-approve" "0075ca" "per-charter: auto-approve plan gate"
 mklabel "auto:merge"        "0075ca" "per-charter: auto-merge on green CI"
 
+# test-quality gate routing labels (#597)
+# status:test-broken: qa-engineer leaf routing signal (test is broken — re-dispatch for rework)
+# status:impl-broken: executor leaf routing signal (impl is broken — re-dispatch for rework)
+mklabel "status:test-broken" "e4e669" "tqg: qa-engineer leaf re-dispatch — test is broken"
+mklabel "status:impl-broken" "b60205" "tqg: executor leaf re-dispatch — impl is broken"
+
 echo "✓ crewboss board labels ready"
