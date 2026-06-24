@@ -63,26 +63,33 @@ sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
 #      spawns and board-gh inherit it.
 # Without CB_MANIFEST: block is a no-op (legacy behaviour unchanged, byte-for-byte).
 if [ -n "${CB_MANIFEST:-}" ]; then
-  _mlib=""
-  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
-    _mlib="$CB_MANIFEST_LIB"
-  elif [ -f "$HERE_LAUNCHER/../launcher/manifest.sh" ]; then
-    _mlib="$HERE_LAUNCHER/../launcher/manifest.sh"
-  elif [ -f "$CB_HOME/manifest.sh" ]; then
-    _mlib="$CB_HOME/manifest.sh"
+  # Graceful fallback: if the manifest directory doesn't exist (e.g., stale env var from a
+  # previous install), clear CB_MANIFEST and proceed without manifest mode rather than blocking.
+  if [ ! -d "$CB_MANIFEST" ]; then
+    log "CB_MANIFEST=$CB_MANIFEST: directory not found, proceeding without manifest"
+    CB_MANIFEST=""
+  else
+    _mlib=""
+    if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+      _mlib="$CB_MANIFEST_LIB"
+    elif [ -f "$HERE_LAUNCHER/../launcher/manifest.sh" ]; then
+      _mlib="$HERE_LAUNCHER/../launcher/manifest.sh"
+    elif [ -f "$CB_HOME/manifest.sh" ]; then
+      _mlib="$CB_HOME/manifest.sh"
+    fi
+    if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
+      log "CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)"
+      exit 65
+    fi
+    # shellcheck source=../launcher/manifest.sh
+    source "$_mlib"
+    if ! manifest_validate "$CB_MANIFEST" >/dev/null 2>&1; then
+      log "manifest invalid: $CB_MANIFEST"
+      exit 65
+    fi
+    log "manifest: $CB_MANIFEST ok"
+    export CB_MANIFEST
   fi
-  if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
-    log "CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)"
-    exit 65
-  fi
-  # shellcheck source=../launcher/manifest.sh
-  source "$_mlib"
-  if ! manifest_validate "$CB_MANIFEST" >/dev/null 2>&1; then
-    log "manifest invalid: $CB_MANIFEST"
-    exit 65
-  fi
-  log "manifest: $CB_MANIFEST ok"
-  export CB_MANIFEST
 fi
 board(){ bash "$BOARD" "$@"; }
 # plannable_scoped: when CREWBOSS_CHARTER is set, restrict plannable output to that charter only.
@@ -881,15 +888,35 @@ cmd_run(){
           if [ -n "$_st" ]; then
             _ste=$(date -u -d "$_st" +%s 2>/dev/null || echo 0)
             _age=$(( $(date -u +%s) - _ste ))
-            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "${CB_SPAWN_TIMEOUT:-1800}" ]; then
+            _kind=$(sget "$id" kind)
+            _kind_upper=$(printf '%s' "$_kind" | tr '[:lower:]-' '[:upper:]_')
+            eval "_eff_timeout=\${CB_${_kind_upper}_SPAWN_TIMEOUT:-${CB_SPAWN_TIMEOUT:-1800}}"
+            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "$_eff_timeout" ]; then
               kill -9 "$pid" 2>/dev/null
               prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
-              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${CB_SPAWN_TIMEOUT:-1800}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + blocked"
-              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + requeue"; fi
+              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${_eff_timeout}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${_eff_timeout}s) -> kill -9 + blocked"
+              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${_eff_timeout}s) -> kill -9 + requeue"; fi
               sset "$id" pid ""
             fi
           fi
           continue          # still running (or just timed-out+routed)
+        fi
+        # [#619 exec-592] completion-detect guard: pid gone but phase=starting (spawn killed before
+        # writing final status.json) — check run.log for a PR URL (nsjail-detach race).
+        if _phase=$(jq -r '.phase // ""' "$RUN/work/$id/status.json" 2>/dev/null) && [ "$_phase" = "starting" ]; then
+          _pr_url=$(grep -oE 'https://github.com/[^ "]+/pull/[0-9]+' "$RUN/work/$id/run.log" 2>/dev/null | tail -1)
+          if [ -z "$_pr_url" ]; then
+            _leaf_branch="$(board get "$id" branch 2>/dev/null || true)"
+            [ -n "$_leaf_branch" ] && _pr_url=$(gh pr list --head "$_leaf_branch" --state open --json url -q '.[0].url' 2>/dev/null || true)
+          fi
+          if [ -n "$_pr_url" ]; then
+            log "#$id pid gone but PR found ($_pr_url), routing done (nsjail-detach race)"
+            sset "$id" pr "$_pr_url"
+            sset "$id" tries 0
+            board route "$id" review >/dev/null
+            sset "$id" term 1; sset "$id" pid ""
+            continue
+          fi
         fi
         # analysis task: route by charter state; success = team-review, fail = retry/blocked.
         if [ "$(sget "$id" kind)" = "analysis" ]; then
@@ -1552,7 +1579,7 @@ Charter: #$cid" \
             _bg_spawn="$REWORK_SPAWN"
             _bg_old_branch="$(sget "$id" pr_head)"
           fi
-          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
+          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"; sset "$id" kind "$(board get "$id" role)"
           ( CB_OLD_BRANCH="$_bg_old_branch" "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
         done
