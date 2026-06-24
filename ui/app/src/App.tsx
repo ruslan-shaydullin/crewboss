@@ -643,6 +643,9 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
   useFlip(gridRef)
   const bodyId = `charter-body-${c?.n ?? 0}`
   const [mergeErr, setMergeErr] = useState<string | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
+  const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
   return (
     <div className="charter">
       <div className="charter-head">
@@ -737,12 +740,34 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
         </>}
         {c && c.state === 'approved' && c.finale_pr && (
           <>
-            <button className="btn sm pri" onClick={async () => {
+            <button className="btn sm pri" disabled={merging} onClick={async () => {
               setMergeErr(null)
+              setMergeVerifyVerdict(null)
+              setMergeVerifyOutput(null)
+              setMerging(true)
               const r = await command('merge', c.n)
-              if (!r.ok) setMergeErr(r.msg || 'merge failed')
-            }}>Merge</button>
+              setMerging(false)
+              if (!r.ok) {
+                setMergeErr(r.msg || 'merge failed')
+                if (r.verify_verdict) setMergeVerifyVerdict(r.verify_verdict)
+                if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+              } else if (r.verify_verdict && r.verify_verdict !== 'green') {
+                setMergeVerifyVerdict(r.verify_verdict)
+                if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+              }
+            }}>{merging ? '⏳ Merging…' : 'Merge'}</button>
             {mergeErr && <span className="err-inline">{mergeErr}</span>}
+            {mergeVerifyVerdict && (
+              <span className={mergeVerifyVerdict === 'green' ? 'verify-ok' : 'err-inline'}>
+                CI: {mergeVerifyVerdict}
+              </span>
+            )}
+            {mergeVerifyOutput && mergeVerifyVerdict !== 'green' && (
+              <details className="verify-details">
+                <summary>CI output</summary>
+                <pre className="verify-pre">{mergeVerifyOutput}</pre>
+              </details>
+            )}
           </>
         )}
       </div>
@@ -1050,6 +1075,9 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [resolveText, setResolveText] = useState('')
   const [resolving, setResolving] = useState(false)
   const [mergeErr, setMergeErr] = useState<string | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
+  const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1169,12 +1197,34 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
             </>}
             {task.state === 'approved' && task.finale_pr && (
               <>
-                <button className="btn sm pri" onClick={async () => {
+                <button className="btn sm pri" disabled={merging} onClick={async () => {
                   setMergeErr(null)
+                  setMergeVerifyVerdict(null)
+                  setMergeVerifyOutput(null)
+                  setMerging(true)
                   const r = await command('merge', n)
-                  if (!r.ok) setMergeErr(r.msg || 'merge failed')
-                }}>Merge</button>
+                  setMerging(false)
+                  if (!r.ok) {
+                    setMergeErr(r.msg || 'merge failed')
+                    if (r.verify_verdict) setMergeVerifyVerdict(r.verify_verdict)
+                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+                  } else if (r.verify_verdict && r.verify_verdict !== 'green') {
+                    setMergeVerifyVerdict(r.verify_verdict)
+                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+                  }
+                }}>{merging ? '⏳ Merging…' : 'Merge'}</button>
                 {mergeErr && <span className="err-inline">{mergeErr}</span>}
+                {mergeVerifyVerdict && (
+                  <span className={mergeVerifyVerdict === 'green' ? 'verify-ok' : 'err-inline'}>
+                    CI: {mergeVerifyVerdict}
+                  </span>
+                )}
+                {mergeVerifyOutput && mergeVerifyVerdict !== 'green' && (
+                  <details className="verify-details">
+                    <summary>CI output</summary>
+                    <pre className="verify-pre">{mergeVerifyOutput}</pre>
+                  </details>
+                )}
               </>
             )}
             {task.state === 'held'
