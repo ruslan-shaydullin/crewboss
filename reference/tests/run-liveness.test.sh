@@ -443,6 +443,124 @@ if grep -qE 'failing: \$\{_vmreason' "$LSRC"; then ok "RED-e: needs-rework comme
 if grep -qE "printf 'RED_REASON: %s" "$ISRC"; then ok "RED-e: integrator emits RED_REASON for the launcher to capture"; else ko "RED-e: integrator does not emit RED_REASON"; fi
 
 # =============================================================================
+# RED-g (#618): nsjail-detach race — spawn exits with phase:starting but PR URL in run.log
+# =============================================================================
+echo "== RED-g: nsjail-detach race — post-kill guard must detect PR URL in run.log =="
+CBHOME_G="$ROOT/cbhome_g"; LOGFILE_G="$ROOT/loop_g.log"
+reset_sandbox "$CBHOME_G"
+
+# Wedge simulating the nsjail-detach race:
+# (a) writes {"phase":"starting","pr":""} to status.json — what crewboss-spawn.sh writes
+#     at line 85 before nsjail exits (pr is always empty while nsjail is still running),
+# (b) logs a fake PR URL to run.log — what nsjail emits to stdout on completion,
+# (c) exits immediately — simulating spawn.sh dying (kill -9) before it reaches line 117
+#     (writestatus "$PHASE" ... "${PR:-}") so final status.json is never written with a
+#     non-empty .pr field.
+# Without exec-592: routing reads phase:starting -> `*)` case -> crash -> blocked.
+# With exec-592:    post-kill guard scans run.log for PR URL; found -> route as done (review).
+WEDGE_G="$ROOT/wedge-spawn-g.sh"
+cat > "$WEDGE_G" <<'WGEOF'
+#!/usr/bin/env bash
+ID="$1"
+CB_HOME="${CB_HOME:-/tmp/cbnet}"
+RUN="$CB_HOME/run"
+TDIR="$RUN/work/$ID"
+mkdir -p "$TDIR"
+printf '{"phase":"starting","pr":""}\n' > "$TDIR/status.json"
+printf 'https://github.com/owner/repo/pull/99\n' > "$TDIR/run.log"
+exit 0
+WGEOF
+chmod +x "$WEDGE_G"
+
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"charter","comments":[]},
+  {"number":50,"state":"OPEN","labels":[{"name":"type:agent"}],
+   "body":"task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]}
+]
+JSON
+
+run_loop "$CBHOME_G" "$LOGFILE_G" \
+  "CB_SPAWN=$WEDGE_G" "CB_POLL=0" "CB_SPAWN_TIMEOUT=2" \
+  "CB_RETRY_CAP=1" "CB_MAX_TICKS=10" "CB_REVIEW_STALE_TICKS=100"
+
+# RED: current routing reads phase:starting -> blocked (run.log PR URL never checked).
+# GREEN (exec-592): post-kill guard on the kill-0-returns-false routing path detects
+#   PR URL in run.log -> routes leaf as done (review) instead of crashing it to blocked.
+has_label 50 "status:review" \
+  && ok "RED-g: post-kill guard routed leaf as done (review) via PR URL in run.log" \
+  || ko "RED-g: leaf NOT routed as done — nsjail-detach race unhandled (phase:starting triggers false-blocked; exec-592 fix missing)"
+
+has_label 50 "status:blocked" \
+  && ko "RED-g: leaf incorrectly blocked — false-blocked from nsjail-detach race (exec-592 fix missing)" \
+  || ok "RED-g: leaf not blocked (detach race handled correctly)"
+
+# =============================================================================
+# RED-h (#618): per-role spawn timeout differentiation via CB_<KIND>_SPAWN_TIMEOUT
+# =============================================================================
+echo "== RED-h: per-role timeout — executor killed at CB_EXECUTOR_SPAWN_TIMEOUT=2s; analysis survives at CB_SPAWN_TIMEOUT=3600s =="
+CBHOME_H="$ROOT/cbhome_h"; LOGFILE_H="$ROOT/loop_h.log"
+reset_sandbox "$CBHOME_H"
+
+# Executor leaf (issue 61): dispatched by the real launcher claim path — exercises exec-592
+# Change 1 (sset kind executor at dispatch). Wedge sleeps so the hang-protection can fire.
+WEDGE_H="$ROOT/wedge-spawn-h.sh"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$WEDGE_H"; chmod +x "$WEDGE_H"
+
+# Analysis leaf (issue 62): pre-seed STATE with kind=analysis (already stored by current
+# code at analysis dispatch; no Change 1 needed for this leaf type).
+# starttime 10 seconds in the past so its age already exceeds CB_EXECUTOR_SPAWN_TIMEOUT=2
+# but is far below CB_SPAWN_TIMEOUT=3600 (global fallback for analysis).
+_H_STATE="$CBHOME_H/run/state"
+mkdir -p "$_H_STATE/62"
+_past_st=$(date -u -d "10 seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+sleep 30 & _ANAL_PID=$!
+printf '%s' "$_ANAL_PID" > "$_H_STATE/62/pid"
+printf '%s' "$_past_st"  > "$_H_STATE/62/starttime"
+printf 'analysis'        > "$_H_STATE/62/kind"
+
+cat > "$BOARD_STATE" <<'JSON'
+[
+  {"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"charter","comments":[]},
+  {"number":61,"state":"OPEN","labels":[{"name":"type:agent"}],
+   "body":"executor task\nCharter: #5\n## Acceptance (machine)\n- check: true","comments":[]},
+  {"number":62,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:in-progress"}],
+   "body":"analysis charter","comments":[]}
+]
+JSON
+
+# CB_POLL=1: 1s sleep per tick so wall-clock age accumulates predictably across ticks.
+# RED:  executor kind not stored (Change 1 missing) -> CB_EXECUTOR_SPAWN_TIMEOUT unused
+#       -> hang-protection falls back to CB_SPAWN_TIMEOUT=3600 -> executor NOT killed.
+# GREEN (exec-592 Change 1+2): kind=executor set at dispatch; hang-protection checks
+#       kind -> uses CB_EXECUTOR_SPAWN_TIMEOUT=2 -> executor killed at ~3s (tick 3).
+#       Analysis leaf: kind=analysis -> CB_ANALYSIS_SPAWN_TIMEOUT absent -> falls back to
+#       CB_SPAWN_TIMEOUT=3600 -> NOT killed within test duration (6 ticks = 6s << 3600s).
+run_loop "$CBHOME_H" "$LOGFILE_H" \
+  "CB_SPAWN=$WEDGE_H" "CB_POLL=1" \
+  "CB_EXECUTOR_SPAWN_TIMEOUT=2" "CB_SPAWN_TIMEOUT=3600" \
+  "CB_RETRY_CAP=1" "CB_MAX_TICKS=6"
+
+# RED: executor kind not set -> CB_EXECUTOR_SPAWN_TIMEOUT never consulted -> leaf survives.
+# GREEN (exec-592): kind=executor enables per-role timeout lookup -> leaf killed + blocked.
+has_label 61 "status:blocked" \
+  && ok "RED-h: executor leaf killed at CB_EXECUTOR_SPAWN_TIMEOUT=2s and routed blocked" \
+  || ko "RED-h: executor leaf NOT killed — CB_EXECUTOR_SPAWN_TIMEOUT not consulted (kind not stored at dispatch; exec-592 Change 1 missing)"
+
+# Analysis leaf must survive: kind=analysis -> global CB_SPAWN_TIMEOUT=3600 >> 6s test window.
+kill -0 "$_ANAL_PID" 2>/dev/null \
+  && ok "RED-h: analysis leaf still alive (kind=analysis uses global CB_SPAWN_TIMEOUT=3600)" \
+  || ko "RED-h: analysis leaf unexpectedly killed — per-kind timeout misapplied to kind=analysis"
+
+# Cleanup sleeping stubs
+kill "$_ANAL_PID" 2>/dev/null || true
+wait "$_ANAL_PID" 2>/dev/null || true
+_exec_spawn_pid=$(cat "$CBHOME_H/run/state/61/pid" 2>/dev/null || true)
+[ -n "$_exec_spawn_pid" ] && kill "$_exec_spawn_pid" 2>/dev/null || true
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
