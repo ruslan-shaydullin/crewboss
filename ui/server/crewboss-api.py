@@ -22,6 +22,7 @@ RUN    = os.path.join(CB_HOME, "run")
 TOKEN  = os.environ.get("CB_API_TOKEN", "")
 PORT   = int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else int(os.environ.get("CB_API_PORT","8787"))
 BOARD  = os.path.join(CB_HOME, "board-gh.sh")
+CB_INTEGRATOR = os.environ.get('CB_INTEGRATOR') or os.path.join(CB_HOME, 'crewboss-integrator.sh')
 
 def sh(args, timeout=30):
     try: return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
@@ -527,34 +528,39 @@ def do_command(body):
             pr_num = ""
         if not pr_num:
             return {"ok": False, "msg": "no finale PR found"}
-        # CI gate
+        # Step 1: Guard CB_INTEGRATOR
+        if not CB_INTEGRATOR or not os.path.exists(CB_INTEGRATOR):
+            return {"ok": False, "msg": f"CB_INTEGRATOR not found: {CB_INTEGRATOR}"}
+        # Step 2: Detect draft status and promote if needed
         r = subprocess.run(
-            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "statusCheckRollup",
-             "--jq", '[.statusCheckRollup[]?.state] | all(. == "SUCCESS")'],
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "isDraft", "--jq", ".isDraft"],
             capture_output=True, text=True, timeout=30)
-        try:
-            ci_ok = r.stdout.strip() == "true"
-        except Exception:
-            ci_ok = False
-        if not ci_ok:
-            return {"ok": False, "msg": "CI gate not green — merge blocked"}
-        # Promote draft
-        r = subprocess.run(["gh", "pr", "ready", pr_num, "-R", REPO],
+        if r.stdout.strip() == "true":
+            r = subprocess.run(["gh", "pr", "ready", pr_num, "-R", REPO],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return {"ok": False, "msg": f"gh pr ready failed: {r.stderr.strip()}"}
+        # Step 3: Invoke verify-merged
+        verify_timeout = int(os.environ.get("CB_VERIFY_TIMEOUT", "600")) + 60
+        result = subprocess.run(
+            ["bash", CB_INTEGRATOR, "verify-merged", f"charter/{n}", "main",
+             "--remote", f"https://github.com/{REPO}"],
+            capture_output=True, text=True, timeout=verify_timeout)
+        if result.returncode != 0:
+            return {"ok": False, "msg": "verify-merged failed", "verify_verdict": "red",
+                    "verify_output": result.stdout}
+        # Step 4: Merge
+        r = subprocess.run(["gh", "pr", "merge", pr_num, "-R", REPO, "--admin", "--merge"],
                            capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
-            return {"ok": False, "msg": r.stderr.strip() or "pr ready failed"}
-        # Merge
-        r = subprocess.run(["gh", "pr", "merge", pr_num, "-R", REPO, "--merge"],
-                           capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return {"ok": False, "msg": r.stderr.strip() or "merge failed"}
-        # Close issue (best-effort)
+            return {"ok": False, "msg": f"pr merge failed: {r.stderr.strip()}"}
+        # Step 5: Close issue (best-effort)
         r2 = subprocess.run(
             ["gh", "issue", "close", n, "-R", REPO, "--comment", "Charter merged and closed."],
             capture_output=True, text=True, timeout=30)
         if r2.returncode != 0:
             print(f"WARNING: merge succeeded but issue close failed: {r2.stderr.strip()}", file=sys.stderr)
-        return {"ok": True}
+        return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
