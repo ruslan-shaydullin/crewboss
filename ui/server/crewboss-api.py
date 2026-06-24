@@ -842,7 +842,12 @@ class H(BaseHTTPRequestHandler):
                         self.wfile.write(f"event: state\ndata: {json.dumps(cur)}\n\n".encode()); self.wfile.flush(); last=s
                     else:
                         self.wfile.write(b": keepalive\n\n"); self.wfile.flush()
-                    time.sleep(int(os.environ.get("CB_API_POLL","3")))
+                    # CB_API_POLL — seconds between SSE board refreshes. Default 10
+                    # (was 3): each open dashboard tab re-queried GitHub every 3s,
+                    # the dominant RL burner (~1200 reads/hr/tab) that silently
+                    # exhausted the GraphQL budget (#526). 10s stays responsive
+                    # while cutting that ~3x. Override via env for live debugging.
+                    time.sleep(int(os.environ.get("CB_API_POLL","10")))
             except Exception: return
         return self._send(404,{"ok":False,"msg":"not found"})
     def do_POST(self):
