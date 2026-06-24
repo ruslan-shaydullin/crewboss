@@ -46,7 +46,7 @@ cmdn="$(printf '%s' "$cmd" | tr '\t\n' '  ' | tr -s ' ')"     # whitespace-norma
 
 # ITA Bash-path: block executor from writing test files via shell redirect/tee
 if printf '%s' "$cmd" | grep -Eq '(>|>>)[[:space:]]*(tests/|\S*(\.test\.(sh|ts|js|py)|/tests/))' \
-   || printf '%s' "$cmd" | grep -Eq 'tee([[:space:]]+-[a-zA-Z]+)*[[:space:]]+(tests/|\S*(\.test\.(sh|ts|js|py)|/tests/))'; then
+   || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[|;][[:space:]]*)tee([[:space:]]+-[a-zA-Z]+)*[[:space:]]+(tests/|\S*(\.test\.(sh|ts|js|py)|/tests/))'; then
   [ "$role" = "executor" ] && { printf 'crewboss BLOCK [%s]: test-file writes via Bash are test-author-only (independent test authorship, charter #523)\n' "$role" >&2; exit 2; }
 fi
 
