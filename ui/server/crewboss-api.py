@@ -300,7 +300,11 @@ def build_comments(n):
         return {"ok": False, "comments": []}
 
 def build_task(n):
-    """Detail for one task: live status + the brief it was given + the redacted run log."""
+    """Detail for one task: live status + the brief it was given + the redacted run log.
+
+    The `body` field is populated for ALL task kinds (leaf, charter, milestone) via a single
+    unconditional `gh issue view` call — no kind-branching required (#700).
+    """
     w = os.path.join(RUN, "work", str(n))
     def rd(p, limit=None):
         try:
@@ -313,6 +317,7 @@ def build_task(n):
     try: os.kill(int(open(pidf).read().strip()), 0); alive = True
     except Exception: alive = False
     started = rd(os.path.join(RUN, "state", str(n), "starttime")).strip()
+    # body: fetched for all kinds (leaf, charter, milestone) — gh issue view works on any issue
     body = ""
     if REPO:
         try:
