@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: runtime-manifest determinism sanity (#710)
+        run: bash reference/tests/runtime-manifest-determinism.test.sh
       - name: run reference test suites
         run: |
           set -euo pipefail
