@@ -615,6 +615,128 @@ _charter_autorebase(){
   return 0
 }
 
+# ── test-quality gate cycle (charter #597) ───────────────────────────────────
+# Called every tick of cmd_run after _integrator_cycle, before _charter_finale_cycle.
+# SCOPED execution only — no-op in unscoped/multi-charter mode (bootstrap caveat #193).
+#
+# Fires after BOTH the qa-engineer AND impl leaves have merged (all leaves closed).
+# One gate run per charter (tracked via launcher-local tqg state on the charter id).
+#
+# Routing signals:
+#   status:test-broken  — qa-engineer leaf re-dispatched (test is broken)
+#   status:impl-broken  — executor leaf re-dispatched (impl is broken)
+#
+# Sub-step A: re-dispatch routing — detect open type:agent leaves that already carry
+#   status:test-broken or status:impl-broken and ensure status:needs-rework is set so
+#   the launcher's existing rework path picks them up for re-dispatch.
+# Sub-step B: gate invocation — when all leaves for the scoped charter are closed and
+#   the gate has not yet run (tqg state absent), find the qa-engineer and executor
+#   leaves and invoke run-test-quality-gate.sh.
+_tqg_cycle(){
+  # Scoped execution only (CREWBOSS_CHARTER must be set — bootstrap caveat #193)
+  [ "$CHARTER_SCOPE" = "0" ] && return 0
+  local cid="$CHARTER_SCOPE"
+  local tqg_script="$HERE_LAUNCHER/run-test-quality-gate.sh"
+
+  # ── Sub-step A: ensure needs-rework on open leaves carrying routing labels ──
+  # The gate script applies status:test-broken or status:impl-broken and reopens
+  # the issue. This sub-step adds status:needs-rework (idempotent) so the launcher's
+  # existing rework dispatch path claims it on the next tick.
+  local _tqg_routing_leaves _tqg_rl
+  _tqg_routing_leaves=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      .[] | select([.labels[].name] | index("type:agent") != null)
+          | select((numsAfter(.body; "Charter") | first) == ($c | tonumber))
+          | select([.labels[].name] |
+              (index("status:test-broken") != null or index("status:impl-broken") != null))
+          | select([.labels[].name] | index("status:needs-rework") == null)
+          | .number' 2>/dev/null || true)
+  for _tqg_rl in $_tqg_routing_leaves; do
+    gh issue edit "$_tqg_rl" -R "$CB_REPO" \
+      --add-label "status:needs-rework" >/dev/null 2>&1 || true
+    log "tqg: #$_tqg_rl routing label (test-broken/impl-broken) → adding status:needs-rework"
+  done
+
+  # ── Sub-step B: gate invocation ──────────────────────────────────────────────
+  # Guard: gate script must be available
+  [ -f "$tqg_script" ] || { log "tqg: gate script not found ($tqg_script) — skipping"; return 0; }
+
+  # Guard: already ran for this charter in this launcher session
+  local _tqg_state
+  _tqg_state=$(sget "$cid" tqg)
+  [ "$_tqg_state" = "done" ] && return 0
+
+  # Guard: all leaves for this charter must be closed (same condition as finale)
+  local _tqg_open
+  _tqg_open=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:charter") == null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | length' 2>/dev/null || echo "1")
+  [ "${_tqg_open:-1}" = "0" ] || return 0   # leaves still open — not ready
+
+  # Find the qa-engineer leaf (closed type:agent with role:qa-engineer label)
+  local _qa_leaf
+  _qa_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:agent") != null)
+            | select([.labels[].name] | index("role:qa-engineer") != null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | first | .number // empty' 2>/dev/null || true)
+
+  # Find the executor/impl leaf (closed type:agent with role:executor label)
+  local _impl_leaf
+  _impl_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:agent") != null)
+            | select([.labels[].name] | index("role:executor") != null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | first | .number // empty' 2>/dev/null || true)
+
+  # Skip TQG if this charter does not have both qa-engineer and executor leaves
+  # (not all charters follow the qa-engineer+executor TDD pattern)
+  if [ -z "$_qa_leaf" ] || [ -z "$_impl_leaf" ]; then
+    log "tqg: charter #$cid — qa-leaf or impl-leaf not found; skipping TQG"
+    sset "$cid" tqg "done"   # mark done so this check is not repeated every tick
+    return 0
+  fi
+
+  log "tqg: running gate for charter #$cid (qa-leaf=#$_qa_leaf impl-leaf=#$_impl_leaf)"
+  local _tqg_rc=0
+  bash "$tqg_script" \
+    --charter  "$cid" \
+    --qa-leaf  "$_qa_leaf" \
+    --impl-leaf "$_impl_leaf" \
+    --repo     "$CB_REPO" \
+    || _tqg_rc=$?
+
+  if [ "$_tqg_rc" = "0" ]; then
+    sset "$cid" tqg "done"
+    log "tqg: gate green for charter #$cid → tqg:done (finale may proceed)"
+  elif [ "$_tqg_rc" = "1" ]; then
+    log "tqg: gate routed for charter #$cid — leaf re-dispatched for rework"
+    # tqg state left unset: gate will re-run after the rework leaf re-closes
+  else
+    log "tqg: gate infra error for charter #$cid (rc=$_tqg_rc) — will retry"
+  fi
+}
+
 # ── charter finale cycle ──────────────────────────────────────────────────────
 # Called every tick of cmd_run after _integrator_cycle.
 # For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
@@ -1134,6 +1256,9 @@ cmd_run(){
       done
       # integrator step: merge review-state leaves into charter/C (every tick, non-fatal)
       _integrator_cycle || log "integrator-cycle: error (continuing)"
+      # test-quality gate step: after all leaves merged, check test quality before finale
+      # (scoped execution only — no-op in multi-charter mode; bootstrap caveat #193)
+      _tqg_cycle || log "tqg-cycle: error (continuing)"
       # charter finale step: for charters with all leaves closed, run local gate + draft PR
       _charter_finale_cycle || log "charter-finale-cycle: error (continuing)"
       running=$(running_count)
