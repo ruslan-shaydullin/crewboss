@@ -212,6 +212,7 @@ export default function App() {
                   onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
                   pendingQueue={pendingQueue}
                   onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
+                  onOpen={setOpen}
                 />
               </div>
             </div>
@@ -876,7 +877,7 @@ function SkeletonBoard() {
   )
 }
 
-function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending }: {
+function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending, onOpen }: {
   queueOrder: number[]
   savedOrder: number[]
   board: Task[]
@@ -885,6 +886,7 @@ function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChang
   onLaunch: () => Promise<void>
   pendingQueue: number[]
   onRemovePending: (n: number) => void
+  onOpen: (n: number) => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
@@ -932,7 +934,7 @@ function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChang
           {queueOrder.map((n, idx) => {
             const charter = charterMap.get(n)
             return (
-              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n}>
+              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n} onClick={() => onOpen(n)}>
                 <span className="queue-panel__pos">{idx + 1}.</span>
                 <span className="queue-panel__label">
                   <span className="num">#{n}</span>
@@ -1258,6 +1260,13 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
                 }}
               >{resolving ? 'Решение…' : 'Решить'}</button>
             </div>
+          </>
+        )}
+
+        {d?.body && (
+          <>
+            <div className="drawer-section">Description</div>
+            <div className="task-body-prose" data-testid="task-body-prose"><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{d.body}</pre></div>
           </>
         )}
 
