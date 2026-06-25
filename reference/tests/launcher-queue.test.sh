@@ -206,6 +206,64 @@ spawned 51 \
   && ok "Q-c: leaf 51 (charter A) spawned without queue — regression lock OK" \
   || ko "Q-c: leaf 51 NOT spawned without queue — regression!"
 
+# ── Q-hold: held charter at head → queue advances to B ────────────────────────
+# Regression for the Q-hold failure mode: charter A (50) carries the `hold`
+# label and sits at the head of the queue.  Without the fix, _q_head resolves
+# to 50 (board get 50 state returned "approved"), so leaf 51 is spawned instead
+# of leaf 101 — freezing forward progress for charter B.
+# Fix (leaf/686-impl): board-gh.sh state chain gains a `hold` branch BEFORE
+# status:blocked; launcher _q_head / _q_plan_head / _q_accept_head skip "hold".
+#
+# Board: charter A=50 (hold+approved, head of queue), leaf A=51;
+#        charter B=100 (approved), leaf B=101.  Queue: [50,100].
+# Assertions:
+#   (1) board get 50 state  → "hold"    (board-gh.sh hold-branch patch)
+#   (2) charter A (50) visible in queue order after launcher run (not purged)
+#   (3) leaf 101 IS spawned  (queue advanced to B)
+#   (4) leaf 51 is NOT spawned (held charter correctly skipped)
+echo "== Q-hold: held charter A (50) at queue head → B (100) becomes head, leaf 101 spawned =="
+
+HOLD_BOARD='[
+  {"number":50,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"hold"},{"name":"status:approved"}],"body":"charter A (held)"},
+  {"number":51,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:approved"}],"body":"leaf of A\nCharter: #50\n## Acceptance (machine)\n- check: true"},
+  {"number":100,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter B"},
+  {"number":101,"state":"OPEN","labels":[{"name":"type:agent"},{"name":"status:approved"}],"body":"leaf of B\nCharter: #100\n## Acceptance (machine)\n- check: true"}
+]'
+
+reset_state <<< "$HOLD_BOARD"
+mkdir -p "$CBHOME/run"
+printf '{"order":[50,100]}' > "$CBHOME/run/queue.json"
+
+# (1) Unit check: board get 50 state returns "hold"
+# Verifies the board-gh.sh hold-branch patch (leaf/686-impl): the `hold` label
+# must be detected BEFORE status:approved in the state jq chain.
+_bstate=$(CB_REPO="test/repo" PATH="$BIN:$PATH" bash "$CBHOME/board-gh.sh" get 50 state 2>/dev/null || echo "")
+[ "$_bstate" = "hold" ] \
+  && ok "Q-hold: board get 50 state returns 'hold' (board-gh.sh hold-branch patch verified)" \
+  || ko "Q-hold: board get 50 state returned '${_bstate:-empty}' — expected 'hold' (board-gh.sh patch from leaf/686-impl not yet applied)"
+
+# Run the launcher; _q_head must skip charter A (hold) and resolve to B (100)
+run_launcher once
+
+# (2) Queue order invariant: charter A must remain visible in queue.json
+# The launcher reads but must NOT modify queue.json; a held charter is skipped,
+# not purged, so the queue retains the full order for future advancement.
+_q50=$(jq -r 'if (.order | index(50)) != null then "yes" else "no" end' \
+         "$CBHOME/run/queue.json" 2>/dev/null || echo "no")
+[ "$_q50" = "yes" ] \
+  && ok "Q-hold: charter A (50) remains in queue order (not purged by launcher)" \
+  || ko "Q-hold: charter A (50) unexpectedly absent from queue.json after launcher run"
+
+# (3) Leaf 101 (charter B=100) MUST be spawned
+spawned 101 \
+  && ok "Q-hold: leaf 101 (charter B=100) IS spawned — queue advanced past held A=50" \
+  || ko "Q-hold: leaf 101 NOT spawned — queue did not advance past held charter A=50"
+
+# (4) Leaf 51 (charter A=50, held) must NOT be spawned
+spawned 51 \
+  && ko "Q-hold: leaf 51 (charter A=50, held) was spawned — hold not respected by queue!" \
+  || ok "Q-hold: leaf 51 (charter A=50, held) correctly NOT spawned"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" = 0 ]
