@@ -949,7 +949,7 @@ cmd_once(){
       for _qn in $_q_order; do
         _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
         case "$_qst" in
-          done|blocked) continue ;;
+          done|blocked|hold) continue ;;
           plan-review)
             # Skip plan-review only when terminal: no plan_review_role (human-park path)
             # or plan:agreed already set (convergence complete).
@@ -1284,7 +1284,7 @@ cmd_run(){
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
             case "$_qst" in
-              done|blocked) continue ;;
+              done|blocked|hold) continue ;;
               plan-review)
                 # Skip plan-review only when terminal: no plan_review_role (human-park path)
                 # or plan:agreed already set (convergence complete).
@@ -1299,7 +1299,7 @@ cmd_run(){
           done
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in approved|done|blocked) continue ;; esac
+            case "$_qst" in approved|done|blocked|hold) continue ;; esac
             _q_plan_head="$_qn"; break
           done
           # _q_accept_head: first charter not in done/blocked state.
@@ -1307,7 +1307,7 @@ cmd_run(){
           # step (Change B) to remove the label and reset ci_state; excluding them strands the charter.
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in done|blocked) continue ;; esac
+            case "$_qst" in done|blocked|hold) continue ;; esac
             _q_accept_head="$_qn"; break
           done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')

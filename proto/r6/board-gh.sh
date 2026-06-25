@@ -57,6 +57,7 @@ case "$cmd" in
       prompt) echo "$j" | jq -r '.body // ""' ;;
       state)  echo "$j" | jq -r '
                 if .state=="CLOSED" then "done"
+                elif ([.labels[].name]|any(.=="hold")) then "hold"
                 elif ([.labels[].name]|any(.=="status:blocked")) then "blocked"
                 elif ([.labels[].name]|any(.=="status:review")) then "review"
                 elif ([.labels[].name]|any(.=="status:needs-rework")) then "needs-rework"
