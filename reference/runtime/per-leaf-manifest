@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=58, union=80  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=22, EXCLUDED=59, union=81  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -175,3 +175,7 @@ ALLOW independent-test-authorship
 EXCLUDED webhook-security
 # charter #597: test-quality-gate requires subprocess + gh stub; EXCLUDED-class by convention
 EXCLUDED test-quality-gate
+# #708: runtime-manifest-determinism is a meta-test that runs runtime-manifest.test.sh 10×
+#   and diffs outputs; its verdict depends on external process state (run 1 output as reference),
+#   not a pure function of merged content alone. EXCLUDED (fail-closed).
+EXCLUDED runtime-manifest-determinism  # meta-test: depends on external process state; not a pure function of merged content

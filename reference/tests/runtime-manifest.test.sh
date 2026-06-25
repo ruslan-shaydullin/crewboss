@@ -65,21 +65,23 @@ else
     name=$(basename "$snap_file")
     # In manifest: check if any repo_path column (field 1) has this basename
     in_manifest=0
-    if grep -v '^[[:space:]]*#' "$MANIFEST" 2>/dev/null | \
-       awk -F'\t' -v n="$name" '
+    if awk -F'\t' -v n="$name" '
+         /^[[:space:]]*#/ { next }
+         /^[[:space:]]*$/ { next }
          {
            p = $1; gsub(/\r/, "", p)
            sub(/.*\//, "", p)   # extract basename
            if (p == n) { found=1; exit }
          }
          END { exit !found }
-       ' 2>/dev/null; then
+       ' "$MANIFEST" 2>/dev/null; then
       in_manifest=1
     fi
     # In exclude: first whitespace-delimited field = filename
     in_exclude=0
-    if grep -v '^[[:space:]]*#' "$EXCLUDE" 2>/dev/null | \
-       awk -v n="$name" '
+    if awk -v n="$name" '
+         /^[[:space:]]*#/ { next }
+         /^[[:space:]]*$/ { next }
          {
            fname = $1; gsub(/\r/, "", fname)
            # must also have a non-empty reason (field 2+)
@@ -87,7 +89,7 @@ else
            if (fname == n && length(rest) > 0) { found=1; exit }
          }
          END { exit !found }
-       ' 2>/dev/null; then
+       ' "$EXCLUDE" 2>/dev/null; then
       in_exclude=1
     fi
     if [ "$in_manifest" -eq 1 ] || [ "$in_exclude" -eq 1 ]; then
