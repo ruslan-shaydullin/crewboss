@@ -98,7 +98,7 @@ def build_agents(by_n, loop_running=False):
         if item.get("state") == "review":
             if not any(a.get("task") == n for a in agents):
                 agents.append(dict(task=n, role="integrator",
-                                   phase="merging" if loop_running else "awaiting",
+                                   phase="awaiting-integration",
                                    title=item.get("title", ""), started="", pid=None))
     for n, item in by_n.items():
         if item.get("kind") == "charter" and item.get("state") == "needs-plan":
@@ -950,12 +950,12 @@ if __name__=="__main__":
         }
         failures = []
 
-        # --- loop_running=False: both chips must be phase="awaiting" ---
+        # --- loop_running=False: integrator chip must be phase="awaiting-integration", tech-lead="awaiting" ---
         agents_idle = build_agents(_by_n, loop_running=False)
         for a in agents_idle:
             if a.get("role") == "integrator" and a.get("pid") is None:
-                if a.get("phase") != "awaiting":
-                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
+                if a.get("phase") != "awaiting-integration":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=False (expected 'awaiting-integration')")
             if a.get("role") == "tech-lead" and a.get("pid") is None:
                 if a.get("phase") != "awaiting":
                     failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
@@ -965,12 +965,12 @@ if __name__=="__main__":
         if not any(a.get("role") == "tech-lead" and a.get("pid") is None for a in agents_idle):
             failures.append("FAIL tech-lead synthetic chip missing when loop_running=False")
 
-        # --- loop_running=True: integrator=merging, tech-lead=planning ---
+        # --- loop_running=True: integrator=awaiting-integration, tech-lead=planning ---
         agents_live = build_agents(_by_n, loop_running=True)
         for a in agents_live:
             if a.get("role") == "integrator" and a.get("pid") is None:
-                if a.get("phase") != "merging":
-                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=True (expected 'merging')")
+                if a.get("phase") != "awaiting-integration":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=True (expected 'awaiting-integration')")
             if a.get("role") == "tech-lead" and a.get("pid") is None:
                 if a.get("phase") != "planning":
                     failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=True (expected 'planning')")
@@ -979,7 +979,7 @@ if __name__=="__main__":
             for f in failures:
                 print(f)
             sys.exit(1)
-        print("PASS synthetic-gate: idle→awaiting, live→merging/planning")
+        print("PASS synthetic-gate: integrator→awaiting-integration, tech-lead idle→awaiting/live→planning")
         sys.exit(0)
 
     if "--selftest-merge" in sys.argv:
