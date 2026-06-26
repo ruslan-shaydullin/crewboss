@@ -82,7 +82,7 @@ body {
 .sidebar .rail { position:static }
 /* queue panel scrolls independently — overflow-y:auto + min-height:0 prevent it
    from expanding beyond the sidebar column and overlapping the agents rail */
-.queue-panel--sticky { flex-shrink:0; overflow-y:auto; min-height:0 }
+.queue-panel--sticky { flex-shrink:1; overflow-y:auto; min-height:0 }
 
 /* charter cards */
 .board { display:flex; flex-direction:column; gap:16px }
