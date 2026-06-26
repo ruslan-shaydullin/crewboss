@@ -272,7 +272,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
 
 function Hero({ state }: { state: State | null }) {
   const board = state?.board ?? []
-  const running = state?.agents?.filter(a => a.phase !== 'awaiting').length ?? 0
+  const running = state?.agents?.filter(a => a.pid != null).length ?? 0
   const review = board.filter((x) => x.kind === 'leaf' && x.state === 'review').length
   const done = board.filter((x) => x.kind === 'leaf' && x.state === 'done').length
   const blocked = board.filter((x) => x.kind === 'leaf' && x.state === 'blocked').length
