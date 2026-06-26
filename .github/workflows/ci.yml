@@ -52,6 +52,9 @@ jobs:
         run: node scripts/smoke.mjs
       - name: repro-jitter (no spurious FLIP translate on idle ticks)
         run: node scripts/repro-jitter.mjs
+      - name: layout overlap (queue and agents rail do not overlap with 30+ items)
+        working-directory: ui/app
+        run: node scripts/layout-overlap.mjs
       - name: facilitator stage (discuss step + acceptance block gate)
         run: node scripts/test-facilitator-stage.mjs
       - name: Detect UI-touching PR
