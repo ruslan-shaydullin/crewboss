@@ -556,6 +556,12 @@ def do_command(body):
             pr_num = ""
         if not pr_num:
             return {"ok": False, "msg": "no finale PR found"}
+        # Idempotency guard: skip everything if PR is already merged
+        r_state = subprocess.run(
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "state", "--jq", ".state"],
+            capture_output=True, text=True, timeout=30)
+        if r_state.stdout.strip() == "MERGED":
+            return {"ok": True, "msg": "already merged -- no-op", "merged": True}
         # Step 1: Guard CB_INTEGRATOR
         if not CB_INTEGRATOR or not os.path.exists(CB_INTEGRATOR):
             return {"ok": False, "msg": f"CB_INTEGRATOR not found: {CB_INTEGRATOR}"}
@@ -582,12 +588,18 @@ def do_command(body):
                            capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             return {"ok": False, "msg": f"pr merge failed: {r.stderr.strip()}"}
-        # Step 5: Close issue (best-effort)
+        # Step 5A: Remove status:approved label (best-effort, non-blocking)
+        subprocess.run(
+            ["gh", "issue", "edit", n, "-R", REPO, "--remove-label", "status:approved"],
+            capture_output=True, text=True, timeout=30)
+        # Step 5B: Close issue (required -- failure surfaces as ok=False so caller can retry)
         r2 = subprocess.run(
             ["gh", "issue", "close", n, "-R", REPO, "--comment", "Charter merged and closed."],
             capture_output=True, text=True, timeout=30)
         if r2.returncode != 0:
-            print(f"WARNING: merge succeeded but issue close failed: {r2.stderr.strip()}", file=sys.stderr)
+            return {"ok": False, "msg": f"merge succeeded but issue close failed: {r2.stderr.strip()}"}
+        # Step 5C: Only unlink pr_num_path after confirmed close (preserves retry invariant)
+        os.unlink(pr_num_path)
         return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
