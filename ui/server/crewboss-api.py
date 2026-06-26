@@ -556,6 +556,12 @@ def do_command(body):
             pr_num = ""
         if not pr_num:
             return {"ok": False, "msg": "no finale PR found"}
+        # Idempotency guard: skip everything if PR is already merged
+        r_state = subprocess.run(
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "state", "--jq", ".state"],
+            capture_output=True, text=True, timeout=30)
+        if r_state.stdout.strip() == "MERGED":
+            return {"ok": True, "msg": "already merged -- no-op", "merged": True}
         # Step 1: Guard CB_INTEGRATOR
         if not CB_INTEGRATOR or not os.path.exists(CB_INTEGRATOR):
             return {"ok": False, "msg": f"CB_INTEGRATOR not found: {CB_INTEGRATOR}"}
@@ -582,12 +588,18 @@ def do_command(body):
                            capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             return {"ok": False, "msg": f"pr merge failed: {r.stderr.strip()}"}
-        # Step 5: Close issue (best-effort)
+        # Step 5A: Remove status:approved label (best-effort, non-blocking)
+        subprocess.run(
+            ["gh", "issue", "edit", n, "-R", REPO, "--remove-label", "status:approved"],
+            capture_output=True, text=True, timeout=30)
+        # Step 5B: Close issue (required -- failure surfaces as ok=False so caller can retry)
         r2 = subprocess.run(
             ["gh", "issue", "close", n, "-R", REPO, "--comment", "Charter merged and closed."],
             capture_output=True, text=True, timeout=30)
         if r2.returncode != 0:
-            print(f"WARNING: merge succeeded but issue close failed: {r2.stderr.strip()}", file=sys.stderr)
+            return {"ok": False, "msg": f"merge succeeded but issue close failed: {r2.stderr.strip()}"}
+        # Step 5C: Only unlink pr_num_path after confirmed close (preserves retry invariant)
+        os.unlink(pr_num_path)
         return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
@@ -968,6 +980,101 @@ if __name__=="__main__":
                 print(f)
             sys.exit(1)
         print("PASS synthetic-gate: idle→awaiting, live→merging/planning")
+        sys.exit(0)
+
+    if "--selftest-merge" in sys.argv:
+        from unittest.mock import patch, MagicMock, mock_open
+        _merge_failures = []
+        _N = "716"
+
+        # --- Test 1: idempotency guard (already-merged PR) ---
+        # When the state-check returns MERGED the function must return immediately;
+        # only 1 subprocess call should occur (no verify-script or pr-merge invoked).
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="MERGED", returncode=0),  # state-check
+        ]) as _mock_run1, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink"):
+            _res1 = do_command({"action": "merge", "number": _N})
+            if _res1.get("ok") is not True:
+                _merge_failures.append(
+                    f"T1 FAIL ok={_res1.get('ok')!r} expected True")
+            if _res1.get("merged") is not True:
+                _merge_failures.append(
+                    f"T1 FAIL merged={_res1.get('merged')!r} expected True")
+            if _mock_run1.call_count != 1:
+                _merge_failures.append(
+                    f"T1 FAIL call_count={_mock_run1.call_count} expected 1 "
+                    "(idempotency guard should short-circuit after state-check)")
+
+        # --- Test 2: atomic cleanup happy path ---
+        # order: state-check → isDraft → verify-script → pr-merge-cmd →
+        #        issue-edit --remove-label → issue-close-cmd
+        # Expect: ok=True, os.unlink(pr_num_path) called, both remove-label and
+        # issue-close appear in subprocess call_args_list.
+        _mock_unlink2 = MagicMock()
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="OPEN", returncode=0),    # state-check
+                MagicMock(stdout="false", returncode=0),   # isDraft
+                MagicMock(returncode=0),                   # verify-script
+                MagicMock(returncode=0),                   # pr-merge-cmd
+                MagicMock(returncode=0),                   # issue-edit --remove-label
+                MagicMock(returncode=0),                   # issue-close-cmd
+        ]) as _mock_run2, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink", _mock_unlink2):
+            _res2 = do_command({"action": "merge", "number": _N})
+            _pr_num_path2 = os.path.join(RUN, "state", f"finale-{_N}", "pr_num")
+            if _res2.get("ok") is not True:
+                _merge_failures.append(
+                    f"T2 FAIL ok={_res2.get('ok')!r} expected True")
+            _unlink_calls2 = [str(c) for c in _mock_unlink2.call_args_list]
+            if not any(_pr_num_path2 in c for c in _unlink_calls2):
+                _merge_failures.append(
+                    f"T2 FAIL os.unlink not called with pr_num_path {_pr_num_path2!r}")
+            _run_args2 = [str(c) for c in _mock_run2.call_args_list]
+            if not any("--remove-label" in a for a in _run_args2):
+                _merge_failures.append(
+                    "T2 FAIL --remove-label not found in subprocess call_args_list")
+            if not any("close" in a for a in _run_args2):
+                _merge_failures.append(
+                    "T2 FAIL issue-close-cmd not found in subprocess call_args_list")
+
+        # --- Test 3: close-fail surfaces as ok=False AND pr_num file survives ---
+        # Entry six (issue-close-cmd) returns returncode=1; the function must
+        # return ok=False with a message referencing the failure, and must NOT
+        # call os.unlink (preserves the retry invariant / no approved-zombie).
+        _mock_unlink3 = MagicMock()
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="OPEN", returncode=0),    # state-check
+                MagicMock(stdout="false", returncode=0),   # isDraft
+                MagicMock(returncode=0),                   # verify-script
+                MagicMock(returncode=0),                   # pr-merge-cmd
+                MagicMock(returncode=0),                   # issue-edit --remove-label
+                MagicMock(returncode=1, stderr="permission denied"),  # issue-close-cmd FAILS
+        ]) as _mock_run3, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink", _mock_unlink3):
+            _res3 = do_command({"action": "merge", "number": _N})
+            if _res3.get("ok") is not False:
+                _merge_failures.append(
+                    f"T3 FAIL ok={_res3.get('ok')!r} expected False")
+            _msg3 = _res3.get("msg", "")
+            if "close" not in _msg3.lower() and "issue" not in _msg3.lower():
+                _merge_failures.append(
+                    f"T3 FAIL msg={_msg3!r} expected to contain issue-close failure text")
+            if _mock_unlink3.called:
+                _merge_failures.append(
+                    "T3 FAIL os.unlink was called; pr_num_path must survive on close failure")
+
+        if _merge_failures:
+            for _mf in _merge_failures:
+                print(_mf)
+            sys.exit(1)
+        print("PASS selftest-merge: idempotency-guard, atomic-cleanup, close-fail")
         sys.exit(0)
 
     print(f"crewboss-api on :{PORT}  repo={REPO}  auth={'on' if TOKEN else 'OFF'}", flush=True)
