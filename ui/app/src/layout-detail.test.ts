@@ -7,40 +7,6 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import React from 'react'
 import { fetchTask } from './api'
 
-// ─── Scenario 1 — Layout regression ───────────────────────────────────────
-describe('Layout regression — .queue-panel--sticky CSS fix', () => {
-  let wrapper: HTMLDivElement
-  let queuePanelEl: HTMLDivElement
-
-  beforeEach(() => {
-    document.head.insertAdjacentHTML(
-      'beforeend',
-      '<style>.queue-panel--sticky { overflow-y: auto; min-height: 0 }</style>'
-    )
-    wrapper = document.createElement('div')
-    wrapper.className = 'sidebar-col'
-    queuePanelEl = document.createElement('div')
-    queuePanelEl.className = 'queue-panel--sticky'
-    wrapper.appendChild(queuePanelEl)
-    document.body.appendChild(wrapper)
-  })
-
-  afterEach(() => {
-    wrapper.remove()
-    document.head.querySelectorAll<HTMLStyleElement>('style').forEach((s) => {
-      if (s.textContent?.includes('queue-panel--sticky')) s.remove()
-    })
-  })
-
-  it('getComputedStyle(queuePanelEl).overflowY === "auto"', () => {
-    expect(getComputedStyle(queuePanelEl).overflowY).toBe('auto')
-  })
-
-  it('getComputedStyle(queuePanelEl).minHeight === "0px"', () => {
-    expect(getComputedStyle(queuePanelEl).minHeight).toBe('0px')
-  })
-})
-
 // ─── Scenario 2 — QueuePanel click → TaskDrawer body ──────────────────────
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
