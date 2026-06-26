@@ -54,3 +54,36 @@ Assert at least one comment is present. **Important:** The response is `{"ok":tr
 
 - check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/task/$N | jq -e '.body | length > 0'
 - check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/comments/$N | jq -e '.comments | length > 0'
+
+---- TASK (issue #751) ----
+Charter: #719
+
+## Task: Live acceptance — layout overlap (scenario a)
+
+Geometric/CSS proof that the layout overlap fix from #691 is live on the deployed box.
+
+**Context:** Charter #719 requires live acceptance of #691's two scenarios. This leaf covers scenario (a): queue panel and agents panel must not visually overlap with 30+ queue elements. Acceptance runs on the actual deployed bundle (after deploy-debt stale-bundle fix is merged). A cold executor sees only this issue — all required context is below.
+
+**Known facts about the box:**
+- No Chromium is installed by default (`which chromium` likely returns empty; `npx playwright install` has never been run).
+- `layout-overlap.mjs` unconditionally imports Playwright and calls `process.exit(1)` if no Chromium binary exists — running it without Chromium will fail.
+- The CSS rule to check is `.queue-panel--sticky` in the deployed bundle at `~/cbnet/ui/dist/assets/*.css`.
+
+## Steps
+
+**Step 1 — CSS proof:**
+Run: `grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css`
+Confirm the matching rule contains both `overflow-y:auto` and `min-height:0`. Log the full matching line as proof.
+
+**Step 2 — Chromium gate:**
+- Run `which chromium`.
+- **If no path is returned**: CSS grep (Step 1) alone is the accepted proof per charter. The charter explicitly accepts `overflow-y:auto; min-height:0` in the deployed bundle as direct evidence the overlap fix is live. Do NOT attempt to run `layout-overlap.mjs`. Proceed to Step 3.
+- **If `which chromium` returns a path**: Edit the `addInitScript` call at `ui/app/scripts/layout-overlap.mjs:~182` — replace the `http://127.0.0.1:${STUB_PORT}` stubUrl value with `http://localhost:8787` so the script targets the live cockpit (the script injects the URL via `addInitScript`; it does not read it from env). Then run: `cd ~/cbnet && node ui/app/scripts/layout-overlap.mjs` and log the geometric output (panel bounding-box deltas) as proof.
+
+**Step 3 — Report:**
+Note in the PR comment which path was taken (CSS-only or mjs run). If overlap is still detected, note it and open a follow-up leaf.
+
+## Acceptance (machine)
+
+- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'overflow-y:auto'
+- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'min-height:0'
