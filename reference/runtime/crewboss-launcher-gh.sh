@@ -11,7 +11,7 @@
 #      CB_HARNESS (optional local cmd for gate-charter; default = marker-grep only),
 #      CB_GATE_REPO_DIR (repo dir for marker-grep; default = .),
 #      CB_FINALE_CHECKS_TIMEOUT (seconds to wait for draft-PR CI; default 300),
-#      CB_FINALE_CHECKS_POLL (seconds between gh pr checks polls; default 15),
+#      CB_FINALE_CHECKS_POLL (no longer used — CI decoupled from GHA; kept for back-compat),
 #      CB_PLAN_CONVERGE_CAP (max plan-review rounds before human-decision; default CB_CONVERGE_CAP or 4),
 #      CB_ACCEPT_CONVERGE_CAP (max acceptance-review rounds before human-decision; default CB_CONVERGE_CAP or 4)
 set -uo pipefail
@@ -426,70 +426,50 @@ _integrator_cycle(){
   done
 }
 
-# ── charter finale: one non-blocking CI poll per tick ────────────────────────────
+# ── charter finale: non-blocking CI state resolution per tick ────────────────────
 # Called by _charter_finale_cycle every tick for each charter with a draft PR.
 # State is persisted in $STATE/finale-<cid>/ so the function is fast (no sleep).
-# Return codes: 0=green (PR promoted), 1=red (CI failed), 2=timeout, 3=pending (come back).
+# Return codes: 0=green (PR promoted), 1=red (gate failed), 2=timeout (cached).
 # Dedup: posts a comment only on first transition into each terminal state. [F4 #118]
+# CI is decoupled from GHA: gate-charter ran locally before PR creation (line 849).
 _finale_check_ci(){
   local cid="$1" pr_num="$2"
-  local timeout="${CB_FINALE_CHECKS_TIMEOUT:-300}"
   local _fin_dir="$STATE/finale-$cid"
   mkdir -p "$_fin_dir"
 
   # Load persistent state.
-  local ci_state pr_ts last_comment
-  ci_state=$(cat "$_fin_dir/ci_state"     2>/dev/null || echo "pending")
-  pr_ts=$(cat    "$_fin_dir/pr_ts"        2>/dev/null || echo "")
+  local ci_state last_comment
+  ci_state=$(cat "$_fin_dir/ci_state" 2>/dev/null)
   last_comment=$(cat "$_fin_dir/last_comment" 2>/dev/null || echo "")
 
-  # Initialise deadline clock on first call (after PR creation — anti-deadlock safe).
-  if [ -z "$pr_ts" ]; then
-    pr_ts=$(date +%s)
-    printf '%s' "$pr_ts" > "$_fin_dir/pr_ts"
-  fi
-
-  # Already terminal? Return cached result with no new gh call.
+  # Already terminal? Return cached result immediately (no external call).
   case "$ci_state" in
     green)   return 0 ;;
     red)     return 1 ;;
     timeout) return 2 ;;
   esac
 
-  # ONE poll this tick (no sleep, no inner loop).
-  local checks_out checks_rc=0
-  checks_out=$(gh pr checks "$pr_num" -R "$CB_REPO" 2>&1) || checks_rc=$?
-
-  local new_state
-  if [ "$checks_rc" -eq 0 ]; then
-    new_state="green"
-  elif printf '%s' "$checks_out" | grep -qiE "no checks|0 checks reported" \
-       || [ -z "$(printf '%s' "$checks_out" | tr -d '[:space:]')" ]; then
-    # GHA has NOT registered any checks yet — the poll fired in the same tick the PR
-    # was created (creation→poll race). gh reports "no checks reported on the '<b>'
-    # branch" (exit≠0, no "pending" string). Treat as PENDING, not red: a false-red
-    # here is cached terminal (ci_state=red, lines above short-circuit) and the PR
-    # NEVER promotes even after CI goes green — deterministically breaks every
-    # launcher-created charter finale. (#238 capstone find.) Deadline still bounds it.
-    if [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
-      new_state="timeout"
-    else
-      return 3
-    fi
-  elif ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
-    new_state="red"
-  elif [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
-    new_state="timeout"
+  # Determine new state without polling GHA.
+  # gate-charter already ran and passed at line 849 before this PR was created.
+  if [ "$ci_state" = "pending" ]; then
+    # FIRST CALL: gate proven green locally before PR creation — record ci_state=green.
+    ci_state=green
   else
-    # Still pending, deadline not expired. Come back next tick.
-    return 3
+    # RESTART (ci_state absent or empty — state-loss scenario): re-run gate locally.
+    local gate_rc=0
+    bash "$INTEGRATOR_SCRIPT" gate-charter "$cid" 2>&1 || gate_rc=$?
+    if [ "$gate_rc" -eq 0 ]; then
+      ci_state=green
+    else
+      ci_state=red
+    fi
   fi
 
   # Persist new terminal state.
-  printf '%s' "$new_state" > "$_fin_dir/ci_state"
+  printf '%s' "$ci_state" > "$_fin_dir/ci_state"
 
   # Actions + dedup comment (one comment per state).
-  case "$new_state" in
+  case "$ci_state" in
     green)
       log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
       gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
@@ -545,7 +525,7 @@ _finale_check_ci(){
       fi
       return 1 ;;
     timeout)
-      log "charter-finale: #$cid PR #$pr_num CI check timeout (${timeout}s) — stays draft"
+      log "charter-finale: #$cid PR #$pr_num CI check timeout — stays draft"
       if [ "$last_comment" != "timeout" ]; then
         gh issue comment "$cid" -R "$CB_REPO" \
           --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
@@ -744,8 +724,8 @@ _tqg_cycle(){
 #   1. Run LOCAL gate BEFORE creating PR (marker-grep mandatory; CB_HARNESS optional).
 #      MUST NOT read CI checks at this stage (PR doesn't exist yet — anti-deadlock).
 #   2. Gate green → open draft PR charter/C → main.
-#   3. Wait for CI checks on draft PR (gh pr checks with timeout).
-#   4. CI green → promote (gh pr ready) + comment; CI red/timeout → stays draft + comment.
+#   3. Local gate proven green → CI decoupled; mark ci_state=green immediately.
+#   4. Green → promote (gh pr ready) + comment; gate re-run on restart (red stays draft + comment).
 # Idempotent: existing open PR is re-checked, not duplicated.
 # Charter stays OPEN — only a human (tech-lead) merges and closes it.
 _charter_finale_cycle(){
