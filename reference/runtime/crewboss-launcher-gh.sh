@@ -19,6 +19,7 @@ set -uo pipefail
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"; STATE="$RUN/state"; LOCK="$RUN/launcher.lock"
 RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
+CB_RECOVERY_CAP="${CB_RECOVERY_CAP:-2}"
 # CB_SPAWN_TIMEOUT — per-spawn wall-clock kill (#212 I4 hang-protection); default 1800s (<< nsjail 3600).
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
@@ -961,7 +962,7 @@ cmd_once(){
       for _qn in $_q_order; do
         _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
         case "$_qst" in
-          done|blocked|hold) continue ;;
+          done|blocked|hold|deferred) continue ;;
           plan-review)
             # Skip plan-review only when terminal: no plan_review_role (human-park path)
             # or plan:agreed already set (convergence complete).
@@ -1287,31 +1288,57 @@ cmd_run(){
               _tch=$(board get "$id" charter 2>/dev/null || true)
               gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
               if [ -n "$_tch" ]; then
-                _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
-                  | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
-                if [ "${_thas_bounce:-0}" = "0" ]; then
-                  gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
-                    '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
-                    "$_troot" "$_troute" "$_tevidence")"
+                recovery_n=$(sget "$_tch" recovery_n); recovery_n=${recovery_n:-0}
+                if [ "$recovery_n" -ge "$CB_RECOVERY_CAP" ]; then
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --add-label status:deferred \
+                    --remove-label status:approved \
+                    --remove-label status:needs-plan \
+                    --remove-label status:needs-analysis >/dev/null 2>&1 || true
+                  gh issue comment "$_tch" -R "$CB_REPO" \
+                    --body "deferred after ${recovery_n} cycles; root: ${_troot:-unknown}; last failure: ${_tevidence:-unknown}"
+                  log "#$id triage: plan-flaw -> charter #$_tch deferred (recovery_n=$recovery_n >= CB_RECOVERY_CAP=$CB_RECOVERY_CAP)"
+                else
+                  sset "$_tch" recovery_n "$((recovery_n + 1))"
+                  _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                    | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                  if [ "${_thas_bounce:-0}" = "0" ]; then
+                    gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                      '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                      "$_troot" "$_troute" "$_tevidence")"
+                  fi
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --remove-label status:approved --add-label status:needs-plan >/dev/null 2>&1 || true
+                  log "#$id triage: plan-flaw -> charter #$_tch needs-plan"
                 fi
-                gh issue edit "$_tch" -R "$CB_REPO" \
-                  --remove-label status:approved --add-label status:needs-plan >/dev/null 2>&1 || true
-                log "#$id triage: plan-flaw -> charter #$_tch needs-plan"
               fi ;;
             needs-analysis)
               _tch=$(board get "$id" charter 2>/dev/null || true)
               gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
               if [ -n "$_tch" ]; then
-                _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
-                  | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
-                if [ "${_thas_bounce:-0}" = "0" ]; then
-                  gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
-                    '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
-                    "$_troot" "$_troute" "$_tevidence")"
+                recovery_n=$(sget "$_tch" recovery_n); recovery_n=${recovery_n:-0}
+                if [ "$recovery_n" -ge "$CB_RECOVERY_CAP" ]; then
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --add-label status:deferred \
+                    --remove-label status:approved \
+                    --remove-label status:needs-plan \
+                    --remove-label status:needs-analysis >/dev/null 2>&1 || true
+                  gh issue comment "$_tch" -R "$CB_REPO" \
+                    --body "deferred after ${recovery_n} cycles; root: ${_troot:-unknown}; last failure: ${_tevidence:-unknown}"
+                  log "#$id triage: approach-flaw -> charter #$_tch deferred (recovery_n=$recovery_n >= CB_RECOVERY_CAP=$CB_RECOVERY_CAP)"
+                else
+                  sset "$_tch" recovery_n "$((recovery_n + 1))"
+                  _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                    | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                  if [ "${_thas_bounce:-0}" = "0" ]; then
+                    gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                      '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                      "$_troot" "$_troute" "$_tevidence")"
+                  fi
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
+                  log "#$id triage: approach-flaw -> charter #$_tch needs-analysis"
                 fi
-                gh issue edit "$_tch" -R "$CB_REPO" \
-                  --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
-                log "#$id triage: approach-flaw -> charter #$_tch needs-analysis"
               fi ;;
             test-bug)
               gh issue edit "$id" -R "$CB_REPO" \
@@ -1379,7 +1406,7 @@ cmd_run(){
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
             case "$_qst" in
-              done|blocked|hold) continue ;;
+              done|blocked|hold|deferred) continue ;;
               plan-review)
                 # Skip plan-review only when terminal: no plan_review_role (human-park path)
                 # or plan:agreed already set (convergence complete).
@@ -1394,7 +1421,7 @@ cmd_run(){
           done
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in approved|done|blocked|hold) continue ;; esac
+            case "$_qst" in approved|done|blocked|hold|deferred) continue ;; esac
             _q_plan_head="$_qn"; break
           done
           # _q_accept_head: first charter not in done/blocked state.
@@ -1402,7 +1429,7 @@ cmd_run(){
           # step (Change B) to remove the label and reset ci_state; excluding them strands the charter.
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in done|blocked|hold) continue ;; esac
+            case "$_qst" in done|blocked|hold|deferred) continue ;; esac
             _q_accept_head="$_qn"; break
           done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
