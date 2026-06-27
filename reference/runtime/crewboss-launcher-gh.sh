@@ -1276,6 +1276,7 @@ cmd_run(){
           }
           _troot=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="root"{print $2}')
           _troute=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="route"{print $2}')
+          _tevidence=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="evidence"{print $2}')
           log "#$id triage: root=$_troot route=$_troute"
           case "$_troute" in
             executor-rework|test-flaky)
@@ -1286,6 +1287,13 @@ cmd_run(){
               _tch=$(board get "$id" charter 2>/dev/null || true)
               gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
               if [ -n "$_tch" ]; then
+                _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                  | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                if [ "${_thas_bounce:-0}" = "0" ]; then
+                  gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                    '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                    "$_troot" "$_troute" "$_tevidence")"
+                fi
                 gh issue edit "$_tch" -R "$CB_REPO" \
                   --remove-label status:approved --add-label status:needs-plan >/dev/null 2>&1 || true
                 log "#$id triage: plan-flaw -> charter #$_tch needs-plan"
@@ -1294,6 +1302,13 @@ cmd_run(){
               _tch=$(board get "$id" charter 2>/dev/null || true)
               gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
               if [ -n "$_tch" ]; then
+                _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                  | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                if [ "${_thas_bounce:-0}" = "0" ]; then
+                  gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                    '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                    "$_troot" "$_troute" "$_tevidence")"
+                fi
                 gh issue edit "$_tch" -R "$CB_REPO" \
                   --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
                 log "#$id triage: approach-flaw -> charter #$_tch needs-analysis"
