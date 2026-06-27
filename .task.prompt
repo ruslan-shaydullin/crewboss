@@ -1,89 +1,109 @@
-You are the executor for issue #752 in repo stratch1989/crewboss.
+You are the executor for issue #772 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/752-1782478492, based on the charter integration branch 'charter/719' (NOT main). Sibling leaves of charter #719 may already be merged into 'charter/719'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/719 --title '<short>' --body 'Closes #752'. The PR base MUST be 'charter/719', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/772-1782574219, based on the charter integration branch 'charter/768' (NOT main). Sibling leaves of charter #768 may already be merged into 'charter/768'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/768 --title '<short>' --body 'Closes #772'. The PR base MUST be 'charter/768', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #752) ----
-Charter: #719
+---- TASK (issue #772) ----
+Charter: #768
+Depends-on: #770, #771
 
-## Task: Live acceptance — click-to-detail (scenario b)
+## Context
 
-API-level proof that click-to-detail data from #691 is present on the deployed cockpit.
+Box: `ec2-user@3.217.199.168`, AL2023 2023.12. Container runtime is provisioned (leaf/768-runtime), playwright image is pinned and deployed to box (leaf/768-image-pin), integrator is verified/patched (leaf/768-integrator-patch). Sentinel `~/cbnet/run/visual_gate_soft` is still in place. This leaf runs the live pixel-diff gate: green on current bundle, red on a CSS mutation. Only after both pass does the sentinel-off leaf proceed.
 
-**Context:** Charter #719 requires live acceptance of #691's two scenarios. This leaf covers scenario (b): clicking an element (queue/board/agent) opens a detail panel showing full title, issue body (`d.body`), status/stage, last verdict/comment, and GitHub link. Acceptance is via API responses (no browser required) since the deployment box has no Chromium installed. Browser pass is optional if Chromium is available. A cold executor sees only this issue — all required context is below.
+**Source path:** `~/cbnet-uibuild/ui/app` — kept fresh by `deploy-runtime.sh` lines 101–103 (git clone/pull); contains `package.json` + `scripts/`. Do NOT use `~/cbnet/www` — that is the built vite dist (`index.html` + `assets/`) with no source tree.
 
-**Known API facts (from crewboss-api.py do_GET, lines 860-899):**
-- `/api/state` — returns full board state; task numbers are in field `.n` (NOT `.id`)
-- `/api/task/N` — returns task detail including `body` field (singular, by number)
-- `/api/comments/N` — returns `{"ok": true, "comments": [...]}` — an **object**, not an array
-- There is NO `/api/tasks` (plural) list endpoint — it returns 404
+**viteMode note:** `visual-regression.mjs` lines 185–187 branch on `hasDistIndex`: if `dist/index.html` exists in the mounted volume → `viteMode="preview"` (serves prebuilt assets); if absent → `viteMode="dev"` (source live-rendered). `deploy-runtime.sh` L104–105 runs `npm run build` and copies `dist/` to `~/cbnet/www` but does NOT delete `dist/` from `~/cbnet-uibuild/ui/app`, so dist/ is present on the box. Production integrator always mounts a dist/-free git checkout (dist/ is gitignored); GHA CI also checks out without dist/ — both always run in `dev` mode.
 
-## Steps
+## Task
 
-**Step 1 — Code read:**
-Read `ui/app/src/App.tsx` around line 1283. Confirm `d.body` rendering is wired (code read is sufficient proof for rendering wire-up).
+**Step 1 — run green check:**
 
-**Step 2 — Get a live task number N from /api/state:**
+Using `<chosen-runtime>` (podman or docker, per leaf/768-runtime's RUNTIME-CHOICE comment) and `<pinned-digest>` (from `~/cbnet/playwright-image.digest` on box):
+
 ```
-N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state \
-  | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n')
-echo "Using task N=$N"
+<chosen-runtime> run --rm \
+  -v ~/cbnet-uibuild/ui/app:/app:rw \
+  -w /app \
+  <pinned-digest> \
+  bash -c "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --silent && node scripts/visual-regression.mjs"
 ```
-Use N in subsequent calls. The field is `.n` (not `.id`).
 
-**Step 3 — API proof for task body:**
-```
-curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/task/$N \
-  | jq -e '.body | length > 0'
-```
-Assert the `body` field is non-empty (jq exits 0 if true).
+Expect EXIT 0.
 
-**Step 4 — API proof for comments/last verdict:**
-```
-curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/comments/$N \
-  | jq -e '.comments | length > 0'
-```
-Assert at least one comment is present. **Important:** The response is `{"ok":true,"comments":[...]}` — an object, not an array. Use `.comments | length > 0` (NOT bare `length > 0`, which counts object keys and is always 2, making the check a false-positive).
+**Step 2 — baseline reshoot (if baselines mismatch, EXIT 1 on green run):**
 
-**Step 5 — Log responses as proof.** If any field is missing or empty, note it and open a follow-up leaf.
+Jammy container image ≠ ubuntu-GHA rendering; threshold is 100px. If the green run exits 1 due to baseline mismatch, reshoot in `viteMode="dev"` to match production integrator and GHA CI:
 
-**Step 6 — Browser pass (optional):** Only if `which chromium` returns a path, do a full browser pass: click one element from each panel type (queue item, board item, agent), verify the detail panel opens with full title, issue body, status/stage, last verdict/comment, and a GitHub link.
+```
+# a. Remove dist/ so viteMode=dev (matches production + CI; without this step
+#    dist/index.html is present → viteMode=preview → preview-mode baselines diverge
+#    from dev-mode production rendering → persistent false CI failures)
+rm -rf ~/cbnet-uibuild/ui/app/dist
+
+# b. Reshoot baselines
+<chosen-runtime> run --rm \
+  -v ~/cbnet-uibuild/ui/app:/app:rw \
+  -w /app \
+  <pinned-digest> \
+  bash -c "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --silent && node scripts/visual-regression.mjs --update-baselines"
+
+# c. Copy new PNGs to ui/app/scripts/baselines/, commit through PR
+# d. sha-lock regen (MANDATORY in same PR): update sha256 entries for all three
+#    canonical PNG rows in reference/runtime-manifest.tsv:
+#      ui/app/scripts/baselines/board.png
+#      ui/app/scripts/baselines/team.png
+#      ui/app/scripts/baselines/human.png
+#    runtime-manifest.test.sh Test 3 sha256sum-checks every canonical row;
+#    committing new PNGs without updating manifest fails CI Test 3.
+
+# e. Restore dist/ on box
+cd ~/cbnet-uibuild/ui/app && npm run build
+```
+
+**Step 3 — verify EXIT 0 on current bundle (dist/ now restored; green gate).**
+
+**Step 4 — red-gate mutation (must target compiled output, not source CSS):**
+
+Background: dist/ is present when the container mounts the volume → `viteMode="preview"` → vite serves prebuilt assets from `dist/assets/`; mutating source CSS has zero effect on screenshots → false-pass.
+
+Primary approach (compiled CSS, explicit backup/restore):
+```
+# a. Backup
+cp -r ~/cbnet-uibuild/ui/app/dist/assets ~/cbnet-uibuild/ui/app/dist/assets.bak
+
+# b. Mutate compiled CSS (vite preview serves these files)
+sed -i "s/background[^;]*;/background: red !important;/" ~/cbnet-uibuild/ui/app/dist/assets/*.css
+
+# c. Rerun container (same volume mount) → verify EXIT 1
+<chosen-runtime> run --rm \
+  -v ~/cbnet-uibuild/ui/app:/app:rw \
+  -w /app \
+  <pinned-digest> \
+  bash -c "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --silent && node scripts/visual-regression.mjs"
+# Expect EXIT 1
+
+# d. Restore (do NOT use git checkout dist/assets/ — dist/ is gitignored, never tracked)
+rm -rf ~/cbnet-uibuild/ui/app/dist/assets && mv ~/cbnet-uibuild/ui/app/dist/assets.bak ~/cbnet-uibuild/ui/app/dist/assets
+```
+
+Alternative (dev-mode path):
+```
+# a. Remove dist so viteMode=dev
+rm -rf ~/cbnet-uibuild/ui/app/dist
+# b. Mutate source CSS (IS git-tracked)
+sed -i "s/background[^;]*;/background: red !important;/" ~/cbnet-uibuild/ui/app/src/App.css
+# c. Rerun container → verify EXIT 1
+# d. Revert source
+git -C ~/cbnet-uibuild/ui/app checkout src/
+# e. Restore dist
+cd ~/cbnet-uibuild/ui/app && npm run build
+```
+
+**Step 5 — both EXIT 0 (green) AND EXIT 1 (red) confirmed → signal leaf/768-sentinel-off by posting a comment: "VALIDATE-PASS: green EXIT 0 confirmed; red EXIT 1 confirmed; baseline mode=dev".**
 
 ## Acceptance (machine)
 
-- check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/task/$N | jq -e '.body | length > 0'
-- check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/comments/$N | jq -e '.comments | length > 0'
-
----- TASK (issue #751) ----
-Charter: #719
-
-## Task: Live acceptance — layout overlap (scenario a)
-
-Geometric/CSS proof that the layout overlap fix from #691 is live on the deployed box.
-
-**Context:** Charter #719 requires live acceptance of #691's two scenarios. This leaf covers scenario (a): queue panel and agents panel must not visually overlap with 30+ queue elements. Acceptance runs on the actual deployed bundle (after deploy-debt stale-bundle fix is merged). A cold executor sees only this issue — all required context is below.
-
-**Known facts about the box:**
-- No Chromium is installed by default (`which chromium` likely returns empty; `npx playwright install` has never been run).
-- `layout-overlap.mjs` unconditionally imports Playwright and calls `process.exit(1)` if no Chromium binary exists — running it without Chromium will fail.
-- The CSS rule to check is `.queue-panel--sticky` in the deployed bundle at `~/cbnet/ui/dist/assets/*.css`.
-
-## Steps
-
-**Step 1 — CSS proof:**
-Run: `grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css`
-Confirm the matching rule contains both `overflow-y:auto` and `min-height:0`. Log the full matching line as proof.
-
-**Step 2 — Chromium gate:**
-- Run `which chromium`.
-- **If no path is returned**: CSS grep (Step 1) alone is the accepted proof per charter. The charter explicitly accepts `overflow-y:auto; min-height:0` in the deployed bundle as direct evidence the overlap fix is live. Do NOT attempt to run `layout-overlap.mjs`. Proceed to Step 3.
-- **If `which chromium` returns a path**: Edit the `addInitScript` call at `ui/app/scripts/layout-overlap.mjs:~182` — replace the `http://127.0.0.1:${STUB_PORT}` stubUrl value with `http://localhost:8787` so the script targets the live cockpit (the script injects the URL via `addInitScript`; it does not read it from env). Then run: `cd ~/cbnet && node ui/app/scripts/layout-overlap.mjs` and log the geometric output (panel bounding-box deltas) as proof.
-
-**Step 3 — Report:**
-Note in the PR comment which path was taken (CSS-only or mjs run). If overlap is still detected, note it and open a follow-up leaf.
-
-## Acceptance (machine)
-
-- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'overflow-y:auto'
-- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'min-height:0'
+- check: ssh ec2-user@3.217.199.168 '<chosen-runtime> run --rm -v ~/cbnet-uibuild/ui/app:/app:rw -w /app $(cat ~/cbnet/playwright-image.digest) bash -c "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --silent && node scripts/visual-regression.mjs"; [ $? -eq 0 ]'
+- check: cd reference && bash tests/runtime-manifest.test.sh 2>&1 | grep -q "Test 3.*PASS"
