@@ -39,6 +39,12 @@ ACCEPT_REVIEW_SPAWN="${CB_ACCEPT_REVIEW_SPAWN:-$PLAN_REVIEW_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
+# CB_TRIAGE_SPAWN: spawn script for the triage role (#784 recovery-triage).
+# When set, BLOCKED intercept paths route executor-failed leaves to status:needs-triage
+# and spawn this script to post a ## Triage (machine) verdict comment.
+# The completion-detect handler reads the verdict and routes by class.
+# When unset (default), original behaviour: executor failures -> blocked at retry-cap.
+TRIAGE_SPAWN="${CB_TRIAGE_SPAWN:-}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -188,6 +194,12 @@ reconcile(){
   local d id pid
   for d in "$STATE"/*/; do [ -e "$d" ] || continue
     id=$(basename "$d"); pid=$(sget "$id" pid); [ -n "$pid" ] || continue
+    # kind=triage guard: triage agent has its own completion handler; do NOT requeue as orphan.
+    # The completion-detect loop will handle verdict routing when the triage agent finishes.
+    if [ "$(sget "$id" kind)" = "triage" ]; then
+      log "reconcile: #$id kind=triage — skip (triage agent; handled by completion-detect)"
+      continue
+    fi
     if kill -0 "$pid" 2>/dev/null; then
       log "reconcile: #$id alive (pid $pid)"
     else
@@ -204,8 +216,16 @@ route(){ # id, spawn-exit
     3) board route "$id" requeue >/dev/null; sset "$id" pid ""; log "#$id budget hard-stop -> requeued, STOPPING cycle"; return 9 ;;
     *) local prev; prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
        if [ "$tries" -ge "$RETRY_CAP" ]; then
-         board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP) — tech-lead triage" >/dev/null
-         sset "$id" pid ""; log "#$id failed (try $tries) -> blocked"
+         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+           board route "$id" needs-triage "executor failed $tries×" >/dev/null
+           sset "$id" kind "triage"
+           "$TRIAGE_SPAWN" "$id" &
+           sset "$id" pid "$!"
+           log "#$id failed (try $tries) -> needs-triage (triage spawned)"
+         else
+           board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP) — tech-lead triage" >/dev/null
+           sset "$id" pid ""; log "#$id failed (try $tries) -> blocked"
+         fi
        else
          board route "$id" requeue >/dev/null; sset "$id" pid ""; log "#$id failed (try $tries) -> requeued"
        fi ;;
@@ -1224,12 +1244,80 @@ cmd_run(){
           fi
           continue
         fi
+        # kind=triage completion handler: triage agent finished; route leaf by verdict. (#784)
+        if [ "$(sget "$id" kind)" = "triage" ]; then
+          _tvrd=$(gh issue view "$id" -R "$CB_REPO" --json comments 2>/dev/null \
+            | jq -r '[.comments[]?.body | select(contains("## Triage (machine)"))] | last // empty' \
+            2>/dev/null || true)
+          if [ -z "$_tvrd" ]; then
+            log "#$id kind=triage: no verdict comment found — routing to blocked"
+            board route "$id" blocked "triage: no verdict found" >/dev/null
+            sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+            continue
+          fi
+          _ttsv=$(printf '%s\n' "$_tvrd" \
+            | bash "${CB_TRIAGE_PARSE:-$HERE_LAUNCHER/triage-parse.sh}" 2>/dev/null) || {
+            log "#$id kind=triage: verdict parse failed — routing to blocked"
+            board route "$id" blocked "triage: verdict parse failed" >/dev/null
+            sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+            continue
+          }
+          _troot=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="root"{print $2}')
+          _troute=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="route"{print $2}')
+          log "#$id triage: root=$_troot route=$_troute"
+          case "$_troute" in
+            executor-rework|test-flaky)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              board route "$id" requeue >/dev/null
+              sset "$id" tries ""; log "#$id triage: $_troute -> requeue + tries cleared" ;;
+            needs-plan)
+              _tch=$(board get "$id" charter 2>/dev/null || true)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              if [ -n "$_tch" ]; then
+                gh issue edit "$_tch" -R "$CB_REPO" \
+                  --remove-label status:approved --add-label status:needs-plan >/dev/null 2>&1 || true
+                log "#$id triage: plan-flaw -> charter #$_tch needs-plan"
+              fi ;;
+            needs-analysis)
+              _tch=$(board get "$id" charter 2>/dev/null || true)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              if [ -n "$_tch" ]; then
+                gh issue edit "$_tch" -R "$CB_REPO" \
+                  --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
+                log "#$id triage: approach-flaw -> charter #$_tch needs-analysis"
+              fi ;;
+            test-bug)
+              gh issue edit "$id" -R "$CB_REPO" \
+                --remove-label status:needs-triage \
+                --add-label status:test-broken \
+                --add-label status:needs-rework >/dev/null 2>&1 || true
+              log "#$id triage: test-bug -> needs-rework + test-broken" ;;
+            infra)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              board route "$id" blocked "triage: infra failure" >/dev/null
+              log "#$id triage: infra -> blocked" ;;
+            *)
+              board route "$id" blocked "triage: unknown route: $_troute" >/dev/null
+              log "#$id triage: unknown route '$_troute' -> blocked" ;;
+          esac
+          sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+          continue
+        fi
         ph=$(jq -r '.phase' "$RUN/work/$id/status.json" 2>/dev/null || echo unknown)
         case "$ph" in
           done)        board route "$id" review  >/dev/null; sset "$id" term 1; log "#$id done -> review" ;;
           budget-stop) board route "$id" requeue >/dev/null; stop=1; log "#$id budget -> requeue, STOP new claims" ;;
           *)           prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
-                       if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP)" >/dev/null; sset "$id" term 1; log "#$id failed($tries) -> blocked"
+                       if [ "$tries" -ge "$RETRY_CAP" ]; then
+                         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+                           board route "$id" needs-triage "executor failed $tries×" >/dev/null
+                           sset "$id" kind "triage"
+                           "$TRIAGE_SPAWN" "$id" &
+                           sset "$id" pid "$!"
+                           log "#$id failed($tries) -> needs-triage (triage spawned)"
+                           continue
+                         fi
+                         board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP)" >/dev/null; sset "$id" term 1; log "#$id failed($tries) -> blocked"
                        else board route "$id" requeue >/dev/null; log "#$id failed($tries) -> requeue"; fi ;;
         esac
         sset "$id" pid ""

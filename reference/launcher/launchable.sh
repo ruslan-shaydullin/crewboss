@@ -74,7 +74,7 @@ jq -r --argjson charter_scope "${CHARTER_SCOPE:-0}" \
   | . as $leaf
   | (numsAfter(.body; "Charter") | first) as $cN
   | select($cN != null)
-  | select( ([.labels[].name] | any(. == "status:in-progress" or . == "status:review" or . == "status:blocked" or . == "hold")) | not )
+  | select( ([.labels[].name] | any(. == "status:in-progress" or . == "status:review" or . == "status:blocked" or . == "status:needs-triage" or . == "hold")) | not )
   | ($by[$cN|tostring]) as $c
   | select($c != null and $c.state == "OPEN" and ([$c.labels[].name] | any(. == "status:approved")) and ([$c.labels[].name] | any(. == "type:charter")) and ($require_composition == 0 or ([$c.labels[].name] | any(. == "composition:approved"))))
   | select( depNums(.body) | all( ($by[(.|tostring)]) | (. != null and .state == "CLOSED") ) )
