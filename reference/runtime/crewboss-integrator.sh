@@ -484,7 +484,7 @@ cmd_verify_merged() {
   if [[ "$_ui_charter" -eq 1 ]]; then
     if [[ -n "$_playwright_digest" ]] && ! [[ -f "${CREWBOSS_RUN_DIR:-${CB_HOME:-}/run}/visual_gate_soft" ]]; then
       # Normal path: run container
-      podman run --rm \
+      docker run --rm \
         -v "$merged_dir/ui/app:/app:rw" \
         -w /app \
         "$_playwright_digest" \
@@ -514,7 +514,7 @@ cmd_verify_merged() {
       [ -n "$_visual_infra_file" ] && printf '%s' "$visual_infra_error_ticks" > "$_visual_infra_file"
       local _leaf_issue_id; _leaf_issue_id=$(printf '%s' "$branch" | grep -oE 'leaf/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
       if [ "$visual_infra_error_ticks" -ge "$VISUAL_INFRA_MAX_TICKS" ]; then
-        local _blocked_msg="Visual gate infra unavailable for ${visual_infra_error_ticks} ticks (podman/image error rc=${visual_rc}). Manual intervention required. Set run/visual_gate_soft sentinel to unblock temporarily."
+        local _blocked_msg="Visual gate infra unavailable for ${visual_infra_error_ticks} ticks (container/image error rc=${visual_rc}). Manual intervention required. Set run/visual_gate_soft sentinel to unblock temporarily."
         log "verify-merged: $_blocked_msg"
         if [ -n "$_leaf_issue_id" ] && [ -n "${repo:-}" ]; then
           gh issue comment "$_leaf_issue_id" -R "$repo" --body "$_blocked_msg" 2>/dev/null || true
