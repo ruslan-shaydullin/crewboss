@@ -62,6 +62,7 @@ case "$cmd" in
                 elif ([.labels[].name]|any(.=="status:review")) then "review"
                 elif ([.labels[].name]|any(.=="status:needs-rework")) then "needs-rework"
                 elif ([.labels[].name]|any(.=="status:in-progress")) then "in-progress"
+                elif ([.labels[].name] | any(. == "status:deferred")) then "deferred"
                 elif ([.labels[].name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[].name]|any(.=="status:plan-review")) then "plan-review"
                 elif ([.labels[].name]|any(.=="status:needs-plan")) then "needs-plan"
