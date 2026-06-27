@@ -473,24 +473,60 @@ cmd_verify_merged() {
   # Normalise signal-kill exit (128+N) to 124 (timeout convention → infra)
   [ "$suite_rc" -gt 128 ] && suite_rc=124
 
+  # ── Visual regression gate (podman, UI-charter only) ──────────────────────
+  # MUST run BEFORE merged_dir cleanup — volume-mount requires the path to exist.
+  local _playwright_digest; _playwright_digest=$(cat "$(dirname "$0")/playwright-image.digest" 2>/dev/null || echo "")
+  local VISUAL_INFRA_MAX_TICKS=5
+  local visual_rc=0
+  local _visual_infra_file=""
+  [ -n "$_cache_file" ] && _visual_infra_file="${_cache_file}.visual_infra_ticks"
+
+  if [[ "$_ui_charter" -eq 1 ]]; then
+    if [[ -n "$_playwright_digest" ]] && ! [[ -f "${CREWBOSS_RUN_DIR:-${CB_HOME:-}/run}/visual_gate_soft" ]]; then
+      # Normal path: run container
+      podman run --rm \
+        -v "$merged_dir/ui/app:/app:rw" \
+        -w /app \
+        "$_playwright_digest" \
+        bash -c "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --silent && node scripts/visual-regression.mjs"
+      visual_rc=$?
+    else
+      # Soft-gate fallback: infra unavailable or sentinel present — do not block
+      visual_rc=0
+    fi
+  fi
+
   rm -rf "$merged_dir"
   _BMT_DIR=""
 
-  if [ "$_ui_charter" -eq 1 ]; then
-    _repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
-    _visual_state=$(gh api "repos/${_repo}/commits/${_leaf_sha}/statuses" \
-      --jq '[.[] | select(.context=="visual-regression")] | first | .state' 2>/dev/null)
-    if [ "$_visual_state" = "failure" ]; then
+  # Branch on visual_rc after cleanup
+  if [[ "$_ui_charter" -eq 1 ]] && [[ "$visual_rc" -ne 0 ]]; then
+    if [[ "$visual_rc" -eq 1 ]]; then
+      # Visual test failure — fall through to N-confirmation counter
       suite_rc=1
       printf 'RED_REASON: visual-regression-failed\n'
-      # fall through to N-confirmation — accumulates through counter normally
-    elif [ "$_visual_state" = "success" ]; then
-      : # suite_rc unchanged — proceed normally
     else
-      # pending/missing: never cache a stale pass — force retryable exit
-      printf 'WARN: visual-regression status pending/missing — retry after GHA completes\n'
-      [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
-      rm -rf "$merged_dir"; _BMT_DIR=""; exit 3
+      # Infra error (rc != 0, rc != 1): increment visual_infra_error_ticks counter
+      local visual_infra_error_ticks=0
+      [ -n "$_visual_infra_file" ] && [ -f "$_visual_infra_file" ] && \
+        visual_infra_error_ticks="$(cat "$_visual_infra_file" 2>/dev/null || echo 0)"
+      visual_infra_error_ticks=$((visual_infra_error_ticks + 1))
+      [ -n "$_visual_infra_file" ] && printf '%s' "$visual_infra_error_ticks" > "$_visual_infra_file"
+      local _leaf_issue_id; _leaf_issue_id=$(printf '%s' "$branch" | grep -oE 'leaf/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
+      if [ "$visual_infra_error_ticks" -ge "$VISUAL_INFRA_MAX_TICKS" ]; then
+        local _blocked_msg="Visual gate infra unavailable for ${visual_infra_error_ticks} ticks (podman/image error rc=${visual_rc}). Manual intervention required. Set run/visual_gate_soft sentinel to unblock temporarily."
+        log "verify-merged: $_blocked_msg"
+        if [ -n "$_leaf_issue_id" ] && [ -n "${repo:-}" ]; then
+          gh issue comment "$_leaf_issue_id" -R "$repo" --body "$_blocked_msg" 2>/dev/null || true
+          gh issue edit "$_leaf_issue_id" -R "$repo" --add-label "status:blocked" 2>/dev/null || true
+        fi
+        [ -n "$verdict_file" ] && printf 'infra' > "$verdict_file"
+        exit 1
+      else
+        log "verify-merged: visual gate infra error (rc=$visual_rc), tick $visual_infra_error_ticks/$VISUAL_INFRA_MAX_TICKS — retrying"
+        [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+        exit 3
+      fi
     fi
   fi
 
