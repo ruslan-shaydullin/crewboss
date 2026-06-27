@@ -39,12 +39,12 @@ ACCEPT_REVIEW_SPAWN="${CB_ACCEPT_REVIEW_SPAWN:-$PLAN_REVIEW_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
-# CB_TRIAGE_SPAWN: spawn script for the triage role (#784 recovery-triage).
-# When set, BLOCKED intercept paths route executor-failed leaves to status:needs-triage
+# CB_TRIAGE_SPAWN: spawn script for the triage role (#787 recovery-triage).
+# BLOCKED intercept paths route executor-failed leaves to status:needs-triage
 # and spawn this script to post a ## Triage (machine) verdict comment.
 # The completion-detect handler reads the verdict and routes by class.
-# When unset (default), original behaviour: executor failures -> blocked at retry-cap.
-TRIAGE_SPAWN="${CB_TRIAGE_SPAWN:-}"
+# Default: same as PLAN_SPAWN so existing setups that set CB_PLAN_SPAWN get triage automatically.
+TRIAGE_SPAWN="${CB_TRIAGE_SPAWN:-$PLAN_SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -377,6 +377,18 @@ _integrator_cycle(){
         local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
         if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
           log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked (${_vmreason:-RED})"
+          # Trigger path (a): triage intercept (#787) — spawn triage before writing status:blocked.
+          _td=$(sget "$rid" triage_done 2>/dev/null || true)
+          if [ -z "$_td" ]; then
+            gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-triage >/dev/null 2>&1 || true
+            sset "$rid" kind triage
+            sset "$rid" starttime "$(now)"
+            ( "$TRIAGE_SPAWN" "$rid" triage >/dev/null 2>&1 ) & sset "$rid" pid "$!"
+            sset "$rid" int_done "triage-pending"
+            log "triage: spawned for #$rid (integrator path)"
+            continue
+          fi
+          # triage_done is set: fall through to blocked write
           gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
           gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
         else
