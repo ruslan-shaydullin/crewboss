@@ -1,51 +1,89 @@
-You are the executor for issue #533 in repo stratch1989/crewboss.
+You are the executor for issue #752 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/533-1782151006, based on the charter integration branch 'charter/523' (NOT main). Sibling leaves of charter #523 may already be merged into 'charter/523'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/523 --title '<short>' --body 'Closes #533'. The PR base MUST be 'charter/523', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/752-1782478492, based on the charter integration branch 'charter/719' (NOT main). Sibling leaves of charter #719 may already be merged into 'charter/719'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/719 --title '<short>' --body 'Closes #752'. The PR base MUST be 'charter/719', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #533) ----
-Charter: #523
+---- TASK (issue #752) ----
+Charter: #719
 
-## Context
-Charter #523 goal: separate test authorship from implementation. Tests must be derived from charter/analysis INTENT by a role that does NOT write the implementation code. This leaf runs FIRST; all implementation leaves depend on it. This leaf is assigned to qa-engineer. Derive tests from the charter body and analysis comment on issue #523 ONLY - do NOT read any executor leaf spec.
+## Task: Live acceptance — click-to-detail (scenario b)
 
-## Key facts from analysis comment on #523
-- crewboss-gate.sh currently only fires for tool_name=Bash (line 26); no handling for Edit/Write/MultiEdit.
-- .claude/settings.json has a single PreToolUse entry with matcher Bash (lines 11-22).
-- reference/runtime/per-leaf-manifest has ALLOW=20, EXCLUDED=54, union=74.
-- leaf-verifier.test.sh Test 7 hard-codes those counts at lines 244, 264, 267, 270.
-- All three tools (Edit, Write, MultiEdit) share tool_input.file_path at the top level. tool_input.edits[].file_path is null on real MultiEdit payloads.
+API-level proof that click-to-detail data from #691 is present on the deployed cockpit.
 
-## Task
+**Context:** Charter #719 requires live acceptance of #691's two scenarios. This leaf covers scenario (b): clicking an element (queue/board/agent) opens a detail panel showing full title, issue body (`d.body`), status/stage, last verdict/comment, and GitHub link. Acceptance is via API responses (no browser required) since the deployment box has no Chromium installed. Browser pass is optional if Chromium is available. A cold executor sees only this issue — all required context is below.
 
-### 1. Write reference/tests/independent-test-authorship.test.sh
+**Known API facts (from crewboss-api.py do_GET, lines 860-899):**
+- `/api/state` — returns full board state; task numbers are in field `.n` (NOT `.id`)
+- `/api/task/N` — returns task detail including `body` field (singular, by number)
+- `/api/comments/N` — returns `{"ok": true, "comments": [...]}` — an **object**, not an array
+- There is NO `/api/tasks` (plural) list endpoint — it returns 404
 
-**(a) Gate blocks executor from editing test files via Edit, Write, and MultiEdit.**
-For each tool name, construct JSON with tool_input.file_path pointing to a protected path (e.g. foo.test.sh, foo.test.ts, src/tests/bar.sh) and role=executor. Pipe to .claude/hooks/crewboss-gate.sh and assert exit 2 (deny). Also assert a legitimate executor path (e.g. src/tests-utils.ts) exits 0 (no false-deny).
+## Steps
 
-**(c) verify-merged presence check.**
-Assert reference/tests/independent-test-authorship.test.sh exists on disk.
+**Step 1 — Code read:**
+Read `ui/app/src/App.tsx` around line 1283. Confirm `d.body` rendering is wired (code read is sufficient proof for rendering wire-up).
 
-Assertion (b) gh-pr-ready interlock is intentionally omitted - enforced structurally by launcher Depends-on; no gate extension needed.
+**Step 2 — Get a live task number N from /api/state:**
+```
+N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state \
+  | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n')
+echo "Using task N=$N"
+```
+Use N in subsequent calls. The field is `.n` (not `.id`).
 
-### 2. Update reference/runtime/per-leaf-manifest
-Add independent-test-authorship as ALLOW (pure stdin JSON against gate binary, no network, no gh-shim). Include criterion justification comment matching existing ALLOW entry format.
+**Step 3 — API proof for task body:**
+```
+curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/task/$N \
+  | jq -e '.body | length > 0'
+```
+Assert the `body` field is non-empty (jq exits 0 if true).
 
-### 3. Update reference/tests/leaf-verifier.test.sh Test 7 counts
-- Line ~244 label: update to ALLOW=21 EXCLUDED=54
-- Line ~264: eq 20 -> eq 21
-- Line ~267: eq 54 (unchanged)
-- Line ~270: eq 74 -> eq 75
-New totals: ALLOW=21, EXCLUDED=54, union=75.
+**Step 4 — API proof for comments/last verdict:**
+```
+curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/comments/$N \
+  | jq -e '.comments | length > 0'
+```
+Assert at least one comment is present. **Important:** The response is `{"ok":true,"comments":[...]}` — an object, not an array. Use `.comments | length > 0` (NOT bare `length > 0`, which counts object keys and is always 2, making the check a false-positive).
 
-### 4. Post a crewboss-digest comment on this issue
-Summarise assertions covered, ALLOW rationale, and updated counts.
+**Step 5 — Log responses as proof.** If any field is missing or empty, note it and open a follow-up leaf.
+
+**Step 6 — Browser pass (optional):** Only if `which chromium` returns a path, do a full browser pass: click one element from each panel type (queue item, board item, agent), verify the detail panel opens with full title, issue body, status/stage, last verdict/comment, and a GitHub link.
 
 ## Acceptance (machine)
-- test: reference/tests/independent-test-authorship.test.sh
-- check: bash reference/tests/independent-test-authorship.test.sh
-- check: grep -q independent-test-authorship reference/runtime/per-leaf-manifest
-- check: grep -q "eq 21" reference/tests/leaf-verifier.test.sh
-- check: grep -q "eq 75" reference/tests/leaf-verifier.test.sh
-- check: bash reference/tests/leaf-verifier.test.sh
+
+- check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/task/$N | jq -e '.body | length > 0'
+- check: N=$(curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/state | jq -r '[.board[] | select(.kind=="leaf")] | .[0].n') && curl -s -H "Authorization: Bearer $CB_API_TOKEN" http://localhost:8787/api/comments/$N | jq -e '.comments | length > 0'
+
+---- TASK (issue #751) ----
+Charter: #719
+
+## Task: Live acceptance — layout overlap (scenario a)
+
+Geometric/CSS proof that the layout overlap fix from #691 is live on the deployed box.
+
+**Context:** Charter #719 requires live acceptance of #691's two scenarios. This leaf covers scenario (a): queue panel and agents panel must not visually overlap with 30+ queue elements. Acceptance runs on the actual deployed bundle (after deploy-debt stale-bundle fix is merged). A cold executor sees only this issue — all required context is below.
+
+**Known facts about the box:**
+- No Chromium is installed by default (`which chromium` likely returns empty; `npx playwright install` has never been run).
+- `layout-overlap.mjs` unconditionally imports Playwright and calls `process.exit(1)` if no Chromium binary exists — running it without Chromium will fail.
+- The CSS rule to check is `.queue-panel--sticky` in the deployed bundle at `~/cbnet/ui/dist/assets/*.css`.
+
+## Steps
+
+**Step 1 — CSS proof:**
+Run: `grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css`
+Confirm the matching rule contains both `overflow-y:auto` and `min-height:0`. Log the full matching line as proof.
+
+**Step 2 — Chromium gate:**
+- Run `which chromium`.
+- **If no path is returned**: CSS grep (Step 1) alone is the accepted proof per charter. The charter explicitly accepts `overflow-y:auto; min-height:0` in the deployed bundle as direct evidence the overlap fix is live. Do NOT attempt to run `layout-overlap.mjs`. Proceed to Step 3.
+- **If `which chromium` returns a path**: Edit the `addInitScript` call at `ui/app/scripts/layout-overlap.mjs:~182` — replace the `http://127.0.0.1:${STUB_PORT}` stubUrl value with `http://localhost:8787` so the script targets the live cockpit (the script injects the URL via `addInitScript`; it does not read it from env). Then run: `cd ~/cbnet && node ui/app/scripts/layout-overlap.mjs` and log the geometric output (panel bounding-box deltas) as proof.
+
+**Step 3 — Report:**
+Note in the PR comment which path was taken (CSS-only or mjs run). If overlap is still detected, note it and open a follow-up leaf.
+
+## Acceptance (machine)
+
+- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'overflow-y:auto'
+- check: grep queue-panel--sticky ~/cbnet/ui/dist/assets/*.css | grep -q 'min-height:0'
