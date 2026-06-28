@@ -11,6 +11,7 @@ mklabel "type:charter"          "c2e0c6" "boss-authored goal (root for decomposi
 mklabel "status:needs-plan"     "ededed" "charter: awaiting tech-lead decomposition"
 mklabel "status:plan-review"    "fbca04" "charter: plan awaiting boss approval"
 mklabel "status:approved"       "0e8a16" "charter: plan approved — leaves launchable"
+mklabel "status:deferred"       "c5def5" "charter: deferred after recovery-cap — visible on board, skipped by queue"
 mklabel "status:needs-analysis" "bfd4f2" "charter: awaiting solution analysis (manifest mode)"
 mklabel "status:team-review"    "d4c5f9" "charter: composition awaiting approval (manifest mode)"
 mklabel "composition:approved"  "0e8a16" "charter: composition approved — leaves may launch (manifest mode)"
@@ -29,5 +30,11 @@ mklabel "blast-radius:low"   "c5def5" "charter: normal parallel launch (default 
 # per-charter auto-gate labels (#401)
 mklabel "auto:plan-approve" "0075ca" "per-charter: auto-approve plan gate"
 mklabel "auto:merge"        "0075ca" "per-charter: auto-merge on green CI"
+
+# test-quality gate routing labels (#597)
+# status:test-broken: qa-engineer leaf routing signal (test is broken — re-dispatch for rework)
+# status:impl-broken: executor leaf routing signal (impl is broken — re-dispatch for rework)
+mklabel "status:test-broken" "e4e669" "tqg: qa-engineer leaf re-dispatch — test is broken"
+mklabel "status:impl-broken" "b60205" "tqg: executor leaf re-dispatch — impl is broken"
 
 echo "✓ crewboss board labels ready"

@@ -1,51 +1,84 @@
-You are the executor for issue #533 in repo stratch1989/crewboss.
+You are the executor for issue #826 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/533-1782151006, based on the charter integration branch 'charter/523' (NOT main). Sibling leaves of charter #523 may already be merged into 'charter/523'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/523 --title '<short>' --body 'Closes #533'. The PR base MUST be 'charter/523', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/826-1782649873, based on the charter integration branch 'charter/685' (NOT main). Sibling leaves of charter #685 may already be merged into 'charter/685'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/685 --title '<short>' --body 'Closes #826'. The PR base MUST be 'charter/685', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #533) ----
-Charter: #523
+---- TASK (issue #826) ----
+Charter: #685
+Depends-on: #823
 
-## Context
-Charter #523 goal: separate test authorship from implementation. Tests must be derived from charter/analysis INTENT by a role that does NOT write the implementation code. This leaf runs FIRST; all implementation leaves depend on it. This leaf is assigned to qa-engineer. Derive tests from the charter body and analysis comment on issue #523 ONLY - do NOT read any executor leaf spec.
+## Context (self-contained)
 
-## Key facts from analysis comment on #523
-- crewboss-gate.sh currently only fires for tool_name=Bash (line 26); no handling for Edit/Write/MultiEdit.
-- .claude/settings.json has a single PreToolUse entry with matcher Bash (lines 11-22).
-- reference/runtime/per-leaf-manifest has ALLOW=20, EXCLUDED=54, union=74.
-- leaf-verifier.test.sh Test 7 hard-codes those counts at lines 244, 264, 267, 270.
-- All three tools (Edit, Write, MultiEdit) share tool_input.file_path at the top level. tool_input.edits[].file_path is null on real MultiEdit payloads.
+Charter #685 fixes a queue-blocking bug: charter finale was gating auto-merge
+on GHA-CI green, which is permanently red, so charters stayed stuck in finale
+for hours blocking the entire queue. The fix replaces the GHA-CI gate with a
+verify-merged call and uses gh pr merge --admin on PASS.
+
+This leaf performs the cross-leaf integration review to verify correctness
+before the charter is considered complete. All sibling leaves must be merged:
+- #815 (qa-engineer): updated gh stub + new RED-f/RED-g test scenarios
+- #821 (infra-engineer): verify-merged gate implementation in _finale_check_ci
+- #823 (security-reviewer): admin-merge bypass scope sign-off
 
 ## Task
 
-### 1. Write reference/tests/independent-test-authorship.test.sh
+Review the merged state of reference/runtime/crewboss-launcher-gh.sh and
+reference/tests/charter-finale.test.sh (after all sibling leaves are merged)
+and verify all of the following invariants:
 
-**(a) Gate blocks executor from editing test files via Edit, Write, and MultiEdit.**
-For each tool name, construct JSON with tool_input.file_path pointing to a protected path (e.g. foo.test.sh, foo.test.ts, src/tests/bar.sh) and role=executor. Pipe to .claude/hooks/crewboss-gate.sh and assert exit 2 (deny). Also assert a legitimate executor path (e.g. src/tests-utils.ts) exits 0 (no false-deny).
+### 1. verify-merged call parameters match integrator pattern (lines 372-410)
+Confirm the verify-merged call in _finale_check_ci uses:
+  - branch: charter/CHARTER_ID (not a literal string, derived from cid)
+  - base: main
+  - --remote GIT_REMOTE (same remote variable used by integrator)
+  - --repo CB_REPO
+Compare directly against the integrator call at lines 372-373.
 
-**(c) verify-merged presence check.**
-Assert reference/tests/independent-test-authorship.test.sh exists on disk.
+### 2. ci_state=red is NEVER written (fix-1)
+Grep the entire updated function for any line that writes "red" to the
+ci_state file. There must be zero such writes. Confirm the early-exit case
+for ci_state=red (was lines 481-482) has been removed.
 
-Assertion (b) gh-pr-ready interlock is intentionally omitted - enforced structurally by launcher Depends-on; no gate extension needed.
+### 3. last_comment dedup prevents comment spam on repeated exit 1 (fix-3)
+Verify that the verify-red comment is posted only when last_comment != "verify-red"
+and that "verify-red" is written to _fin_dir/last_comment immediately after.
+Subsequent ticks with vm_exit=1 must not re-post the comment.
 
-### 2. Update reference/runtime/per-leaf-manifest
-Add independent-test-authorship as ALLOW (pure stdin JSON against gate binary, no network, no gh-shim). Include criterion justification comment matching existing ALLOW entry format.
+### 4. Test stub distinguishes --admin vs non-admin merges (fix-2)
+In charter-finale.test.sh, verify the pr merge handler in the gh stub logs
+"pr-merge-admin N" when --admin is present and "pr-merge N" otherwise.
+Verify charter_pr_merged_admin() helper greps for "pr-merge-admin".
 
-### 3. Update reference/tests/leaf-verifier.test.sh Test 7 counts
-- Line ~244 label: update to ALLOW=21 EXCLUDED=54
-- Line ~264: eq 20 -> eq 21
-- Line ~267: eq 54 (unchanged)
-- Line ~270: eq 74 -> eq 75
-New totals: ALLOW=21, EXCLUDED=54, union=75.
+### 5. Both test paths are covered by assertions
+- RED-f (verify-green + CB_AUTO_MERGE=1): asserts charter_pr_merged_admin
+  AND charter issue is CLOSED.
+- RED-g (verify-red): asserts NO admin-merge, charter issue remains OPEN,
+  RED_REASON comment is present, loop terminates normally.
 
-### 4. Post a crewboss-digest comment on this issue
-Summarise assertions covered, ALLOW rationale, and updated counts.
+### 6. Acceptance-convergence gate (lines 515-535) is unaffected
+Confirm the acceptance_review_role check and status:acceptance-review routing
+block is still in place and positioned BEFORE the verify-merged call.
+
+### 7. Queue-continues invariant
+Verify line ~845: _finale_check_ci CHARTER_ID PR_NUM || true
+The || true must be present (non-zero return from _finale_check_ci never
+blocks the queue). Confirm no other call sites to _finale_check_ci lack || true.
+
+### 8. Run the full test suite
+Run reference/tests/charter-finale.test.sh and confirm passed=N failed=0.
+
+### Post findings
+Post a review comment on charter issue #685 in stratch1989/crewboss:
+- CROSS-REVIEW: PASS - if all 8 invariants are satisfied
+- CROSS-REVIEW: FAIL: <item> - if any invariant is violated (block the charter)
 
 ## Acceptance (machine)
-- test: reference/tests/independent-test-authorship.test.sh
-- check: bash reference/tests/independent-test-authorship.test.sh
-- check: grep -q independent-test-authorship reference/runtime/per-leaf-manifest
-- check: grep -q "eq 21" reference/tests/leaf-verifier.test.sh
-- check: grep -q "eq 75" reference/tests/leaf-verifier.test.sh
-- check: bash reference/tests/leaf-verifier.test.sh
+- check: bash reference/tests/charter-finale.test.sh 2>&1 | tail -3 | grep -E "^passed=[0-9]+ failed=0$"
+- check: gh issue view 685 -R stratch1989/crewboss --comments | grep -qi "CROSS-REVIEW"
+
+## Notes
+- This leaf does not produce code changes. Its output is the review comment and
+  a passing test run confirming all invariants hold together.
+- Depends on #823 (security-reviewer) which depends on #821 (infra-engineer)
+  which depends on #815 (qa-engineer) -- full chain must be merged first.

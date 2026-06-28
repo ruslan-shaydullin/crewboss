@@ -1,0 +1,63 @@
+SECURITY-REVIEW: PASS
+
+**Reviewer:** leaf/823 (security-reviewer)
+**Scope:** `_finale_check_ci()` admin-merge path in `reference/runtime/crewboss-launcher-gh.sh` (charter #685)
+
+---
+
+### 1. Admin-merge gate scope — PASS
+
+The `--admin` flag (line 534) is reachable **only** when all three of the following are true:
+
+a. **CB_AUTO_MERGE=1 OR `auto:merge` label on the charter issue** — the entire auto-merge code block is wrapped in `if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]` (line 495). Outside this branch the function calls `gh pr ready` only (no `--admin`).
+
+b. **Acceptance-convergence gate passes first** — lines 502–518 run *before* `verify-merged` is called. If `acceptance_review_role` is set and `accept:agreed` label is absent, the function returns 0 (blocking merge) without ever reaching the verify-merged call or the `--admin` merge.
+
+c. **verify-merged exits 0 (PASS)** — the `case "$vm_exit"` at line 528 reaches the merge block only on exit code 0. Exits 1 (RED), 3 (retryable), and 2/other (infra) all skip the merge and return 1.
+
+No wider surface is opened. Confirmed: there are exactly five lines containing "admin" in crewboss-launcher-gh.sh, all within the `_finale_check_ci` function and all either in log strings or the single merge call.
+
+---
+
+### 2. verify-merged as a sufficient gate — PASS
+
+verify-merged (`crewboss-integrator.sh:cmd_verify_merged`) provides the following assurances:
+
+- **Fresh merged tree**: clones from remote, runs `_build_merged_tree` for branch `charter/$cid` + base `main`, then executes the engine test suite inside that directory.
+- **N-confirmation anti-poison**: red verdicts are confirmed `CB_VERIFY_CONFIRM_N` times (default 2) before exit 1 is returned, preventing transient failures from blocking.
+- **Cache keyed on `leaf_sha + base_sha`**: any new commit to `charter/$cid` or `main` invalidates the cache and triggers a full re-run.
+- **Pre-PR local gate**: `gate-charter` (lines 868–891) runs the full suite locally *before* the PR is created. verify-merged at finale therefore constitutes a *second* independent verification on the actual merged tree.
+- **Established precedent**: the integrator already uses this identical gate pattern (lines 372–410) for every leaf→charter merge, making it the proven single gate for automated merges in this system.
+
+The combination of a pre-PR local run and a per-tick verify-merged on the actual merged tree is at least as strong as the GHA-CI gate it replaces, and stronger in the sense that it runs the engine suite on the precise merged state rather than on the source branch alone.
+
+---
+
+### 3. ci_state=red NOT persisted (fix-1) — PASS
+
+Only `green` (line 531, on verify-merged PASS) and `timeout` (documented external path, lines 580–588) are written to `$_fin_dir/ci_state`. A verify-merged exit 1 (RED) causes the function to return 1 with **no write** to `ci_state`.
+
+This design is correct and introduces no security regression:
+
+- On each subsequent tick `_finale_check_ci` is re-entered; `ci_state` is empty so verify-merged is called again.
+- verify-merged's internal verdict cache (keyed on `leaf_sha_base_sha`, stored in `CB_HOME/run/verify-cache`) returns immediately on cache hit, throttling cost without persisting a terminal-stuck state in the launcher's own state directory.
+- If an attacker were to push a new commit (to change the merged tree), the cache key changes and a full re-run is triggered — the attacker's change undergoes the same gate, not bypassing it.
+- The previous GHA-CI model could permanently cache a red state (the bug this charter fixes). The new model retries each tick until PASS or human intervention, which is strictly more permissive for legitimate fixes and equally strict for illegitimate commits.
+
+---
+
+### 4. Credential and secret exposure — PASS
+
+- **`vm_out` capture**: `vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged ... 2>/dev/null)` captures only stdout of the test run (test names + `RED_REASON:` lines). The `2>/dev/null` redirect discards stderr. No tokens, secrets, or credentials appear in the captured output.
+- **Log statements**: lines 532, 535, 540 log PR numbers and charter IDs only; no token values.
+- **`gh pr merge --admin`**: uses the ambient `GITHUB_TOKEN` / `gh` credential store, identical to every other `gh` call in the file. No new environment variables or secret values are introduced.
+- **Token scope**: `gh pr merge --admin` requires the `repo` OAuth scope plus admin-level repository permission, which the crewboss runtime already holds (it manages PRs, labels, issues, and branch operations throughout). No new scopes are requested. Note: the integrator leaf merges (`crewboss-integrator.sh` line 415) do not pass `--admin` because leaf→charter branches typically lack strict branch protection; the `--admin` flag for the charter→main merge is intentional and correctly scoped to bypass potentially-red GHA status checks on `main`, as described in the charter.
+- **`_charter_auto_merge`**: resolved from `gh issue view ... --json labels | jq ...`. This call reads public label data only; no secrets are written or logged.
+
+---
+
+### Summary
+
+All four items reviewed are correctly implemented. The admin-merge bypass surface is narrowly bounded (CB_AUTO_MERGE / auto:merge → acceptance gate → verify-merged PASS), the gate is sufficient, the retry-without-caching design avoids permanent-stuck regressions, and no credential exposure is introduced.
+
+**SECURITY-REVIEW: PASS**

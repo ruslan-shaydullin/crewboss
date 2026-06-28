@@ -13,6 +13,7 @@ Endpoints (all under /api, bearer-auth except /api/health):
     POST /api/command {action,...}   -> run | pause | resume | kill | unkill | approve(#) | hold(#) | unhold(#)
 Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate origin).
 """
+import hmac, hashlib
 import json, os, shutil, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -22,6 +23,11 @@ RUN    = os.path.join(CB_HOME, "run")
 TOKEN  = os.environ.get("CB_API_TOKEN", "")
 PORT   = int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else int(os.environ.get("CB_API_PORT","8787"))
 BOARD  = os.path.join(CB_HOME, "board-gh.sh")
+CB_INTEGRATOR = os.environ.get('CB_INTEGRATOR') or os.path.join(CB_HOME, 'crewboss-integrator.sh')
+
+_webhook_kick = threading.Event()
+_etag_store = {}  # keyed by resource path
+_cached_issues = None
 
 def sh(args, timeout=30):
     try: return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
@@ -92,7 +98,7 @@ def build_agents(by_n, loop_running=False):
         if item.get("state") == "review":
             if not any(a.get("task") == n for a in agents):
                 agents.append(dict(task=n, role="integrator",
-                                   phase="merging" if loop_running else "awaiting",
+                                   phase="awaiting-integration",
                                    title=item.get("title", ""), started="", pid=None))
     for n, item in by_n.items():
         if item.get("kind") == "charter" and item.get("state") == "needs-plan":
@@ -172,12 +178,30 @@ def build_loop_info(board=None):
                 running=running, stage=stage)
 
 def build_state():
+    global _cached_issues
     issues = []
     if REPO:
         try:
-            raw = sh(["gh","issue","list","-R",REPO,"--state","all","-L","100",
-                      "--json","number,title,labels,state,body"]) or "[]"
-            issues = json.loads(raw)
+            cmd = ["gh", "api", f"/repos/{REPO}/issues", "--include", "-X", "GET",
+                   "-F", "state=all", "-F", "per_page=100"]
+            if _etag_store.get("issues"):
+                cmd += ["-H", f"If-None-Match: {_etag_store['issues']}"]
+            raw = sh(cmd)
+            # Split on first blank line (headers / body separator)
+            sep = "\r\n\r\n" if "\r\n\r\n" in raw else "\n\n"
+            parts = raw.split(sep, 1)
+            headers_block = parts[0] if len(parts) > 1 else ""
+            body = parts[1] if len(parts) > 1 else raw
+            # 304 Not Modified → return cached state, zero rate-limit cost
+            if "304" in (headers_block.splitlines()[0] if headers_block else ""):
+                return _cached_issues  # skip refresh
+            # Extract and store ETag for next call
+            for line in headers_block.splitlines():
+                if line.lower().startswith("etag:"):
+                    _etag_store["issues"] = line.split(":", 1)[1].strip()
+                    break
+            _cached_issues = json.loads(body)
+            issues = _cached_issues
         except Exception: issues = []
     board = []
     for it in issues:
@@ -276,7 +300,11 @@ def build_comments(n):
         return {"ok": False, "comments": []}
 
 def build_task(n):
-    """Detail for one task: live status + the brief it was given + the redacted run log."""
+    """Detail for one task: live status + the brief it was given + the redacted run log.
+
+    The `body` field is populated for ALL task kinds (leaf, charter, milestone) via a single
+    unconditional `gh issue view` call — no kind-branching required (#700).
+    """
     w = os.path.join(RUN, "work", str(n))
     def rd(p, limit=None):
         try:
@@ -289,6 +317,7 @@ def build_task(n):
     try: os.kill(int(open(pidf).read().strip()), 0); alive = True
     except Exception: alive = False
     started = rd(os.path.join(RUN, "state", str(n), "starttime")).strip()
+    # body: fetched for all kinds (leaf, charter, milestone) — gh issue view works on any issue
     body = ""
     if REPO:
         try:
@@ -527,34 +556,51 @@ def do_command(body):
             pr_num = ""
         if not pr_num:
             return {"ok": False, "msg": "no finale PR found"}
-        # CI gate
-        r = subprocess.run(
-            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "statusCheckRollup",
-             "--jq", '[.statusCheckRollup[]?.state] | all(. == "SUCCESS")'],
+        # Idempotency guard: skip everything if PR is already merged
+        r_state = subprocess.run(
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "state", "--jq", ".state"],
             capture_output=True, text=True, timeout=30)
-        try:
-            ci_ok = r.stdout.strip() == "true"
-        except Exception:
-            ci_ok = False
-        if not ci_ok:
-            return {"ok": False, "msg": "CI gate not green — merge blocked"}
-        # Promote draft
-        r = subprocess.run(["gh", "pr", "ready", pr_num, "-R", REPO],
+        if r_state.stdout.strip() == "MERGED":
+            return {"ok": True, "msg": "already merged -- no-op", "merged": True}
+        # Step 1: Guard CB_INTEGRATOR
+        if not CB_INTEGRATOR or not os.path.exists(CB_INTEGRATOR):
+            return {"ok": False, "msg": f"CB_INTEGRATOR not found: {CB_INTEGRATOR}"}
+        # Step 2: Detect draft status and promote if needed
+        r = subprocess.run(
+            ["gh", "pr", "view", pr_num, "-R", REPO, "--json", "isDraft", "--jq", ".isDraft"],
+            capture_output=True, text=True, timeout=30)
+        if r.stdout.strip() == "true":
+            r = subprocess.run(["gh", "pr", "ready", pr_num, "-R", REPO],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return {"ok": False, "msg": f"gh pr ready failed: {r.stderr.strip()}"}
+        # Step 3: Invoke verify-merged
+        verify_timeout = int(os.environ.get("CB_VERIFY_TIMEOUT", "600")) + 60
+        result = subprocess.run(
+            ["bash", CB_INTEGRATOR, "verify-merged", f"charter/{n}", "main",
+             "--remote", f"https://github.com/{REPO}"],
+            capture_output=True, text=True, timeout=verify_timeout)
+        if result.returncode != 0:
+            return {"ok": False, "msg": "verify-merged failed", "verify_verdict": "red",
+                    "verify_output": result.stdout}
+        # Step 4: Merge
+        r = subprocess.run(["gh", "pr", "merge", pr_num, "-R", REPO, "--admin", "--merge"],
                            capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
-            return {"ok": False, "msg": r.stderr.strip() or "pr ready failed"}
-        # Merge
-        r = subprocess.run(["gh", "pr", "merge", pr_num, "-R", REPO, "--merge"],
-                           capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return {"ok": False, "msg": r.stderr.strip() or "merge failed"}
-        # Close issue (best-effort)
+            return {"ok": False, "msg": f"pr merge failed: {r.stderr.strip()}"}
+        # Step 5A: Remove status:approved label (best-effort, non-blocking)
+        subprocess.run(
+            ["gh", "issue", "edit", n, "-R", REPO, "--remove-label", "status:approved"],
+            capture_output=True, text=True, timeout=30)
+        # Step 5B: Close issue (required -- failure surfaces as ok=False so caller can retry)
         r2 = subprocess.run(
             ["gh", "issue", "close", n, "-R", REPO, "--comment", "Charter merged and closed."],
             capture_output=True, text=True, timeout=30)
         if r2.returncode != 0:
-            print(f"WARNING: merge succeeded but issue close failed: {r2.stderr.strip()}", file=sys.stderr)
-        return {"ok": True}
+            return {"ok": False, "msg": f"merge succeeded but issue close failed: {r2.stderr.strip()}"}
+        # Step 5C: Only unlink pr_num_path after confirmed close (preserves retry invariant)
+        os.unlink(pr_num_path)
+        return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
@@ -978,12 +1024,21 @@ class H(BaseHTTPRequestHandler):
                         self.wfile.write(f"event: state\ndata: {json.dumps(cur)}\n\n".encode()); self.wfile.flush(); last=s
                     else:
                         self.wfile.write(b": keepalive\n\n"); self.wfile.flush()
-                    time.sleep(int(os.environ.get("CB_API_POLL","3")))
+                    # CB_API_POLL — seconds between SSE board refreshes. Default 10
+                    # (was 3): each open dashboard tab re-queried GitHub every 3s,
+                    # the dominant RL burner (~1200 reads/hr/tab) that silently
+                    # exhausted the GraphQL budget (#526). 10s stays responsive
+                    # while cutting that ~3x. Override via env for live debugging.
+                    _webhook_kick.wait(timeout=int(os.environ.get("CB_API_POLL","10")))
+                    _webhook_kick.clear()
             except Exception: return
         return self._send(404,{"ok":False,"msg":"not found"})
     def do_POST(self):
-        if not self._auth_ok(): return self._send(401,{"ok":False,"msg":"unauthorized"})
-        path = self.path.split("?",1)[0]
+        path = self.path.split("?",1)[0]          # 1. extract path first
+        if path == "/api/gh-webhook":              # 2. webhook bypass (before Bearer check)
+            return self._handle_webhook()
+        if not self._auth_ok():                    # 3. auth gate for all other routes
+            return self._send(401,{"ok":False,"msg":"unauthorized"})
         n=int(self.headers.get("Content-Length",0) or 0)
         try: body=json.loads(self.rfile.read(n) or b"{}")
         except Exception: body={}
@@ -1000,6 +1055,27 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"ok":False,"msg":"order values must be integers"})
             return self._send(200, save_queue(order))
         return self._send(404,{"ok":False,"msg":"not found"})
+    def _handle_webhook(self):
+        secret = os.environ.get("CB_WEBHOOK_SECRET", "")
+        if not secret:
+            return self._send(500, {"ok": False, "msg": "server error"})
+        length = int(self.headers.get("Content-Length", 0))
+        body_bytes = self.rfile.read(length)
+        sig_header = self.headers.get("X-Hub-Signature-256", "")
+        # CRITICAL: GitHub sends "sha256=<hexdigest>", not bare hex.
+        # Strip prefix before comparing; bare-hex or absent prefix → 401.
+        expected = sig_header[len("sha256="):] if sig_header.startswith("sha256=") else ""
+        computed = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+        if not expected or not hmac.compare_digest(computed, expected):
+            return self._send(401, {"ok": False, "msg": "unauthorized"})
+        # Never log body_bytes or secret.
+        try:
+            event_type = self.headers.get("X-GitHub-Event", "")
+        except Exception:
+            event_type = ""
+        if event_type in ("issues", "pull_request"):
+            _webhook_kick.set()
+        return self._send(200, {"ok": True})
 
 if __name__=="__main__":
     if "--selftest-synthetic-gate" in sys.argv:
@@ -1010,12 +1086,12 @@ if __name__=="__main__":
         }
         failures = []
 
-        # --- loop_running=False: both chips must be phase="awaiting" ---
+        # --- loop_running=False: integrator chip must be phase="awaiting-integration", tech-lead="awaiting" ---
         agents_idle = build_agents(_by_n, loop_running=False)
         for a in agents_idle:
             if a.get("role") == "integrator" and a.get("pid") is None:
-                if a.get("phase") != "awaiting":
-                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
+                if a.get("phase") != "awaiting-integration":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=False (expected 'awaiting-integration')")
             if a.get("role") == "tech-lead" and a.get("pid") is None:
                 if a.get("phase") != "awaiting":
                     failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=False (expected 'awaiting')")
@@ -1025,12 +1101,12 @@ if __name__=="__main__":
         if not any(a.get("role") == "tech-lead" and a.get("pid") is None for a in agents_idle):
             failures.append("FAIL tech-lead synthetic chip missing when loop_running=False")
 
-        # --- loop_running=True: integrator=merging, tech-lead=planning ---
+        # --- loop_running=True: integrator=awaiting-integration, tech-lead=planning ---
         agents_live = build_agents(_by_n, loop_running=True)
         for a in agents_live:
             if a.get("role") == "integrator" and a.get("pid") is None:
-                if a.get("phase") != "merging":
-                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=True (expected 'merging')")
+                if a.get("phase") != "awaiting-integration":
+                    failures.append(f"FAIL integrator phase={a.get('phase')!r} when loop_running=True (expected 'awaiting-integration')")
             if a.get("role") == "tech-lead" and a.get("pid") is None:
                 if a.get("phase") != "planning":
                     failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=True (expected 'planning')")
@@ -1039,8 +1115,103 @@ if __name__=="__main__":
             for f in failures:
                 print(f)
             sys.exit(1)
-        print("PASS synthetic-gate: idle→awaiting, live→merging/planning")
+        print("PASS synthetic-gate: integrator→awaiting-integration, tech-lead idle→awaiting/live→planning")
+        sys.exit(0)
+
+    if "--selftest-merge" in sys.argv:
+        from unittest.mock import patch, MagicMock, mock_open
+        _merge_failures = []
+        _N = "716"
+
+        # --- Test 1: idempotency guard (already-merged PR) ---
+        # When the state-check returns MERGED the function must return immediately;
+        # only 1 subprocess call should occur (no verify-script or pr-merge invoked).
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="MERGED", returncode=0),  # state-check
+        ]) as _mock_run1, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink"):
+            _res1 = do_command({"action": "merge", "number": _N})
+            if _res1.get("ok") is not True:
+                _merge_failures.append(
+                    f"T1 FAIL ok={_res1.get('ok')!r} expected True")
+            if _res1.get("merged") is not True:
+                _merge_failures.append(
+                    f"T1 FAIL merged={_res1.get('merged')!r} expected True")
+            if _mock_run1.call_count != 1:
+                _merge_failures.append(
+                    f"T1 FAIL call_count={_mock_run1.call_count} expected 1 "
+                    "(idempotency guard should short-circuit after state-check)")
+
+        # --- Test 2: atomic cleanup happy path ---
+        # order: state-check → isDraft → verify-script → pr-merge-cmd →
+        #        issue-edit --remove-label → issue-close-cmd
+        # Expect: ok=True, os.unlink(pr_num_path) called, both remove-label and
+        # issue-close appear in subprocess call_args_list.
+        _mock_unlink2 = MagicMock()
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="OPEN", returncode=0),    # state-check
+                MagicMock(stdout="false", returncode=0),   # isDraft
+                MagicMock(returncode=0),                   # verify-script
+                MagicMock(returncode=0),                   # pr-merge-cmd
+                MagicMock(returncode=0),                   # issue-edit --remove-label
+                MagicMock(returncode=0),                   # issue-close-cmd
+        ]) as _mock_run2, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink", _mock_unlink2):
+            _res2 = do_command({"action": "merge", "number": _N})
+            _pr_num_path2 = os.path.join(RUN, "state", f"finale-{_N}", "pr_num")
+            if _res2.get("ok") is not True:
+                _merge_failures.append(
+                    f"T2 FAIL ok={_res2.get('ok')!r} expected True")
+            _unlink_calls2 = [str(c) for c in _mock_unlink2.call_args_list]
+            if not any(_pr_num_path2 in c for c in _unlink_calls2):
+                _merge_failures.append(
+                    f"T2 FAIL os.unlink not called with pr_num_path {_pr_num_path2!r}")
+            _run_args2 = [str(c) for c in _mock_run2.call_args_list]
+            if not any("--remove-label" in a for a in _run_args2):
+                _merge_failures.append(
+                    "T2 FAIL --remove-label not found in subprocess call_args_list")
+            if not any("close" in a for a in _run_args2):
+                _merge_failures.append(
+                    "T2 FAIL issue-close-cmd not found in subprocess call_args_list")
+
+        # --- Test 3: close-fail surfaces as ok=False AND pr_num file survives ---
+        # Entry six (issue-close-cmd) returns returncode=1; the function must
+        # return ok=False with a message referencing the failure, and must NOT
+        # call os.unlink (preserves the retry invariant / no approved-zombie).
+        _mock_unlink3 = MagicMock()
+        with patch("subprocess.run", side_effect=[
+                MagicMock(stdout="OPEN", returncode=0),    # state-check
+                MagicMock(stdout="false", returncode=0),   # isDraft
+                MagicMock(returncode=0),                   # verify-script
+                MagicMock(returncode=0),                   # pr-merge-cmd
+                MagicMock(returncode=0),                   # issue-edit --remove-label
+                MagicMock(returncode=1, stderr="permission denied"),  # issue-close-cmd FAILS
+        ]) as _mock_run3, \
+             patch("builtins.open", mock_open(read_data="PR_ID")), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.unlink", _mock_unlink3):
+            _res3 = do_command({"action": "merge", "number": _N})
+            if _res3.get("ok") is not False:
+                _merge_failures.append(
+                    f"T3 FAIL ok={_res3.get('ok')!r} expected False")
+            _msg3 = _res3.get("msg", "")
+            if "close" not in _msg3.lower() and "issue" not in _msg3.lower():
+                _merge_failures.append(
+                    f"T3 FAIL msg={_msg3!r} expected to contain issue-close failure text")
+            if _mock_unlink3.called:
+                _merge_failures.append(
+                    "T3 FAIL os.unlink was called; pr_num_path must survive on close failure")
+
+        if _merge_failures:
+            for _mf in _merge_failures:
+                print(_mf)
+            sys.exit(1)
+        print("PASS selftest-merge: idempotency-guard, atomic-cleanup, close-fail")
         sys.exit(0)
 
     print(f"crewboss-api on :{PORT}  repo={REPO}  auth={'on' if TOKEN else 'OFF'}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1",PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("CB_API_HOST","127.0.0.1"), PORT), H).serve_forever()

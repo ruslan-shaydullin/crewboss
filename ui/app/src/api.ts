@@ -188,7 +188,7 @@ export async function postQueue(order: number[]): Promise<void> {
   if (!r.ok) throw new Error('postQueue failed: ' + r.status)
 }
 
-export type CmdResult = { ok: boolean; msg: string }
+export type CmdResult = { ok: boolean; msg: string; verify_verdict?: string; verify_output?: string; merged?: boolean }
 export async function command(action: string, number?: number, comment?: string): Promise<CmdResult> {
   try {
     const payload: Record<string, unknown> = { action, number }

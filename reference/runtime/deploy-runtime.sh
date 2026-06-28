@@ -88,11 +88,11 @@ fi
 scp $CB_SSH_OPTS "$MANIFEST" "$CB_HOST:$CB_REMOTE_HOME/runtime-manifest.tsv"
 printf '  deployed: runtime-manifest.tsv (manifest copy)\n'
 
-# ── Optional: build + deploy the dashboard UI (CB_BUILD_UI=1) ─────────────────
+# ── Build + deploy the dashboard UI ───────────────────────────────────────────
 # The box serves the built vite dist from <home>/www (see crewboss-api.py static route).
-# deploy-runtime.sh only ships the backend; without this step the dashboard stays stale
-# after UI changes. Opt-in (npm build is slow) — pass CB_BUILD_UI=1. [deploy-debt 2026-06-17]
-if [ "${CB_BUILD_UI:-}" = "1" ]; then
+# Runs by default so CSS/JS fixes (e.g. #698) reach the live box on every deploy.
+# Pass CB_BUILD_UI=0 to skip for backend-only deploys. [deploy-debt 2026-06-17]
+if [ "${CB_BUILD_UI:-1}" != "0" ]; then
   printf '=== building dashboard UI on %s ===\n' "$CB_HOST"
   # shellcheck disable=SC2086,SC2029
   ssh $CB_SSH_OPTS "$CB_HOST" "

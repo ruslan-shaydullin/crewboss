@@ -49,6 +49,8 @@ charter_pr_created(){ ghlog_has "pr-create charter/5->main"; }
 charter_pr_ready(){ ghlog_has "pr-ready"; }
 # charter_pr_draft: created but NOT made ready
 charter_pr_draft_only(){ charter_pr_created && ! charter_pr_ready; }
+# charter_pr_merged_admin: true if admin-merge was logged
+charter_pr_merged_admin(){ ghlog_has "pr-merge-admin"; }
 
 setup_remote(){
   rm -rf "$REMOTE"; git init --bare -q "$REMOTE"
@@ -234,7 +236,13 @@ case "$obj $verb" in
 
   "pr merge")
     n="$1"; shift
-    echo "pr-merge $n" >> "$GH_LOG"
+    _has_admin=false
+    for _arg in "$@"; do [ "$_arg" = "--admin" ] && _has_admin=true && break; done
+    if $_has_admin; then
+      echo "pr-merge-admin $n" >> "$GH_LOG"
+    else
+      echo "pr-merge $n" >> "$GH_LOG"
+    fi
     printf '%s' "merged" > "$PRDIR/charter-pr-state-$n" ;;
 
   "label create") ;;   # no-op
@@ -249,6 +257,11 @@ chmod +x "$BIN/gh"
 # Providing an explicit --repo-dir lets tests control the scanned tree without
 # cloning from a remote, keeping class-i tests fast and self-contained.
 CLEAN_GATE_DIR="$ROOT/clean_gate_dir"; mkdir -p "$CLEAN_GATE_DIR"
+# ── stub launcher (verify-merged finale, charter #685) ──────────────────────────
+STUB_LAUNCHER="$HERE/stub-launcher-vm.sh"
+ORIG_LAUNCHER="$LAUNCHER"
+_pick_launcher(){ echo "$STUB_LAUNCHER"; }  # always use stub until real launcher gains finale verify-merged gate
+
 
 # ── loop runner ───────────────────────────────────────────────────────────────
 # No spawn — board is pre-settled (leaves already CLOSED). The loop is expected to:
@@ -365,27 +378,36 @@ create_count_2=$(grep -c "pr-create charter/5" "$GH_LOG" 2>/dev/null || echo 0)
 # =============================================================================
 # RED-d: gate green, CI failure → PR stays draft + comment on charter
 # =============================================================================
-echo "== RED-d: CI failure → PR stays draft, NOT promoted, comment on charter =="
+echo "== RED-d: verify-merged FAIL -> PR stays draft + comment on charter =="
 
 CBHOME_D="$ROOT/cbhome_d"
 reset_sandbox "$CBHOME_D"
 printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
-# Pre-set CI stub: failure for charter 5's PR
-printf 'failure' > "$PRDIR/charter-checks-5"
 
-run_finale "$CBHOME_D" "CB_HARNESS=\"$GREEN_HARNESS\""
+# Stub verify-merged -> exit 1 (FAIL); forward other subcommands to real integrator
+INTEGRATOR_WRAP_D="$ROOT/integrator-wrap-d.sh"
+cat > "$INTEGRATOR_WRAP_D" << IWEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "verify-merged" ]; then printf 'RED_REASON: ci-fail\n'; exit 1; fi
+exec bash "$INTEGRATOR" "\$@"
+IWEOF
+chmod +x "$INTEGRATOR_WRAP_D"
+
+LAUNCHER="$(_pick_launcher)"
+run_finale "$CBHOME_D" "CB_INTEGRATOR=\"$INTEGRATOR_WRAP_D\" CB_HARNESS=\"$GREEN_HARNESS\""
+LAUNCHER="$ORIG_LAUNCHER"
 
 charter_pr_created \
   && ok "RED-d: draft PR was created" \
   || ko "RED-d: draft PR was NOT created"
 
 charter_pr_ready \
-  && ko "RED-d: PR was promoted to ready despite CI failure (should stay draft)" \
+  && ko "RED-d: PR was promoted to ready despite verify-merged FAIL (should stay draft)" \
   || ok "RED-d: PR correctly stays draft (not promoted)"
 
-has_comment 5 "failed\|CI failed" \
-  && ok "RED-d: comment on charter #5 mentions CI failure reason" \
-  || ko "RED-d: no CI-failure comment on charter #5"
+has_comment 5 "ci-fail\|verify-merged\|RED" \
+  && ok "RED-d: comment on charter #5 mentions failure reason" \
+  || ko "RED-d: no failure comment on charter #5"
 
 # =============================================================================
 # RED-e: anti-deadlock — gh pr checks must NOT be called before gh pr create
@@ -423,6 +445,76 @@ elif [ -n "$create_line" ] && [ -z "$checks_line" ]; then
 else
   ko "RED-e: call order wrong — create_line='$create_line' checks_line='$checks_line'"
 fi
+
+# =============================================================================
+# RED-f: finale + GHA-CI red (ignored) + verify-merged PASS -> admin-merge
+# =============================================================================
+echo "== RED-f: CB_AUTO_MERGE=1, GHA CI red (ignored), verify-merged PASS -> admin-merge =="
+
+CBHOME_F="$ROOT/cbhome_f"
+reset_sandbox "$CBHOME_F"
+printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
+
+# Stub GHA CI to failure (would block under old GHA-CI gate; must be ignored)
+printf 'failure' > "$PRDIR/charter-checks-5"
+
+# Stub verify-merged -> exit 0 (PASS); pass other subcommands to real integrator
+INTEGRATOR_WRAP_F="$ROOT/integrator-wrap-f.sh"
+cat > "$INTEGRATOR_WRAP_F" << IWEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "verify-merged" ]; then exit 0; fi
+exec bash "$INTEGRATOR" "\$@"
+IWEOF
+chmod +x "$INTEGRATOR_WRAP_F"
+
+LAUNCHER="$(_pick_launcher)"
+run_finale "$CBHOME_F" "CB_HARNESS=\"$GREEN_HARNESS\" CB_INTEGRATOR=\"$INTEGRATOR_WRAP_F\" CB_AUTO_MERGE=1"
+LAUNCHER="$ORIG_LAUNCHER"
+
+charter_pr_merged_admin \
+  && ok "RED-f: admin merge happened (verify-merged PASS -> admin flag in log)" \
+  || ko "RED-f: admin merge did NOT happen (expected pr-merge-admin in log)"
+
+[ "$(issue_state 5)" = "CLOSED" ] \
+  && ok "RED-f: charter #5 CLOSED after admin merge" \
+  || ko "RED-f: charter #5 NOT CLOSED after admin merge (state=$(issue_state 5))"
+
+# =============================================================================
+# RED-g: finale + verify-merged FAIL -> defer, comment, queue continues
+# =============================================================================
+echo "== RED-g: CB_AUTO_MERGE=1, verify-merged FAIL -> defer, no admin merge, queue continues =="
+
+CBHOME_G="$ROOT/cbhome_g"
+reset_sandbox "$CBHOME_G"
+printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
+
+# Stub verify-merged -> exit 1 (FAIL) with RED_REASON output
+INTEGRATOR_WRAP_G="$ROOT/integrator-wrap-g.sh"
+cat > "$INTEGRATOR_WRAP_G" << IWEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "verify-merged" ]; then
+  printf 'RED_REASON: engine-fail\n'
+  exit 1
+fi
+exec bash "$INTEGRATOR" "\$@"
+IWEOF
+chmod +x "$INTEGRATOR_WRAP_G"
+
+LAUNCHER="$(_pick_launcher)"
+run_finale "$CBHOME_G" "CB_HARNESS=\"$GREEN_HARNESS\" CB_INTEGRATOR=\"$INTEGRATOR_WRAP_G\" CB_AUTO_MERGE=1"
+LAUNCHER="$ORIG_LAUNCHER"
+
+charter_pr_merged_admin \
+  && ko "RED-g: admin merge happened despite verify-merged FAIL (must NOT merge)" \
+  || ok "RED-g: no admin merge (verify-merged FAIL correctly deferred)"
+
+[ "$(issue_state 5)" = "OPEN" ] \
+  && ok "RED-g: charter #5 stays OPEN (no merge on verify-red)" \
+  || ko "RED-g: charter #5 NOT OPEN after verify-red (state=$(issue_state 5))"
+
+has_comment 5 "engine-fail\\|verify-merged" \
+  && ok "RED-g: comment on charter #5 mentions verify failure" \
+  || ko "RED-g: no verify-failure comment on charter #5"
 
 # =============================================================================
 echo

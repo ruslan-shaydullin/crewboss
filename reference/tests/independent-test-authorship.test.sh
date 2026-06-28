@@ -46,6 +46,19 @@ run_file() {
   fi
 }
 
+# run_bash <role> <command> <expected_exit>
+run_bash() {
+  local role="$1" cmd="$2" exp="$3" json code
+  json="$(jq -nc --arg r "$role" --arg c "$cmd" \
+    '{"tool_name":"Bash","agent_type":$r,"tool_input":{"command":$c}}')"
+  printf '%s' "$json" | bash "$GATE" >/dev/null 2>&1; code=$?
+  if [ "$code" = "$exp" ]; then
+    ok "exit=$exp [Bash/role=$role] $cmd"
+  else
+    ko "exit=$exp got=$code [Bash/role=$role] $cmd"
+  fi
+}
+
 # =============================================================================
 # (a) Gate blocks executor from editing test files via Edit, Write, MultiEdit
 # =============================================================================
@@ -78,6 +91,38 @@ echo "== (a) non-executor roles: qa-engineer may write test files =="
 run_file Edit    qa-engineer "foo.test.sh"                  0
 run_file Write   qa-engineer "reference/tests/foo.test.sh"  0
 run_file MultiEdit tech-lead "src/tests/bar.sh"             0
+
+
+# =============================================================================
+# (bash) Bash-path test-file write detection (charter #593)
+# RED against current gate (no Bash check); GREEN after ita-bash-impl merges.
+# =============================================================================
+echo "== (bash-a) executor denied: redirect to test file via Bash =="
+run_bash executor "echo x > foo.test.sh"                                          2
+
+echo "== (bash-b) executor denied: tee to test file via Bash =="
+run_bash executor "echo x | tee foo.test.sh"                                      2
+
+echo "== (bash-c) qa-engineer allowed: redirect to test file via Bash =="
+run_bash qa-engineer "echo x > foo.test.sh"                                       0
+
+echo "== (bash-d) executor allowed: redirect to non-test file via Bash =="
+run_bash executor "echo x > README.md"                                            0
+
+echo "== (bash-e) executor allowed: running test file via Bash (no false-deny on test-runner) =="
+run_bash executor "bash reference/tests/independent-test-authorship.test.sh"      0
+
+echo "== (bash-f) executor allowed: catting test file via Bash (no false-deny on reads) =="
+run_bash executor "cat foo.test.sh"                                               0
+
+echo "== (bash-g) executor denied: redirect to tests/ subdir via Bash =="
+run_bash executor "echo x > tests/foo.sh"                                         2
+
+echo "== (bash-h) executor denied: tee to tests/ subdir via Bash =="
+run_bash executor "echo x | tee tests/foo.sh"                                     2
+
+echo "== (bash-i) executor denied: tee -a to test file via Bash (flag-skipping bypass) =="
+run_bash executor "echo x | tee -a foo.test.sh"                                   2
 
 # =============================================================================
 # (c) verify-merged presence check

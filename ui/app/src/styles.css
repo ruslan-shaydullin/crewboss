@@ -75,13 +75,14 @@ body {
 @media (max-width:860px){ .layout { grid-template-columns:1fr } }
 /* right-hand column: sticky container that caps at viewport height so the
    queue panel is always visible regardless of how many agent cards are shown */
-.sidebar-col { display:flex; flex-direction:column; gap:16px; position:sticky; top:18px; max-height:calc(100vh - 36px) }
-@media (max-width:860px) { .sidebar-col { position:static; max-height:none } }
+.sidebar-col { display:flex; flex-direction:column; gap:16px; position:sticky; top:18px; max-height:calc(100vh - 36px); overflow:hidden }
+@media (max-width:860px) { .sidebar-col { position:static; max-height:none; overflow:visible } }
 /* agents rail fills available space and scrolls internally */
 .sidebar { display:flex; flex-direction:column; gap:16px; flex:1; min-height:0; overflow-y:auto }
 .sidebar .rail { position:static }
-/* queue panel always anchored at the bottom of the sidebar column */
-.queue-panel--sticky { flex-shrink:0 }
+/* queue panel scrolls independently — overflow-y:auto + min-height:0 prevent it
+   from expanding beyond the sidebar column and overlapping the agents rail */
+.queue-panel--sticky { flex-shrink:1; overflow-y:auto; min-height:0 }
 
 /* charter cards */
 .board { display:flex; flex-direction:column; gap:16px }

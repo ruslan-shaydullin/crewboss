@@ -44,6 +44,12 @@ role="$(jqr '.agent_type')"
 cmd="$(jqr '.tool_input.command')"
 cmdn="$(printf '%s' "$cmd" | tr '\t\n' '  ' | tr -s ' ')"     # whitespace-normalized
 
+# ITA Bash-path: block executor from writing test files via shell redirect/tee
+if printf '%s' "$cmd" | grep -Eq '(>|>>)[[:space:]]*(tests/|\S*(\.test\.(sh|ts|js|py)|/tests/))' \
+   || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[|;][[:space:]]*)tee([[:space:]]+-[a-zA-Z]+)*[[:space:]]+(tests/|\S*(\.test\.(sh|ts|js|py)|/tests/))'; then
+  [ "$role" = "executor" ] && { printf 'crewboss BLOCK [%s]: test-file writes via Bash are test-author-only (independent test authorship, charter #523)\n' "$role" >&2; exit 2; }
+fi
+
 # canon(): fold IN-MODEL verb variants to the literal form for MATCHING ONLY (never executed).
 # Covers what an honest-but-over-eager agent naturally produces: quoting (gh pr "merge"),
 # benign prefixes (command/builtin/exec) + path-qualified program (/usr/bin/gh), gh global

@@ -57,15 +57,18 @@ case "$cmd" in
       prompt) echo "$j" | jq -r '.body // ""' ;;
       state)  echo "$j" | jq -r '
                 if .state=="CLOSED" then "done"
+                elif ([.labels[].name]|any(.=="hold")) then "hold"
                 elif ([.labels[].name]|any(.=="status:blocked")) then "blocked"
                 elif ([.labels[].name]|any(.=="status:review")) then "review"
                 elif ([.labels[].name]|any(.=="status:needs-rework")) then "needs-rework"
                 elif ([.labels[].name]|any(.=="status:in-progress")) then "in-progress"
+                elif ([.labels[].name] | any(. == "status:deferred")) then "deferred"
                 elif ([.labels[].name]|any(.=="status:approved")) then "approved"
                 elif ([.labels[].name]|any(.=="status:plan-review")) then "plan-review"
                 elif ([.labels[].name]|any(.=="status:needs-plan")) then "needs-plan"
                 elif ([.labels[].name]|any(.=="status:team-review")) then "team-review"
                 elif ([.labels[].name]|any(.=="status:needs-analysis")) then "needs-analysis"
+                elif ([.labels[].name]|any(.=="status:needs-triage")) then "needs-triage"
                 else "open" end' ;;
       *) echo "unknown field: $field" >&2; exit 64 ;;
     esac ;;
@@ -91,6 +94,12 @@ case "$cmd" in
                labs=$(iview "$id" | jq -r '.labels[].name | select(startswith("claimed-by:") or .=="status:in-progress")')
                for l in $labs; do gh issue edit "$id" -R "$REPO" --remove-label "$l" >/dev/null; done
                echo "#$id -> open (requeued)" ;;
+      needs-triage)
+               # Executor failed at retry-cap; route to triage agent instead of blocking.
+               ensure_label "status:needs-triage" "f9d0c4"
+               gh issue edit "$id" -R "$REPO" --remove-label status:in-progress --add-label status:needs-triage >/dev/null
+               [ -n "$comment" ] && gh issue comment "$id" -R "$REPO" -b "$comment" >/dev/null
+               echo "#$id -> needs-triage" ;;
       needs-rework)
                # Integrator detected a merge conflict: drop in-progress/review/claimed-by:*,
                # add status:needs-rework so the launcher re-dispatches via rework path.

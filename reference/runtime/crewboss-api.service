@@ -27,6 +27,10 @@ Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=CB_REPO=stratch1989/crewboss
 Environment=CB_HOME=/home/ec2-user/cbnet
 Environment=CB_WEB_DIR=/home/ec2-user/cbnet/www
+Environment=CB_WEBHOOK_SECRET=<placeholder>
+# Required so GitHub can POST webhooks to this host.
+# All routes require Bearer auth; /api/gh-webhook uses HMAC-SHA256 instead.
+Environment=CB_API_HOST=0.0.0.0
 ExecStart=/usr/bin/python3 /home/ec2-user/cbnet/crewboss-api.py --port 8787
 Restart=always
 RestartSec=2

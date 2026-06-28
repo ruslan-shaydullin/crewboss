@@ -139,6 +139,10 @@ export default function App() {
   const dirtyRef = useRef(false)
 
   const isLoopRunning = state?.loop?.running ?? false
+  const mergeBlockReason: string | undefined =
+    state?.loop?.stage === "finale" ? "Loop is already integrating this charter"
+    : state?.loop?.integrate ? "Integration loop active -- let auto-integrate finish"
+    : undefined
 
   const onPendingAdd = useCallback((n: number) => {
     setPendingQueue(prev => [...prev, n])
@@ -197,7 +201,7 @@ export default function App() {
           <div className="layout">
             <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
               queueOrder={queueOrder} onQueueChange={handleQueueChange}
-              loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} />
+              loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} mergeBlockReason={mergeBlockReason} />
             <div className="sidebar-col">
               <aside className="sidebar">
                 <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
@@ -212,6 +216,7 @@ export default function App() {
                   onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
                   pendingQueue={pendingQueue}
                   onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
+                  onOpen={setOpen}
                 />
               </div>
             </div>
@@ -232,7 +237,7 @@ export default function App() {
       {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
       {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} onToast={toast} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
-        onClose={() => setOpen(null)} onAction={run} ask={ask} />}
+        onClose={() => setOpen(null)} onAction={run} ask={ask} mergeBlockReason={mergeBlockReason} />}
     </div>
   )
 }
@@ -267,7 +272,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
 
 function Hero({ state }: { state: State | null }) {
   const board = state?.board ?? []
-  const running = state?.agents?.filter(a => a.phase !== 'awaiting').length ?? 0
+  const running = state?.agents?.filter(a => a.pid != null).length ?? 0
   const review = board.filter((x) => x.kind === 'leaf' && x.state === 'review').length
   const done = board.filter((x) => x.kind === 'leaf' && x.state === 'done').length
   const blocked = board.filter((x) => x.kind === 'leaf' && x.state === 'blocked').length
@@ -340,11 +345,12 @@ const CHARTER_SECTIONS = [
   { key: 'sec-done',       label: 'Выполнено',  states: new Set(['done','CLOSED']),                                       defaultExpanded: false },
 ] as const
 
-function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
+function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
   state: State | null; conn: boolean
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
   loopRunning: boolean; onPendingAdd: (n: number) => void
+  mergeBlockReason: string | undefined
 }) {
   // Collapse state — always call hooks before any early return
   const [collapseMap, setCollapseMap] = useState<Record<string, boolean>>(readCollapseMap)
@@ -410,6 +416,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
             onQueueChange={onQueueChange}
             loopRunning={loopRunning}
             onPendingAdd={onPendingAdd}
+            mergeBlockReason={mergeBlockReason}
           />
         )
       })}
@@ -426,6 +433,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
           getExpanded={getExpanded} doToggle={doToggle}
           queueOrder={queueOrder} onQueueChange={onQueueChange}
           loopRunning={loopRunning} onPendingAdd={onPendingAdd}
+          mergeBlockReason={mergeBlockReason}
         />
       ))}
       {orphans.length > 0 && (
@@ -441,13 +449,14 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
           onQueueChange={onQueueChange}
           loopRunning={loopRunning}
           onPendingAdd={onPendingAdd}
+          mergeBlockReason={mergeBlockReason}
         />
       )}
     </section>
   )
 }
 
-function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
+function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
   sectionKey: string; label: string; charters: Task[]; leaves: Task[]
   expanded: boolean; onToggle: () => void
   onAction: (a: string, n?: number, comment?: string) => void
@@ -457,6 +466,7 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
   loopRunning: boolean; onPendingAdd: (n: number) => void
+  mergeBlockReason: string | undefined
 }) {
   if (charters.length === 0) return null
   const bodyId = `charter-section-body-${sectionKey}`
@@ -478,14 +488,15 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
             onAction={onAction} ask={ask} onOpen={onOpen}
             expanded={getExpanded(c.n, true)} onToggle={() => doToggle(c.n, true)}
             queueOrder={queueOrder} onQueueChange={onQueueChange}
-            loopRunning={loopRunning} onPendingAdd={onPendingAdd} />
+            loopRunning={loopRunning} onPendingAdd={onPendingAdd}
+            mergeBlockReason={mergeBlockReason} />
         ))}
       </div>
     </div>
   )
 }
 
-function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
   milestone: Task; charters: Task[]; leaves: Task[]
   onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -495,6 +506,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
   loopRunning: boolean; onPendingAdd: (n: number) => void
+  mergeBlockReason: string | undefined
 }) {
   const bodyId = `milestone-body-${milestone.n}`
   const childrenOf = (cn: number) => leaves.filter((l) => l.charter === cn)
@@ -530,6 +542,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
             onQueueChange={onQueueChange}
             loopRunning={loopRunning}
             onPendingAdd={onPendingAdd}
+            mergeBlockReason={mergeBlockReason}
           />
         ))}
       </div>
@@ -629,12 +642,13 @@ function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) 
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   expanded: boolean; onToggle: () => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
   loopRunning: boolean; onPendingAdd: (n: number) => void
+  mergeBlockReason: string | undefined
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
   const total = leaves.length
@@ -643,6 +657,9 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
   useFlip(gridRef)
   const bodyId = `charter-body-${c?.n ?? 0}`
   const [mergeErr, setMergeErr] = useState<string | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
+  const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
   return (
     <div className="charter">
       <div className="charter-head">
@@ -737,12 +754,34 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
         </>}
         {c && c.state === 'approved' && c.finale_pr && (
           <>
-            <button className="btn sm pri" onClick={async () => {
+            <button className="btn sm pri" disabled={merging || mergeBlockReason !== undefined} title={mergeBlockReason} onClick={async () => {
               setMergeErr(null)
+              setMergeVerifyVerdict(null)
+              setMergeVerifyOutput(null)
+              setMerging(true)
               const r = await command('merge', c.n)
-              if (!r.ok) setMergeErr(r.msg || 'merge failed')
-            }}>Merge</button>
+              setMerging(false)
+              if (!r.ok) {
+                setMergeErr(r.msg || 'merge failed')
+                if (r.verify_verdict) setMergeVerifyVerdict(r.verify_verdict)
+                if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+              } else if (r.verify_verdict && r.verify_verdict !== 'green') {
+                setMergeVerifyVerdict(r.verify_verdict)
+                if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+              }
+            }}>{merging ? '⏳ Merging…' : 'Merge'}</button>
             {mergeErr && <span className="err-inline">{mergeErr}</span>}
+            {mergeVerifyVerdict && (
+              <span className={mergeVerifyVerdict === 'green' ? 'verify-ok' : 'err-inline'}>
+                CI: {mergeVerifyVerdict}
+              </span>
+            )}
+            {mergeVerifyOutput && mergeVerifyVerdict !== 'green' && (
+              <details className="verify-details">
+                <summary>CI output</summary>
+                <pre className="verify-pre">{mergeVerifyOutput}</pre>
+              </details>
+            )}
           </>
         )}
       </div>
@@ -851,7 +890,7 @@ function SkeletonBoard() {
   )
 }
 
-function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending }: {
+function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending, onOpen }: {
   queueOrder: number[]
   savedOrder: number[]
   board: Task[]
@@ -860,6 +899,7 @@ function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChang
   onLaunch: () => Promise<void>
   pendingQueue: number[]
   onRemovePending: (n: number) => void
+  onOpen: (n: number) => void
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
@@ -907,7 +947,7 @@ function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChang
           {queueOrder.map((n, idx) => {
             const charter = charterMap.get(n)
             return (
-              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n}>
+              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n} onClick={() => onOpen(n)}>
                 <span className="queue-panel__pos">{idx + 1}.</span>
                 <span className="queue-panel__label">
                   <span className="num">#{n}</span>
@@ -1039,9 +1079,10 @@ function parseCheckboxes(body: string): { index: number; checked: boolean; text:
 /** History marker prefixes emitted by set-check */
 const HISTORY_MARKERS = ['✅ выполнено:', '↩️ снята отметка:']
 
-function TaskDrawer({ n, task, onClose, onAction, ask }: {
+function TaskDrawer({ n, task, onClose, onAction, ask, mergeBlockReason }: {
   n: number; task: Task | null; onClose: () => void
   onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
+  mergeBlockReason: string | undefined
 }) {
   const [d, setD] = useState<TaskDetail | null>(null)
   const [comments, setComments] = useState<IssueComment[]>([])
@@ -1050,6 +1091,9 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
   const [resolveText, setResolveText] = useState('')
   const [resolving, setResolving] = useState(false)
   const [mergeErr, setMergeErr] = useState<string | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
+  const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const tid = useRef(0)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -1183,12 +1227,34 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
             </>}
             {task.state === 'approved' && task.finale_pr && (
               <>
-                <button className="btn sm pri" onClick={async () => {
+                <button className="btn sm pri" disabled={merging || mergeBlockReason !== undefined} title={mergeBlockReason} onClick={async () => {
                   setMergeErr(null)
+                  setMergeVerifyVerdict(null)
+                  setMergeVerifyOutput(null)
+                  setMerging(true)
                   const r = await command('merge', n)
-                  if (!r.ok) setMergeErr(r.msg || 'merge failed')
-                }}>Merge</button>
+                  setMerging(false)
+                  if (!r.ok) {
+                    setMergeErr(r.msg || 'merge failed')
+                    if (r.verify_verdict) setMergeVerifyVerdict(r.verify_verdict)
+                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+                  } else if (r.verify_verdict && r.verify_verdict !== 'green') {
+                    setMergeVerifyVerdict(r.verify_verdict)
+                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
+                  }
+                }}>{merging ? '⏳ Merging…' : 'Merge'}</button>
                 {mergeErr && <span className="err-inline">{mergeErr}</span>}
+                {mergeVerifyVerdict && (
+                  <span className={mergeVerifyVerdict === 'green' ? 'verify-ok' : 'err-inline'}>
+                    CI: {mergeVerifyVerdict}
+                  </span>
+                )}
+                {mergeVerifyOutput && mergeVerifyVerdict !== 'green' && (
+                  <details className="verify-details">
+                    <summary>CI output</summary>
+                    <pre className="verify-pre">{mergeVerifyOutput}</pre>
+                  </details>
+                )}
               </>
             )}
             {task.state === 'held'
@@ -1222,6 +1288,13 @@ function TaskDrawer({ n, task, onClose, onAction, ask }: {
                 }}
               >{resolving ? 'Решение…' : 'Решить'}</button>
             </div>
+          </>
+        )}
+
+        {d?.body && (
+          <>
+            <div className="drawer-section">Description</div>
+            <div className="task-body-prose" data-testid="task-body-prose"><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{d.body}</pre></div>
           </>
         )}
 

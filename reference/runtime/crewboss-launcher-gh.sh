@@ -11,7 +11,7 @@
 #      CB_HARNESS (optional local cmd for gate-charter; default = marker-grep only),
 #      CB_GATE_REPO_DIR (repo dir for marker-grep; default = .),
 #      CB_FINALE_CHECKS_TIMEOUT (seconds to wait for draft-PR CI; default 300),
-#      CB_FINALE_CHECKS_POLL (seconds between gh pr checks polls; default 15),
+#      CB_FINALE_CHECKS_POLL (no longer used — CI decoupled from GHA; kept for back-compat),
 #      CB_PLAN_CONVERGE_CAP (max plan-review rounds before human-decision; default CB_CONVERGE_CAP or 4),
 #      CB_ACCEPT_CONVERGE_CAP (max acceptance-review rounds before human-decision; default CB_CONVERGE_CAP or 4)
 set -uo pipefail
@@ -19,6 +19,7 @@ set -uo pipefail
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"; STATE="$RUN/state"; LOCK="$RUN/launcher.lock"
 RETRY_CAP="${CB_RETRY_CAP:-2}"; MAXP="${CB_MAX_PARALLEL:-2}"
+CB_RECOVERY_CAP="${CB_RECOVERY_CAP:-2}"
 # CB_SPAWN_TIMEOUT — per-spawn wall-clock kill (#212 I4 hang-protection); default 1800s (<< nsjail 3600).
 LID="${CB_LAUNCHER_ID:-cb1}"
 BOARD="$CB_HOME/board-gh.sh"
@@ -39,6 +40,12 @@ ACCEPT_REVIEW_SPAWN="${CB_ACCEPT_REVIEW_SPAWN:-$PLAN_REVIEW_SPAWN}"
 # CB_CONFLICT_SPAWN: spawn script for the conflict-resolution role (git-resolver).
 # Default: same as PLAN_SPAWN so existing setups that only set CB_SPAWN keep working.
 CONFLICT_SPAWN="${CB_CONFLICT_SPAWN:-$PLAN_SPAWN}"
+# CB_TRIAGE_SPAWN: spawn script for the triage role (#787 recovery-triage).
+# BLOCKED intercept paths route executor-failed leaves to status:needs-triage
+# and spawn this script to post a ## Triage (machine) verdict comment.
+# The completion-detect handler reads the verdict and routes by class.
+# Default: same as PLAN_SPAWN so existing setups that set CB_PLAN_SPAWN get triage automatically.
+TRIAGE_SPAWN="${CB_TRIAGE_SPAWN:-$PLAN_SPAWN}"
 CHARTER_SCOPE="${CREWBOSS_CHARTER:-0}"
 # CB_REWORK_SPAWN: script used to re-dispatch a leaf that failed with a merge conflict
 # (needs-rework state). Defaults to rework-prep.sh next to the launcher.
@@ -63,26 +70,33 @@ sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
 #      spawns and board-gh inherit it.
 # Without CB_MANIFEST: block is a no-op (legacy behaviour unchanged, byte-for-byte).
 if [ -n "${CB_MANIFEST:-}" ]; then
-  _mlib=""
-  if [ -n "${CB_MANIFEST_LIB:-}" ]; then
-    _mlib="$CB_MANIFEST_LIB"
-  elif [ -f "$HERE_LAUNCHER/../launcher/manifest.sh" ]; then
-    _mlib="$HERE_LAUNCHER/../launcher/manifest.sh"
-  elif [ -f "$CB_HOME/manifest.sh" ]; then
-    _mlib="$CB_HOME/manifest.sh"
+  # Graceful fallback: if the manifest directory doesn't exist (e.g., stale env var from a
+  # previous install), clear CB_MANIFEST and proceed without manifest mode rather than blocking.
+  if [ ! -d "$CB_MANIFEST" ]; then
+    log "CB_MANIFEST=$CB_MANIFEST: directory not found, proceeding without manifest"
+    CB_MANIFEST=""
+  else
+    _mlib=""
+    if [ -n "${CB_MANIFEST_LIB:-}" ]; then
+      _mlib="$CB_MANIFEST_LIB"
+    elif [ -f "$HERE_LAUNCHER/../launcher/manifest.sh" ]; then
+      _mlib="$HERE_LAUNCHER/../launcher/manifest.sh"
+    elif [ -f "$CB_HOME/manifest.sh" ]; then
+      _mlib="$CB_HOME/manifest.sh"
+    fi
+    if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
+      log "CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)"
+      exit 65
+    fi
+    # shellcheck source=../launcher/manifest.sh
+    source "$_mlib"
+    if ! manifest_validate "$CB_MANIFEST" >/dev/null 2>&1; then
+      log "manifest invalid: $CB_MANIFEST"
+      exit 65
+    fi
+    log "manifest: $CB_MANIFEST ok"
+    export CB_MANIFEST
   fi
-  if [ -z "$_mlib" ] || [ ! -f "$_mlib" ]; then
-    log "CB_MANIFEST=$CB_MANIFEST but manifest library not found (set CB_MANIFEST_LIB or deploy manifest.sh to $CB_HOME/)"
-    exit 65
-  fi
-  # shellcheck source=../launcher/manifest.sh
-  source "$_mlib"
-  if ! manifest_validate "$CB_MANIFEST" >/dev/null 2>&1; then
-    log "manifest invalid: $CB_MANIFEST"
-    exit 65
-  fi
-  log "manifest: $CB_MANIFEST ok"
-  export CB_MANIFEST
 fi
 board(){ bash "$BOARD" "$@"; }
 # plannable_scoped: when CREWBOSS_CHARTER is set, restrict plannable output to that charter only.
@@ -181,6 +195,12 @@ reconcile(){
   local d id pid
   for d in "$STATE"/*/; do [ -e "$d" ] || continue
     id=$(basename "$d"); pid=$(sget "$id" pid); [ -n "$pid" ] || continue
+    # kind=triage guard: triage agent has its own completion handler; do NOT requeue as orphan.
+    # The completion-detect loop will handle verdict routing when the triage agent finishes.
+    if [ "$(sget "$id" kind)" = "triage" ]; then
+      log "reconcile: #$id kind=triage — skip (triage agent; handled by completion-detect)"
+      continue
+    fi
     if kill -0 "$pid" 2>/dev/null; then
       log "reconcile: #$id alive (pid $pid)"
     else
@@ -197,8 +217,16 @@ route(){ # id, spawn-exit
     3) board route "$id" requeue >/dev/null; sset "$id" pid ""; log "#$id budget hard-stop -> requeued, STOPPING cycle"; return 9 ;;
     *) local prev; prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
        if [ "$tries" -ge "$RETRY_CAP" ]; then
-         board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP) — tech-lead triage" >/dev/null
-         sset "$id" pid ""; log "#$id failed (try $tries) -> blocked"
+         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+           board route "$id" needs-triage "executor failed $tries×" >/dev/null
+           sset "$id" kind "triage"
+           "$TRIAGE_SPAWN" "$id" &
+           sset "$id" pid "$!"
+           log "#$id failed (try $tries) -> needs-triage (triage spawned)"
+         else
+           board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP) — tech-lead triage" >/dev/null
+           sset "$id" pid ""; log "#$id failed (try $tries) -> blocked"
+         fi
        else
          board route "$id" requeue >/dev/null; sset "$id" pid ""; log "#$id failed (try $tries) -> requeued"
        fi ;;
@@ -350,6 +378,18 @@ _integrator_cycle(){
         local _rwk; _rwk=$(sget "$rid" rework_n); [ -n "$_rwk" ] || _rwk=0
         if [ "$_rwk" -ge "${CB_REWORK_CAP:-2}" ]; then
           log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked (${_vmreason:-RED})"
+          # Trigger path (a): triage intercept (#787) — spawn triage before writing status:blocked.
+          _td=$(sget "$rid" triage_done 2>/dev/null || true)
+          if [ -z "$_td" ]; then
+            gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-triage >/dev/null 2>&1 || true
+            sset "$rid" kind triage
+            sset "$rid" starttime "$(now)"
+            ( "$TRIAGE_SPAWN" "$rid" triage >/dev/null 2>&1 ) & sset "$rid" pid "$!"
+            sset "$rid" int_done "triage-pending"
+            log "triage: spawned for #$rid (integrator path)"
+            continue
+          fi
+          # triage_done is set: fall through to blocked write
           gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
           gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
         else
@@ -419,134 +459,133 @@ _integrator_cycle(){
   done
 }
 
-# ── charter finale: one non-blocking CI poll per tick ────────────────────────────
+# ── charter finale: non-blocking CI state resolution per tick ────────────────────
 # Called by _charter_finale_cycle every tick for each charter with a draft PR.
 # State is persisted in $STATE/finale-<cid>/ so the function is fast (no sleep).
-# Return codes: 0=green (PR promoted), 1=red (CI failed), 2=timeout, 3=pending (come back).
+# Return codes: 0=green (PR promoted/merged), 1=red/infra (gate failed), 2=timeout (cached).
 # Dedup: posts a comment only on first transition into each terminal state. [F4 #118]
+# GHA-CI gate removed (charter #685): verify-merged (box-native engine suite) gates
+# auto-merge instead. gate-charter already ran locally before PR creation (line ~862).
 _finale_check_ci(){
   local cid="$1" pr_num="$2"
-  local timeout="${CB_FINALE_CHECKS_TIMEOUT:-300}"
   local _fin_dir="$STATE/finale-$cid"
   mkdir -p "$_fin_dir"
 
   # Load persistent state.
-  local ci_state pr_ts last_comment
-  ci_state=$(cat "$_fin_dir/ci_state"     2>/dev/null || echo "pending")
-  pr_ts=$(cat    "$_fin_dir/pr_ts"        2>/dev/null || echo "")
+  local ci_state last_comment
+  ci_state=$(cat "$_fin_dir/ci_state" 2>/dev/null || echo "")
   last_comment=$(cat "$_fin_dir/last_comment" 2>/dev/null || echo "")
 
-  # Initialise deadline clock on first call (after PR creation — anti-deadlock safe).
-  if [ -z "$pr_ts" ]; then
-    pr_ts=$(date +%s)
-    printf '%s' "$pr_ts" > "$_fin_dir/pr_ts"
-  fi
-
-  # Already terminal? Return cached result with no new gh call.
+  # Early-exit cache: ci_state=green → no external call needed (fix-2: written only on PASS).
+  # fix-1: do NOT persist a cached "red" terminal state — that would create a permanent-stuck
+  # regression identical to the GHA-CI bug this charter fixes.  verify-merged's internal cache
+  # (CB_HOME/run/verify-cache) throttles repeat-call cost on retries.
   case "$ci_state" in
     green)   return 0 ;;
-    red)     return 1 ;;
     timeout) return 2 ;;
   esac
 
-  # ONE poll this tick (no sleep, no inner loop).
-  local checks_out checks_rc=0
-  checks_out=$(gh pr checks "$pr_num" -R "$CB_REPO" 2>&1) || checks_rc=$?
+  # AUTO merge (opt-in, #366/#401): perform the final charter→main merge automatically once
+  # the verify-merged gate passes.  Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label
+  # on the charter issue (per-charter, #401).  Default off → PR waits for a human merge.
+  local _charter_auto_merge
+  _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+    | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
 
-  local new_state
-  if [ "$checks_rc" -eq 0 ]; then
-    new_state="green"
-  elif printf '%s' "$checks_out" | grep -qiE "no checks|0 checks reported" \
-       || [ -z "$(printf '%s' "$checks_out" | tr -d '[:space:]')" ]; then
-    # GHA has NOT registered any checks yet — the poll fired in the same tick the PR
-    # was created (creation→poll race). gh reports "no checks reported on the '<b>'
-    # branch" (exit≠0, no "pending" string). Treat as PENDING, not red: a false-red
-    # here is cached terminal (ci_state=red, lines above short-circuit) and the PR
-    # NEVER promotes even after CI goes green — deterministically breaks every
-    # launcher-created charter finale. (#238 capstone find.) Deadline still bounds it.
-    if [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
-      new_state="timeout"
-    else
-      return 3
-    fi
-  elif ! printf '%s' "$checks_out" | grep -qi "pending\|in.progress\|queued"; then
-    new_state="red"
-  elif [ "$(date +%s)" -ge $(( pr_ts + timeout )) ]; then
-    new_state="timeout"
-  else
-    # Still pending, deadline not expired. Come back next tick.
-    return 3
-  fi
-
-  # Persist new terminal state.
-  printf '%s' "$new_state" > "$_fin_dir/ci_state"
-
-  # Actions + dedup comment (one comment per state).
-  case "$new_state" in
-    green)
-      log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
-      gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
-      # AUTO merge (opt-in, #366/#401): perform the final charter→main human gate automatically
-      # once CI is green. Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label on the charter
-      # issue (per-charter, #401). Default off → charter PR waits for a human merge.
-      _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
-        | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
-      if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
-        # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
-        # Parse acceptance_review_role from manifest (same pattern as plan_review_role).
-        # If role is set AND accept:agreed label is absent: route to status:acceptance-review,
-        # clear term (CRITICAL: erases term=1 left by plan-approval paths), post idempotent
-        # comment, and return 0 to block merge.  If role absent or accept:agreed present: fall through.
-        _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
-        if [ -n "$_acc_review_role" ]; then
-          _acc_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
-            | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
-          if [ "$_acc_agreed" != "true" ]; then
-            gh issue edit "$cid" -R "$CB_REPO" --add-label status:acceptance-review 2>/dev/null || true
-            sset "$cid" term ""
-            if [ "$last_comment" != "acceptance-pending" ]; then
-              gh issue comment "$cid" -R "$CB_REPO" \
-                --body "charter-finale: acceptance-convergence gate active — routing to acceptance review (acceptance_review_role=$_acc_review_role)" \
-                2>/dev/null || true
-              printf '%s' "acceptance-pending" > "$_fin_dir/last_comment"
-            fi
-            return 0
-          fi
+  if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
+    # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
+    # Parse acceptance_review_role from manifest (same pattern as plan_review_role).
+    # If role is set AND accept:agreed label is absent: route to status:acceptance-review,
+    # clear term (CRITICAL: erases term=1 left by plan-approval paths), post idempotent
+    # comment, and return 0 to block merge.  If role absent or accept:agreed present: fall through.
+    # Step 6: this block must remain intact and BEFORE the verify-merged call.
+    local _acc_review_role _acc_agreed
+    _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
+    if [ -n "$_acc_review_role" ]; then
+      _acc_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+        | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
+      if [ "$_acc_agreed" != "true" ]; then
+        gh issue edit "$cid" -R "$CB_REPO" --add-label status:acceptance-review 2>/dev/null || true
+        sset "$cid" term ""
+        if [ "$last_comment" != "acceptance-pending" ]; then
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: acceptance-convergence gate active — routing to acceptance review (acceptance_review_role=$_acc_review_role)" \
+            2>/dev/null || true
+          printf '%s' "acceptance-pending" > "$_fin_dir/last_comment"
         fi
-        if gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null; then
-          log "charter-finale: #$cid PR #$pr_num AUTO-merged → main (CB_AUTO_MERGE or auto:merge label)"
+        return 0
+      fi
+    fi
+
+    # ── verify-merged gate (replaces GHA-CI gate, charter #685) ──────────────────
+    # Mirror integrator lines 372-410: call verify-merged subcommand, extract RED_REASON,
+    # and route by exit code.  Branch: charter/<cid>; base: main.
+    local vm_exit=0 vm_out="" _vmreason=""
+    vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged "charter/$cid" "main" \
+         --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null) || vm_exit=$?
+    _vmreason=$(printf '%s\n' "$vm_out" | sed -n 's/^RED_REASON: //p' | head -1)
+
+    case "$vm_exit" in
+      0)
+        # verify-merged PASS: fix-2: write ci_state=green ONLY on PASS.
+        printf '%s' "green" > "$_fin_dir/ci_state"
+        log "charter-finale: #$cid PR #$pr_num verify-merged PASS → promoting + admin-merge"
+        gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+        if gh pr merge "$pr_num" -R "$CB_REPO" --merge --admin 2>/dev/null; then
+          log "charter-finale: #$cid PR #$pr_num AUTO-merged (admin) → main"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
           printf '%s' "merged" > "$_fin_dir/last_comment"
           return 0
         fi
-        log "charter-finale: #$cid PR #$pr_num auto-merge failed — left ready for human"
-      fi
-      if [ "$last_comment" != "green" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
-          2>/dev/null || true
-        printf '%s' "green" > "$_fin_dir/last_comment"
-      fi
-      return 0 ;;
-    red)
-      log "charter-finale: #$cid PR #$pr_num CI failed — stays draft"
-      if [ "$last_comment" != "red" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI failed — stays draft" \
-          2>/dev/null || true
-        printf '%s' "red" > "$_fin_dir/last_comment"
-      fi
-      return 1 ;;
-    timeout)
-      log "charter-finale: #$cid PR #$pr_num CI check timeout (${timeout}s) — stays draft"
-      if [ "$last_comment" != "timeout" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
-          2>/dev/null || true
-        printf '%s' "timeout" > "$_fin_dir/last_comment"
-      fi
-      return 2 ;;
-  esac
+        log "charter-finale: #$cid PR #$pr_num admin-merge failed — left ready for human"
+        ;;
+      1)
+        # Terminal RED: fix-1: do NOT persist a "red" cached state (avoids permanent-stuck regression).
+        # fix-3: post idempotent comment on charter issue with RED_REASON (dedup via last_comment).
+        log "charter-finale: #$cid verify-merged terminal RED: ${_vmreason:-RED}"
+        if [ "$last_comment" != "verify-red" ]; then
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: verify-merged RED (${_vmreason:-RED}) — deferring merge" \
+            2>/dev/null || true
+          printf '%s' "verify-red" > "$_fin_dir/last_comment"
+        fi
+        return 1
+        ;;
+      3)
+        # Retryable: log and retry next tick.  No ci_state write.
+        log "charter-finale: #$cid verify-merged retryable (exit 3) — retry next tick"
+        return 1
+        ;;
+      *)
+        # Infra error (exit 2) or other: log and retry.  No ci_state write.
+        log "charter-finale: #$cid verify-merged infra error (exit $vm_exit) — retry next tick"
+        return 1
+        ;;
+    esac
+  fi
+
+  # No auto-merge (or auto-merge admin-merge failed above): promote PR and post human-review
+  # comment.  Write ci_state=green so the early-exit cache fires on subsequent ticks.
+  log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
+  gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+  printf '%s' "green" > "$_fin_dir/ci_state"
+  if [ "$last_comment" != "green" ]; then
+    gh issue comment "$cid" -R "$CB_REPO" \
+      --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
+      2>/dev/null || true
+    printf '%s' "green" > "$_fin_dir/last_comment"
+  fi
+  return 0
+
+  # timeout case: handled by early-exit cache above (ci_state=timeout → return 2).
+  # Kept here as documentation; unreachable unless ci_state is set externally to timeout.
+  #   if [ "$last_comment" != "timeout" ]; then
+  #     gh issue comment "$cid" -R "$CB_REPO" \
+  #       --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
+  #       2>/dev/null || true
+  #     printf '%s' "timeout" > "$_fin_dir/last_comment"
+  #   fi
+  #   return 2
 }
 
 # ── charter auto-rebase helper (issue #255) ──────────────────────────────────
@@ -608,6 +647,128 @@ _charter_autorebase(){
   return 0
 }
 
+# ── test-quality gate cycle (charter #597) ───────────────────────────────────
+# Called every tick of cmd_run after _integrator_cycle, before _charter_finale_cycle.
+# SCOPED execution only — no-op in unscoped/multi-charter mode (bootstrap caveat #193).
+#
+# Fires after BOTH the qa-engineer AND impl leaves have merged (all leaves closed).
+# One gate run per charter (tracked via launcher-local tqg state on the charter id).
+#
+# Routing signals:
+#   status:test-broken  — qa-engineer leaf re-dispatched (test is broken)
+#   status:impl-broken  — executor leaf re-dispatched (impl is broken)
+#
+# Sub-step A: re-dispatch routing — detect open type:agent leaves that already carry
+#   status:test-broken or status:impl-broken and ensure status:needs-rework is set so
+#   the launcher's existing rework path picks them up for re-dispatch.
+# Sub-step B: gate invocation — when all leaves for the scoped charter are closed and
+#   the gate has not yet run (tqg state absent), find the qa-engineer and executor
+#   leaves and invoke run-test-quality-gate.sh.
+_tqg_cycle(){
+  # Scoped execution only (CREWBOSS_CHARTER must be set — bootstrap caveat #193)
+  [ "$CHARTER_SCOPE" = "0" ] && return 0
+  local cid="$CHARTER_SCOPE"
+  local tqg_script="$HERE_LAUNCHER/run-test-quality-gate.sh"
+
+  # ── Sub-step A: ensure needs-rework on open leaves carrying routing labels ──
+  # The gate script applies status:test-broken or status:impl-broken and reopens
+  # the issue. This sub-step adds status:needs-rework (idempotent) so the launcher's
+  # existing rework dispatch path claims it on the next tick.
+  local _tqg_routing_leaves _tqg_rl
+  _tqg_routing_leaves=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      .[] | select([.labels[].name] | index("type:agent") != null)
+          | select((numsAfter(.body; "Charter") | first) == ($c | tonumber))
+          | select([.labels[].name] |
+              (index("status:test-broken") != null or index("status:impl-broken") != null))
+          | select([.labels[].name] | index("status:needs-rework") == null)
+          | .number' 2>/dev/null || true)
+  for _tqg_rl in $_tqg_routing_leaves; do
+    gh issue edit "$_tqg_rl" -R "$CB_REPO" \
+      --add-label "status:needs-rework" >/dev/null 2>&1 || true
+    log "tqg: #$_tqg_rl routing label (test-broken/impl-broken) → adding status:needs-rework"
+  done
+
+  # ── Sub-step B: gate invocation ──────────────────────────────────────────────
+  # Guard: gate script must be available
+  [ -f "$tqg_script" ] || { log "tqg: gate script not found ($tqg_script) — skipping"; return 0; }
+
+  # Guard: already ran for this charter in this launcher session
+  local _tqg_state
+  _tqg_state=$(sget "$cid" tqg)
+  [ "$_tqg_state" = "done" ] && return 0
+
+  # Guard: all leaves for this charter must be closed (same condition as finale)
+  local _tqg_open
+  _tqg_open=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:charter") == null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | length' 2>/dev/null || echo "1")
+  [ "${_tqg_open:-1}" = "0" ] || return 0   # leaves still open — not ready
+
+  # Find the qa-engineer leaf (closed type:agent with role:qa-engineer label)
+  local _qa_leaf
+  _qa_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:agent") != null)
+            | select([.labels[].name] | index("role:qa-engineer") != null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | first | .number // empty' 2>/dev/null || true)
+
+  # Find the executor/impl leaf (closed type:agent with role:executor label)
+  local _impl_leaf
+  _impl_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+    --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
+      def numsAfter($b; $k):
+        [($b // "") | split("\n")[]
+          | select(test("(?i)^[\\s*_>#-]*" + $k + "\\s*:"))]
+        | join(" ") | [scan("\\d+") | tonumber];
+      [ .[] | select([.labels[].name] | index("type:agent") != null)
+            | select([.labels[].name] | index("role:executor") != null)
+            | select((numsAfter(.body; "Charter") | first) == ($c | tonumber)) ]
+      | first | .number // empty' 2>/dev/null || true)
+
+  # Skip TQG if this charter does not have both qa-engineer and executor leaves
+  # (not all charters follow the qa-engineer+executor TDD pattern)
+  if [ -z "$_qa_leaf" ] || [ -z "$_impl_leaf" ]; then
+    log "tqg: charter #$cid — qa-leaf or impl-leaf not found; skipping TQG"
+    sset "$cid" tqg "done"   # mark done so this check is not repeated every tick
+    return 0
+  fi
+
+  log "tqg: running gate for charter #$cid (qa-leaf=#$_qa_leaf impl-leaf=#$_impl_leaf)"
+  local _tqg_rc=0
+  bash "$tqg_script" \
+    --charter  "$cid" \
+    --qa-leaf  "$_qa_leaf" \
+    --impl-leaf "$_impl_leaf" \
+    --repo     "$CB_REPO" \
+    || _tqg_rc=$?
+
+  if [ "$_tqg_rc" = "0" ]; then
+    sset "$cid" tqg "done"
+    log "tqg: gate green for charter #$cid → tqg:done (finale may proceed)"
+  elif [ "$_tqg_rc" = "1" ]; then
+    log "tqg: gate routed for charter #$cid — leaf re-dispatched for rework"
+    # tqg state left unset: gate will re-run after the rework leaf re-closes
+  else
+    log "tqg: gate infra error for charter #$cid (rc=$_tqg_rc) — will retry"
+  fi
+}
+
 # ── charter finale cycle ──────────────────────────────────────────────────────
 # Called every tick of cmd_run after _integrator_cycle.
 # For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
@@ -615,8 +776,8 @@ _charter_autorebase(){
 #   1. Run LOCAL gate BEFORE creating PR (marker-grep mandatory; CB_HARNESS optional).
 #      MUST NOT read CI checks at this stage (PR doesn't exist yet — anti-deadlock).
 #   2. Gate green → open draft PR charter/C → main.
-#   3. Wait for CI checks on draft PR (gh pr checks with timeout).
-#   4. CI green → promote (gh pr ready) + comment; CI red/timeout → stays draft + comment.
+#   3. Local gate proven green → CI decoupled; mark ci_state=green immediately.
+#   4. Green → promote (gh pr ready) + comment; gate re-run on restart (red stays draft + comment).
 # Idempotent: existing open PR is re-checked, not duplicated.
 # Charter stays OPEN — only a human (tech-lead) merges and closes it.
 _charter_finale_cycle(){
@@ -820,7 +981,7 @@ cmd_once(){
       for _qn in $_q_order; do
         _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
         case "$_qst" in
-          done|blocked) continue ;;
+          done|blocked|hold|deferred) continue ;;
           plan-review)
             # Skip plan-review only when terminal: no plan_review_role (human-park path)
             # or plan:agreed already set (convergence complete).
@@ -881,15 +1042,35 @@ cmd_run(){
           if [ -n "$_st" ]; then
             _ste=$(date -u -d "$_st" +%s 2>/dev/null || echo 0)
             _age=$(( $(date -u +%s) - _ste ))
-            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "${CB_SPAWN_TIMEOUT:-1800}" ]; then
+            _kind=$(sget "$id" kind)
+            _kind_upper=$(printf '%s' "$_kind" | tr '[:lower:]-' '[:upper:]_')
+            eval "_eff_timeout=\${CB_${_kind_upper}_SPAWN_TIMEOUT:-${CB_SPAWN_TIMEOUT:-1800}}"
+            if [ "$_ste" -gt 0 ] && [ "$_age" -gt "$_eff_timeout" ]; then
               kill -9 "$pid" 2>/dev/null
               prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
-              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${CB_SPAWN_TIMEOUT:-1800}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + blocked"
-              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${CB_SPAWN_TIMEOUT:-1800}s) -> kill -9 + requeue"; fi
+              if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "spawn timeout >${_eff_timeout}s ($tries×, retry-cap)" >/dev/null; sset "$id" term 1; log "#$id spawn timeout (>${_eff_timeout}s) -> kill -9 + blocked"
+              else board route "$id" requeue >/dev/null; log "#$id spawn timeout (>${_eff_timeout}s) -> kill -9 + requeue"; fi
               sset "$id" pid ""
             fi
           fi
           continue          # still running (or just timed-out+routed)
+        fi
+        # [#619 exec-592] completion-detect guard: pid gone but phase=starting (spawn killed before
+        # writing final status.json) — check run.log for a PR URL (nsjail-detach race).
+        if _phase=$(jq -r '.phase // ""' "$RUN/work/$id/status.json" 2>/dev/null) && [ "$_phase" = "starting" ]; then
+          _pr_url=$(grep -oE 'https://github.com/[^ "]+/pull/[0-9]+' "$RUN/work/$id/run.log" 2>/dev/null | tail -1)
+          if [ -z "$_pr_url" ]; then
+            _leaf_branch="$(board get "$id" branch 2>/dev/null || true)"
+            [ -n "$_leaf_branch" ] && _pr_url=$(gh pr list --head "$_leaf_branch" --state open --json url -q '.[0].url' 2>/dev/null || true)
+          fi
+          if [ -n "$_pr_url" ]; then
+            log "#$id pid gone but PR found ($_pr_url), routing done (nsjail-detach race)"
+            sset "$id" pr "$_pr_url"
+            sset "$id" tries 0
+            board route "$id" review >/dev/null
+            sset "$id" term 1; sset "$id" pid ""
+            continue
+          fi
         fi
         # analysis task: route by charter state; success = team-review, fail = retry/blocked.
         if [ "$(sget "$id" kind)" = "analysis" ]; then
@@ -1095,18 +1276,130 @@ cmd_run(){
           fi
           continue
         fi
+        # kind=triage completion handler: triage agent finished; route leaf by verdict. (#784)
+        if [ "$(sget "$id" kind)" = "triage" ]; then
+          _tvrd=$(gh issue view "$id" -R "$CB_REPO" --json comments 2>/dev/null \
+            | jq -r '[.comments[]?.body | select(contains("## Triage (machine)"))] | last // empty' \
+            2>/dev/null || true)
+          if [ -z "$_tvrd" ]; then
+            log "#$id kind=triage: no verdict comment found — routing to blocked"
+            board route "$id" blocked "triage: no verdict found" >/dev/null
+            sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+            continue
+          fi
+          _ttsv=$(printf '%s\n' "$_tvrd" \
+            | bash "${CB_TRIAGE_PARSE:-$HERE_LAUNCHER/triage-parse.sh}" 2>/dev/null) || {
+            log "#$id kind=triage: verdict parse failed — routing to blocked"
+            board route "$id" blocked "triage: verdict parse failed" >/dev/null
+            sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+            continue
+          }
+          _troot=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="root"{print $2}')
+          _troute=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="route"{print $2}')
+          _tevidence=$(printf '%s' "$_ttsv" | awk -F'\t' '$1=="evidence"{print $2}')
+          log "#$id triage: root=$_troot route=$_troute"
+          case "$_troute" in
+            executor-rework|test-flaky)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              board route "$id" requeue >/dev/null
+              sset "$id" tries ""; log "#$id triage: $_troute -> requeue + tries cleared" ;;
+            needs-plan)
+              _tch=$(board get "$id" charter 2>/dev/null || true)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              if [ -n "$_tch" ]; then
+                recovery_n=$(sget "$_tch" recovery_n); recovery_n=${recovery_n:-0}
+                if [ "$recovery_n" -ge "$CB_RECOVERY_CAP" ]; then
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --add-label status:deferred \
+                    --remove-label status:approved \
+                    --remove-label status:needs-plan \
+                    --remove-label status:needs-analysis >/dev/null 2>&1 || true
+                  gh issue comment "$_tch" -R "$CB_REPO" \
+                    --body "deferred after ${recovery_n} cycles; root: ${_troot:-unknown}; last failure: ${_tevidence:-unknown}"
+                  log "#$id triage: plan-flaw -> charter #$_tch deferred (recovery_n=$recovery_n >= CB_RECOVERY_CAP=$CB_RECOVERY_CAP)"
+                else
+                  sset "$_tch" recovery_n "$((recovery_n + 1))"
+                  _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                    | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                  if [ "${_thas_bounce:-0}" = "0" ]; then
+                    gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                      '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                      "$_troot" "$_troute" "$_tevidence")"
+                  fi
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --remove-label status:approved --add-label status:needs-plan >/dev/null 2>&1 || true
+                  log "#$id triage: plan-flaw -> charter #$_tch needs-plan"
+                fi
+              fi ;;
+            needs-analysis)
+              _tch=$(board get "$id" charter 2>/dev/null || true)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              if [ -n "$_tch" ]; then
+                recovery_n=$(sget "$_tch" recovery_n); recovery_n=${recovery_n:-0}
+                if [ "$recovery_n" -ge "$CB_RECOVERY_CAP" ]; then
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --add-label status:deferred \
+                    --remove-label status:approved \
+                    --remove-label status:needs-plan \
+                    --remove-label status:needs-analysis >/dev/null 2>&1 || true
+                  gh issue comment "$_tch" -R "$CB_REPO" \
+                    --body "deferred after ${recovery_n} cycles; root: ${_troot:-unknown}; last failure: ${_tevidence:-unknown}"
+                  log "#$id triage: approach-flaw -> charter #$_tch deferred (recovery_n=$recovery_n >= CB_RECOVERY_CAP=$CB_RECOVERY_CAP)"
+                else
+                  sset "$_tch" recovery_n "$((recovery_n + 1))"
+                  _thas_bounce=$(gh issue view "$_tch" -R "$CB_REPO" --json comments \
+                    | jq -r '[.comments[]?.body | select(contains("<!-- triage-bounce -->"))] | length')
+                  if [ "${_thas_bounce:-0}" = "0" ]; then
+                    gh issue comment "$_tch" -R "$CB_REPO" --body "$(printf \
+                      '<!-- triage-bounce -->\n**Bounce evidence** (root: %s, route: %s)\n\n```\n%s\n```' \
+                      "$_troot" "$_troute" "$_tevidence")"
+                  fi
+                  gh issue edit "$_tch" -R "$CB_REPO" \
+                    --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
+                  log "#$id triage: approach-flaw -> charter #$_tch needs-analysis"
+                fi
+              fi ;;
+            test-bug)
+              gh issue edit "$id" -R "$CB_REPO" \
+                --remove-label status:needs-triage \
+                --add-label status:test-broken \
+                --add-label status:needs-rework >/dev/null 2>&1 || true
+              log "#$id triage: test-bug -> needs-rework + test-broken" ;;
+            infra)
+              gh issue edit "$id" -R "$CB_REPO" --remove-label status:needs-triage >/dev/null 2>&1 || true
+              board route "$id" blocked "triage: infra failure" >/dev/null
+              log "#$id triage: infra -> blocked" ;;
+            *)
+              board route "$id" blocked "triage: unknown route: $_troute" >/dev/null
+              log "#$id triage: unknown route '$_troute' -> blocked" ;;
+          esac
+          sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+          continue
+        fi
         ph=$(jq -r '.phase' "$RUN/work/$id/status.json" 2>/dev/null || echo unknown)
         case "$ph" in
           done)        board route "$id" review  >/dev/null; sset "$id" term 1; log "#$id done -> review" ;;
           budget-stop) board route "$id" requeue >/dev/null; stop=1; log "#$id budget -> requeue, STOP new claims" ;;
           *)           prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
-                       if [ "$tries" -ge "$RETRY_CAP" ]; then board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP)" >/dev/null; sset "$id" term 1; log "#$id failed($tries) -> blocked"
+                       if [ "$tries" -ge "$RETRY_CAP" ]; then
+                         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+                           board route "$id" needs-triage "executor failed $tries×" >/dev/null
+                           sset "$id" kind "triage"
+                           "$TRIAGE_SPAWN" "$id" &
+                           sset "$id" pid "$!"
+                           log "#$id failed($tries) -> needs-triage (triage spawned)"
+                           continue
+                         fi
+                         board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP)" >/dev/null; sset "$id" term 1; log "#$id failed($tries) -> blocked"
                        else board route "$id" requeue >/dev/null; log "#$id failed($tries) -> requeue"; fi ;;
         esac
         sset "$id" pid ""
       done
       # integrator step: merge review-state leaves into charter/C (every tick, non-fatal)
       _integrator_cycle || log "integrator-cycle: error (continuing)"
+      # test-quality gate step: after all leaves merged, check test quality before finale
+      # (scoped execution only — no-op in multi-charter mode; bootstrap caveat #193)
+      _tqg_cycle || log "tqg-cycle: error (continuing)"
       # charter finale step: for charters with all leaves closed, run local gate + draft PR
       _charter_finale_cycle || log "charter-finale-cycle: error (continuing)"
       running=$(running_count)
@@ -1132,7 +1425,7 @@ cmd_run(){
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
             case "$_qst" in
-              done|blocked) continue ;;
+              done|blocked|hold|deferred) continue ;;
               plan-review)
                 # Skip plan-review only when terminal: no plan_review_role (human-park path)
                 # or plan:agreed already set (convergence complete).
@@ -1147,7 +1440,7 @@ cmd_run(){
           done
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in approved|done|blocked) continue ;; esac
+            case "$_qst" in approved|done|blocked|hold|deferred) continue ;; esac
             _q_plan_head="$_qn"; break
           done
           # _q_accept_head: first charter not in done/blocked state.
@@ -1155,7 +1448,7 @@ cmd_run(){
           # step (Change B) to remove the label and reset ci_state; excluding them strands the charter.
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
-            case "$_qst" in done|blocked) continue ;; esac
+            case "$_qst" in done|blocked|hold|deferred) continue ;; esac
             _q_accept_head="$_qn"; break
           done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
@@ -1552,7 +1845,7 @@ Charter: #$cid" \
             _bg_spawn="$REWORK_SPAWN"
             _bg_old_branch="$(sget "$id" pr_head)"
           fi
-          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
+          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"; sset "$id" kind "$(board get "$id" role)"
           ( CB_OLD_BRANCH="$_bg_old_branch" "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
         done

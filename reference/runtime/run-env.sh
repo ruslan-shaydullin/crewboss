@@ -17,6 +17,12 @@ export CB_HOME="$HOME/cbnet"
 # CB_MAX_TICKS не меньше 1800 (T6 тик-бюджет: лист ~8-10 мин, 120 тиков = один батч)
 export CB_MAX_TICKS="${CB_MAX_TICKS:-1800}"
 export CB_MAX_PARALLEL="${CB_MAX_PARALLEL:-4}"
+# CB_POLL — seconds between launcher board polls. Default 20 keeps the GitHub API
+# well under the 5000/hr GraphQL budget: per-tick board reads (×3: launchable/
+# plannable/review-leaves) were a top RL burner that exhausted the quota and
+# killed the launcher (#526). Agents run minutes, so a 20s poll costs no real
+# throughput. Lower via env for snappier reaction at higher RL cost.
+export CB_POLL="${CB_POLL:-20}"
 export CB_TASK_TIMEOUT="${CB_TASK_TIMEOUT:-3600}"
 export CB_SPAWN="${CB_SPAWN:-$HOME/cbnet/charter-leaf-prep.sh}"
 

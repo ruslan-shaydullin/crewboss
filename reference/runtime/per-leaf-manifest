@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=56, union=78  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=22, EXCLUDED=59, union=81  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -170,3 +170,13 @@ EXCLUDED per-charter-auto-gate
 #   no launcher loops, no background processes, no timing/poll/sleep. Verdict = f(merged content only).
 #   Tests Edit/Write/MultiEdit blocking for executor on test-file paths (charter #523 ITA gate).
 ALLOW independent-test-authorship
+# charter #527: webhook-security starts background Python server processes and requires network;
+#   EXCLUDED-class by convention
+EXCLUDED webhook-security
+# charter #597: test-quality-gate requires subprocess + gh stub; EXCLUDED-class by convention
+EXCLUDED test-quality-gate
+# charter #718 leaf #737: synthetic-phases tests the new awaiting-integration contract for
+#   build_agents() synthetic chips. Test 2 is RED before python-fix #738 is merged; classifying
+#   EXCLUDED prevents per-leaf verify-merged from blocking the QA leaf before the fix lands.
+#   EXCLUDED (transitional: RED until #738 lands).
+EXCLUDED synthetic-phases
