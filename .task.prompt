@@ -1,71 +1,84 @@
-You are the executor for issue #823 in repo stratch1989/crewboss.
+You are the executor for issue #826 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/823-1782649287, based on the charter integration branch 'charter/685' (NOT main). Sibling leaves of charter #685 may already be merged into 'charter/685'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/685 --title '<short>' --body 'Closes #823'. The PR base MUST be 'charter/685', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/826-1782649873, based on the charter integration branch 'charter/685' (NOT main). Sibling leaves of charter #685 may already be merged into 'charter/685'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/685 --title '<short>' --body 'Closes #826'. The PR base MUST be 'charter/685', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #823) ----
+---- TASK (issue #826) ----
 Charter: #685
-Depends-on: #821
+Depends-on: #823
 
 ## Context (self-contained)
 
-Charter #685 replaces the GHA-CI-green gate in charter-finale with a
-verify-merged gate for auto-merge decisions. Specifically, _finale_check_ci()
-in reference/runtime/crewboss-launcher-gh.sh now calls the integrator
-verify-merged subcommand (branch=charter/CHARTER_ID, base=main) and, when it
-passes, calls gh pr merge --merge --admin to bypass potentially-red GHA branch
-protection. This is the same pattern already used by the integrator for leaf
-merges (lines 372-410 in the same file).
+Charter #685 fixes a queue-blocking bug: charter finale was gating auto-merge
+on GHA-CI green, which is permanently red, so charters stayed stuck in finale
+for hours blocking the entire queue. The fix replaces the GHA-CI gate with a
+verify-merged call and uses gh pr merge --admin on PASS.
 
-The admin-merge bypass surface is new: previously, charter PR merges happened
-only via human interaction. The security-reviewer leaf must verify the
-authorization scope is correctly bounded.
+This leaf performs the cross-leaf integration review to verify correctness
+before the charter is considered complete. All sibling leaves must be merged:
+- #815 (qa-engineer): updated gh stub + new RED-f/RED-g test scenarios
+- #821 (infra-engineer): verify-merged gate implementation in _finale_check_ci
+- #823 (security-reviewer): admin-merge bypass scope sign-off
 
 ## Task
 
-Review the implementation in reference/runtime/crewboss-launcher-gh.sh
-(function _finale_check_ci, the modified lines) and produce a written
-security assessment covering the following items:
+Review the merged state of reference/runtime/crewboss-launcher-gh.sh and
+reference/tests/charter-finale.test.sh (after all sibling leaves are merged)
+and verify all of the following invariants:
 
-### 1. Admin-merge gate scope
-Verify that the admin-merge path (gh pr merge --admin) is gated solely on:
-  a. CB_AUTO_MERGE=1 (global env) OR auto:merge label on the charter issue
-  b. verify-merged PASS (exit 0)
-Confirm no additional conditions are required and no wider surface is opened
-(e.g., the --admin flag is not applied outside the CB_AUTO_MERGE / auto:merge
-branch, and the acceptance-convergence gate (lines 515-535) is checked first).
+### 1. verify-merged call parameters match integrator pattern (lines 372-410)
+Confirm the verify-merged call in _finale_check_ci uses:
+  - branch: charter/CHARTER_ID (not a literal string, derived from cid)
+  - base: main
+  - --remote GIT_REMOTE (same remote variable used by integrator)
+  - --repo CB_REPO
+Compare directly against the integrator call at lines 372-373.
 
-### 2. verify-merged as a sufficient gate
-Confirm that verify-merged PASS is a sufficient gate for bypassing branch
-protection on the charter/CHARTER_ID -> main merge. Reference:
-  - verify-merged runs the full engine test suite on the actual merged tree
-  - The integrator already uses this same gate for all leaf->charter merges
-  - The additional gate-charter local run at line 862 already ran before PR creation
+### 2. ci_state=red is NEVER written (fix-1)
+Grep the entire updated function for any line that writes "red" to the
+ci_state file. There must be zero such writes. Confirm the early-exit case
+for ci_state=red (was lines 481-482) has been removed.
 
-### 3. ci_state=red NOT persisted (fix-1)
-Confirm that NOT persisting ci_state=red on verify-merged exit 1 introduces
-no security regression. Specifically:
-  - verify-merged is called on each tick until PASS or human intervention
-  - The verify-merged internal cache (CB_HOME/run/verify-cache) throttles cost
-  - No attacker surface is created by retry (verify-merged is deterministic
-    on the same tree; a tree change by a new commit would need re-review)
+### 3. last_comment dedup prevents comment spam on repeated exit 1 (fix-3)
+Verify that the verify-red comment is posted only when last_comment != "verify-red"
+and that "verify-red" is written to _fin_dir/last_comment immediately after.
+Subsequent ticks with vm_exit=1 must not re-post the comment.
 
-### 4. Credential and secret exposure
-Check that no credentials, tokens, or secrets are exposed or logged in the
-new code path. The gh CLI uses ambient GitHub token (same as all other gh
-calls); verify no new token scopes are required beyond what --admin uses today
-for integrator leaf merges.
+### 4. Test stub distinguishes --admin vs non-admin merges (fix-2)
+In charter-finale.test.sh, verify the pr merge handler in the gh stub logs
+"pr-merge-admin N" when --admin is present and "pr-merge N" otherwise.
+Verify charter_pr_merged_admin() helper greps for "pr-merge-admin".
 
-### 5. Comment on findings
-Post your findings as a comment on charter issue #685 in repo stratch1989/crewboss.
-If no issues found: post SECURITY-REVIEW: PASS with brief summary.
-If issues found: post SECURITY-REVIEW: FAIL with specific items requiring fixes.
+### 5. Both test paths are covered by assertions
+- RED-f (verify-green + CB_AUTO_MERGE=1): asserts charter_pr_merged_admin
+  AND charter issue is CLOSED.
+- RED-g (verify-red): asserts NO admin-merge, charter issue remains OPEN,
+  RED_REASON comment is present, loop terminates normally.
+
+### 6. Acceptance-convergence gate (lines 515-535) is unaffected
+Confirm the acceptance_review_role check and status:acceptance-review routing
+block is still in place and positioned BEFORE the verify-merged call.
+
+### 7. Queue-continues invariant
+Verify line ~845: _finale_check_ci CHARTER_ID PR_NUM || true
+The || true must be present (non-zero return from _finale_check_ci never
+blocks the queue). Confirm no other call sites to _finale_check_ci lack || true.
+
+### 8. Run the full test suite
+Run reference/tests/charter-finale.test.sh and confirm passed=N failed=0.
+
+### Post findings
+Post a review comment on charter issue #685 in stratch1989/crewboss:
+- CROSS-REVIEW: PASS - if all 8 invariants are satisfied
+- CROSS-REVIEW: FAIL: <item> - if any invariant is violated (block the charter)
 
 ## Acceptance (machine)
-- check: gh issue view 685 -R stratch1989/crewboss --comments | grep -qi "SECURITY-REVIEW"
+- check: bash reference/tests/charter-finale.test.sh 2>&1 | tail -3 | grep -E "^passed=[0-9]+ failed=0$"
+- check: gh issue view 685 -R stratch1989/crewboss --comments | grep -qi "CROSS-REVIEW"
 
 ## Notes
-- The rubric trigger for security review on this charter is noted in the charter body.
-  This leaf provides the required human-readable security sign-off.
-- Leaf #821 (infra-engineer) must be merged before this review (to review actual code).
+- This leaf does not produce code changes. Its output is the review comment and
+  a passing test run confirming all invariants hold together.
+- Depends on #823 (security-reviewer) which depends on #821 (infra-engineer)
+  which depends on #815 (qa-engineer) -- full chain must be merged first.
