@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=59, union=81  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=59, union=82  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -56,6 +56,11 @@ ALLOW composition-parse
 # #574 verify-ui-artifact-detect: pure unit (git diff in temp repo, no network/browser/launcher);
 #   calls _detect_ui_artifact() directly, not cmd_verify_merged. Meets ALLOW criterion.
 ALLOW verify-ui-artifact-detect
+
+# #499 board-charter-visibility: pure function of merged content -- gh stub on PATH +
+#   direct python3 -c build_state() call, no background server, no timing/poll/sleep.
+#   Meets ALLOW criterion (fail-safe).
+ALLOW board-charter-visibility
 
 # ── EXCLUDED (54 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness
