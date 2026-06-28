@@ -192,16 +192,17 @@ def build_state():
             parts = raw.split(sep, 1)
             headers_block = parts[0] if len(parts) > 1 else ""
             body = parts[1] if len(parts) > 1 else raw
-            # 304 Not Modified → return cached state, zero rate-limit cost
+            # 304 Not Modified → use cached issues, skip body-parsing
             if "304" in (headers_block.splitlines()[0] if headers_block else ""):
-                return _cached_issues  # skip refresh
-            # Extract and store ETag for next call
-            for line in headers_block.splitlines():
-                if line.lower().startswith("etag:"):
-                    _etag_store["issues"] = line.split(":", 1)[1].strip()
-                    break
-            _cached_issues = json.loads(body)
-            issues = _cached_issues
+                issues = _cached_issues
+            else:
+                # Extract and store ETag for next call
+                for line in headers_block.splitlines():
+                    if line.lower().startswith("etag:"):
+                        _etag_store["issues"] = line.split(":", 1)[1].strip()
+                        break
+                _cached_issues = json.loads(body)
+                issues = _cached_issues
         except Exception: issues = []
     board = []
     for it in issues:
