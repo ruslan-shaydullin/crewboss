@@ -28,6 +28,7 @@ CB_INTEGRATOR = os.environ.get('CB_INTEGRATOR') or os.path.join(CB_HOME, 'crewbo
 _webhook_kick = threading.Event()
 _etag_store = {}  # keyed by resource path
 _cached_issues = None
+_cached_charters = None
 _cached_charter_issues = None  # charter-specific raw issues list (eviction fix #947)
 
 def sh(args, timeout=30):
@@ -179,26 +180,32 @@ def build_loop_info(board=None):
                 running=running, stage=stage)
 
 def build_state():
-    global _cached_issues, _cached_charter_issues
+    global _cached_issues, _cached_charters
     issues = []
+    charters = []
     if REPO:
         try:
-            # ── Charter-specific fetch (prevents eviction when >100 leaf issues fill the cap) ──
             cmd_c = ["gh", "api", f"/repos/{REPO}/issues", "--include", "-X", "GET",
-                     "-F", "state=all", "-F", "per_page=100", "-F", "labels=type:charter"]
-            if _etag_store.get("issues_charters"):
-                cmd_c += ["-H", f"If-None-Match: {_etag_store['issues_charters']}"]
+                     "-F", "label=type:charter", "-F", "state=open", "-F", "per_page=100"]
+            if _etag_store.get("charters"):
+                cmd_c += ["-H", f"If-None-Match: {_etag_store['charters']}"]
             raw_c = sh(cmd_c)
             sep_c = "\r\n\r\n" if "\r\n\r\n" in raw_c else "\n\n"
-            pc = raw_c.split(sep_c, 1)
-            hdr_c = pc[0] if len(pc) > 1 else ""
-            body_c = pc[1] if len(pc) > 1 else raw_c
-            if "304" not in (hdr_c.splitlines()[0] if hdr_c else ""):
-                for ln in hdr_c.splitlines():
-                    if ln.lower().startswith("etag:"):
-                        _etag_store["issues_charters"] = ln.split(":", 1)[1].strip(); break
-                _cached_charter_issues = json.loads(body_c)
-            # ── All-issues fetch (may evict old low-numbered charters — covered above) ──
+            parts_c = raw_c.split(sep_c, 1)
+            hdrs_c = parts_c[0] if len(parts_c) > 1 else ""
+            body_c = parts_c[1] if len(parts_c) > 1 else raw_c
+            if "304" in (hdrs_c.splitlines()[0] if hdrs_c else ""):
+                charters = _cached_charters or []
+            else:
+                for line in hdrs_c.splitlines():
+                    if line.lower().startswith("etag:"):
+                        _etag_store["charters"] = line.split(":", 1)[1].strip()
+                        break
+                _cached_charters = json.loads(body_c)
+                charters = _cached_charters
+        except Exception:
+            charters = []
+        try:
             cmd = ["gh", "api", f"/repos/{REPO}/issues", "--include", "-X", "GET",
                    "-F", "state=all", "-F", "per_page=100"]
             if _etag_store.get("issues"):
@@ -209,23 +216,22 @@ def build_state():
             parts = raw.split(sep, 1)
             headers_block = parts[0] if len(parts) > 1 else ""
             body = parts[1] if len(parts) > 1 else raw
-            # 304 Not Modified → return full cached state, zero rate-limit cost
+            # 304 Not Modified → assign cached issues (no early return — charter results must flow through)
             if "304" in (headers_block.splitlines()[0] if headers_block else ""):
-                return _cached_issues  # skip refresh
-            # Extract and store ETag for next call
-            for line in headers_block.splitlines():
-                if line.lower().startswith("etag:"):
-                    _etag_store["issues"] = line.split(":", 1)[1].strip()
-                    break
-            # Merge: charter issues take precedence (never overwritten by evicted copies)
-            merged = {}
-            for it in (_cached_charter_issues or []):
-                merged[it["number"]] = it
-            for it in json.loads(body):
-                if it["number"] not in merged:
-                    merged[it["number"]] = it
-            issues = list(merged.values())
+                issues = _cached_issues or []
+            else:
+                # Extract and store ETag for next call
+                for line in headers_block.splitlines():
+                    if line.lower().startswith("etag:"):
+                        _etag_store["issues"] = line.split(":", 1)[1].strip()
+                        break
+                _cached_issues = json.loads(body)
+                issues = _cached_issues
         except Exception: issues = []
+        by_n = {it["number"]: it for it in issues}
+        for it in charters:
+            by_n.setdefault(it["number"], it)  # charter wins if not in general call
+        issues = list(by_n.values())
     board = []
     for it in issues:
         labels = [l["name"] for l in it.get("labels",[])]
@@ -300,11 +306,10 @@ def build_state():
     queue = read_json(os.path.join(RUN, "queue.json"), None)
     if not (isinstance(queue, dict) and isinstance(queue.get("order"), list)):
         queue = None
-    _cached_issues = dict(board=board, agents=agents,
+    return dict(board=board, agents=agents,
                 budget=dict(spent=budget.get("spent_usd",0), cap=cap, runs=budget.get("runs",[])),
                 flags=flags, autonomy=dict(repo=REPO),
                 loop=loop, queue=queue)
-    return _cached_issues
 
 def build_comments(n):
     """Comments for issue n: last 50, via gh CLI."""
