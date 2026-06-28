@@ -1,66 +1,84 @@
-You are the executor for issue #773 in repo stratch1989/crewboss.
-# EXECUTION LOG (2026-06-27):
-# Step 1 — Sentinel verified absent: /cbnet/run/visual_gate_soft does not exist.
-# Step 2 — Loop confirmed running: crewboss-launcher-gh.sh PID 336841 active;
-#           launcher.out shows active charter-finale cycles every ~30-50s;
-#           integrator called per-cycle for try-merge/verify-merged/gate-charter.
-# Step 3 — New launcher confirmed: _finale_check_ci uses local gate-charter verdict,
-#           no gh pr checks / statusCheckRollup dependency (verified in deployed launcher).
-# Step 4 — E2E pass observed: launcher.out shows charter #768 at queue head;
-#           leaves #769,#771,#770,#772 all integrated cleanly;
-#           sentinel absent → visual gate runs live on next verify-merged call.
-# SENTINEL-OFF comment posted on issue #773.
-
+You are the executor for issue #826 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/773-1782577170, based on the charter integration branch 'charter/768' (NOT main). Sibling leaves of charter #768 may already be merged into 'charter/768'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/768 --title '<short>' --body 'Closes #773'. The PR base MUST be 'charter/768', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/826-1782649873, based on the charter integration branch 'charter/685' (NOT main). Sibling leaves of charter #685 may already be merged into 'charter/685'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/685 --title '<short>' --body 'Closes #826'. The PR base MUST be 'charter/685', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #773) ----
-Charter: #768
-Depends-on: #772
+---- TASK (issue #826) ----
+Charter: #685
+Depends-on: #823
 
-## Context
+## Context (self-contained)
 
-Box: `ec2-user@3.217.199.168`, AL2023 2023.12. The sentinel file `~/cbnet/run/visual_gate_soft` causes the crewboss integrator to skip the pixel-diff gate (soft-mode bypass). leaf/768-visual-validate (#772) must have confirmed live green EXIT 0 AND red EXIT 1 before this leaf proceeds. This leaf removes the sentinel, restarts the loop, and confirms end-to-end integration works without the bypass.
+Charter #685 fixes a queue-blocking bug: charter finale was gating auto-merge
+on GHA-CI green, which is permanently red, so charters stayed stuck in finale
+for hours blocking the entire queue. The fix replaces the GHA-CI gate with a
+verify-merged call and uses gh pr merge --admin on PASS.
 
-**Prerequisite:** leaf/768-visual-validate (#772) must be closed AND must have posted a comment `VALIDATE-PASS: green EXIT 0 confirmed; red EXIT 1 confirmed; ...`. Do not proceed until that comment exists.
+This leaf performs the cross-leaf integration review to verify correctness
+before the charter is considered complete. All sibling leaves must be merged:
+- #815 (qa-engineer): updated gh stub + new RED-f/RED-g test scenarios
+- #821 (infra-engineer): verify-merged gate implementation in _finale_check_ci
+- #823 (security-reviewer): admin-merge bypass scope sign-off
 
 ## Task
 
-**Step 1 — remove sentinel:**
+Review the merged state of reference/runtime/crewboss-launcher-gh.sh and
+reference/tests/charter-finale.test.sh (after all sibling leaves are merged)
+and verify all of the following invariants:
 
-```
-rm ~/cbnet/run/visual_gate_soft
-ls ~/cbnet/run/visual_gate_soft   # must return "No such file or directory"
-```
+### 1. verify-merged call parameters match integrator pattern (lines 372-410)
+Confirm the verify-merged call in _finale_check_ci uses:
+  - branch: charter/CHARTER_ID (not a literal string, derived from cid)
+  - base: main
+  - --remote GIT_REMOTE (same remote variable used by integrator)
+  - --repo CB_REPO
+Compare directly against the integrator call at lines 372-373.
 
-**Step 2 — restart loop at a quiet point in the queue:**
+### 2. ci_state=red is NEVER written (fix-1)
+Grep the entire updated function for any line that writes "red" to the
+ci_state file. There must be zero such writes. Confirm the early-exit case
+for ci_state=red (was lines 481-482) has been removed.
 
-Check queue is idle (no active integration in progress), then restart the keepalive-managed loop:
-```
-# find and kill the current loop PID; keepalive will restart it automatically
-pkill -f crewboss-integrator.sh || true
-sleep 5
-pgrep -f crewboss-integrator.sh   # must show new PID (keepalive restarted)
-```
+### 3. last_comment dedup prevents comment spam on repeated exit 1 (fix-3)
+Verify that the verify-red comment is posted only when last_comment != "verify-red"
+and that "verify-red" is written to _fin_dir/last_comment immediately after.
+Subsequent ticks with vm_exit=1 must not re-post the comment.
 
-Reconcile picks up orphaned items on startup; loop restart is safe when the queue is quiet.
+### 4. Test stub distinguishes --admin vs non-admin merges (fix-2)
+In charter-finale.test.sh, verify the pr merge handler in the gh stub logs
+"pr-merge-admin N" when --admin is present and "pr-merge N" otherwise.
+Verify charter_pr_merged_admin() helper greps for "pr-merge-admin".
 
-**Step 3 — confirm new launcher active:**
+### 5. Both test paths are covered by assertions
+- RED-f (verify-green + CB_AUTO_MERGE=1): asserts charter_pr_merged_admin
+  AND charter issue is CLOSED.
+- RED-g (verify-red): asserts NO admin-merge, charter issue remains OPEN,
+  RED_REASON comment is present, loop terminates normally.
 
-After restart, the new launcher (charter-finale) should promote/merge by local visual verdict without `gh pr checks` dependency. Verify in the loop log (`~/cbnet/logs/` or equivalent) that the new launcher path is active.
+### 6. Acceptance-convergence gate (lines 515-535) is unaffected
+Confirm the acceptance_review_role check and status:acceptance-review routing
+block is still in place and positioned BEFORE the verify-merged call.
 
-**Step 4 — end-to-end integration pass:**
+### 7. Queue-continues invariant
+Verify line ~845: _finale_check_ci CHARTER_ID PR_NUM || true
+The || true must be present (non-zero return from _finale_check_ci never
+blocks the queue). Confirm no other call sites to _finale_check_ci lack || true.
 
-Run one integration pass end-to-end (trigger a pending charter-finale if one exists, or wait for the next natural cycle) and confirm:
-- The visual gate runs for real (pixel-diff executed, not sentinel-skipped)
-- The gate reaches a verdict (green or red) without hitting `gh pr checks`
-- The queue continues normally without the sentinel
+### 8. Run the full test suite
+Run reference/tests/charter-finale.test.sh and confirm passed=N failed=0.
 
-Post a comment on this issue: "SENTINEL-OFF: sentinel removed, loop restarted, e2e pass confirmed — visual gate live without gh pr checks."
+### Post findings
+Post a review comment on charter issue #685 in stratch1989/crewboss:
+- CROSS-REVIEW: PASS - if all 8 invariants are satisfied
+- CROSS-REVIEW: FAIL: <item> - if any invariant is violated (block the charter)
 
 ## Acceptance (machine)
+- check: bash reference/tests/charter-finale.test.sh 2>&1 | tail -3 | grep -E "^passed=[0-9]+ failed=0$"
+- check: gh issue view 685 -R stratch1989/crewboss --comments | grep -qi "CROSS-REVIEW"
 
-- check: ssh ec2-user@3.217.199.168 '[ ! -f ~/cbnet/run/visual_gate_soft ] && echo "sentinel absent"'
-- check: ssh ec2-user@3.217.199.168 'pgrep -f crewboss-integrator.sh'
+## Notes
+- This leaf does not produce code changes. Its output is the review comment and
+  a passing test run confirming all invariants hold together.
+- Depends on #823 (security-reviewer) which depends on #821 (infra-engineer)
+  which depends on #815 (qa-engineer) -- full chain must be merged first.
