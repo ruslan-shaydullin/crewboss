@@ -462,9 +462,10 @@ _integrator_cycle(){
 # ── charter finale: non-blocking CI state resolution per tick ────────────────────
 # Called by _charter_finale_cycle every tick for each charter with a draft PR.
 # State is persisted in $STATE/finale-<cid>/ so the function is fast (no sleep).
-# Return codes: 0=green (PR promoted), 1=red (gate failed), 2=timeout (cached).
+# Return codes: 0=green (PR promoted/merged), 1=red/infra (gate failed), 2=timeout (cached).
 # Dedup: posts a comment only on first transition into each terminal state. [F4 #118]
-# CI is decoupled from GHA: gate-charter ran locally before PR creation (line 849).
+# GHA-CI gate removed (charter #685): verify-merged (box-native engine suite) gates
+# auto-merge instead. gate-charter already ran locally before PR creation (line ~862).
 _finale_check_ci(){
   local cid="$1" pr_num="$2"
   local _fin_dir="$STATE/finale-$cid"
@@ -472,101 +473,119 @@ _finale_check_ci(){
 
   # Load persistent state.
   local ci_state last_comment
-  ci_state=$(cat "$_fin_dir/ci_state" 2>/dev/null)
+  ci_state=$(cat "$_fin_dir/ci_state" 2>/dev/null || echo "")
   last_comment=$(cat "$_fin_dir/last_comment" 2>/dev/null || echo "")
 
-  # Already terminal? Return cached result immediately (no external call).
+  # Early-exit cache: ci_state=green → no external call needed (fix-2: written only on PASS).
+  # fix-1: do NOT persist a cached "red" terminal state — that would create a permanent-stuck
+  # regression identical to the GHA-CI bug this charter fixes.  verify-merged's internal cache
+  # (CB_HOME/run/verify-cache) throttles repeat-call cost on retries.
   case "$ci_state" in
     green)   return 0 ;;
-    red)     return 1 ;;
     timeout) return 2 ;;
   esac
 
-  # Determine new state without polling GHA.
-  # gate-charter already ran and passed at line 849 before this PR was created.
-  if [ "$ci_state" = "pending" ]; then
-    # FIRST CALL: gate proven green locally before PR creation — record ci_state=green.
-    ci_state=green
-  else
-    # RESTART (ci_state absent or empty — state-loss scenario): re-run gate locally.
-    local gate_rc=0
-    bash "$INTEGRATOR_SCRIPT" gate-charter "$cid" 2>&1 || gate_rc=$?
-    if [ "$gate_rc" -eq 0 ]; then
-      ci_state=green
-    else
-      ci_state=red
-    fi
-  fi
+  # AUTO merge (opt-in, #366/#401): perform the final charter→main merge automatically once
+  # the verify-merged gate passes.  Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label
+  # on the charter issue (per-charter, #401).  Default off → PR waits for a human merge.
+  local _charter_auto_merge
+  _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+    | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
 
-  # Persist new terminal state.
-  printf '%s' "$ci_state" > "$_fin_dir/ci_state"
-
-  # Actions + dedup comment (one comment per state).
-  case "$ci_state" in
-    green)
-      log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
-      gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
-      # AUTO merge (opt-in, #366/#401): perform the final charter→main human gate automatically
-      # once CI is green. Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label on the charter
-      # issue (per-charter, #401). Default off → charter PR waits for a human merge.
-      _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
-        | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
-      if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
-        # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
-        # Parse acceptance_review_role from manifest (same pattern as plan_review_role).
-        # If role is set AND accept:agreed label is absent: route to status:acceptance-review,
-        # clear term (CRITICAL: erases term=1 left by plan-approval paths), post idempotent
-        # comment, and return 0 to block merge.  If role absent or accept:agreed present: fall through.
-        _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
-        if [ -n "$_acc_review_role" ]; then
-          _acc_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
-            | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
-          if [ "$_acc_agreed" != "true" ]; then
-            gh issue edit "$cid" -R "$CB_REPO" --add-label status:acceptance-review 2>/dev/null || true
-            sset "$cid" term ""
-            if [ "$last_comment" != "acceptance-pending" ]; then
-              gh issue comment "$cid" -R "$CB_REPO" \
-                --body "charter-finale: acceptance-convergence gate active — routing to acceptance review (acceptance_review_role=$_acc_review_role)" \
-                2>/dev/null || true
-              printf '%s' "acceptance-pending" > "$_fin_dir/last_comment"
-            fi
-            return 0
-          fi
+  if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
+    # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
+    # Parse acceptance_review_role from manifest (same pattern as plan_review_role).
+    # If role is set AND accept:agreed label is absent: route to status:acceptance-review,
+    # clear term (CRITICAL: erases term=1 left by plan-approval paths), post idempotent
+    # comment, and return 0 to block merge.  If role absent or accept:agreed present: fall through.
+    # Step 6: this block must remain intact and BEFORE the verify-merged call.
+    local _acc_review_role _acc_agreed
+    _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
+    if [ -n "$_acc_review_role" ]; then
+      _acc_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+        | jq -r '[.labels[].name] | index("accept:agreed") != null' 2>/dev/null || echo "false")
+      if [ "$_acc_agreed" != "true" ]; then
+        gh issue edit "$cid" -R "$CB_REPO" --add-label status:acceptance-review 2>/dev/null || true
+        sset "$cid" term ""
+        if [ "$last_comment" != "acceptance-pending" ]; then
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: acceptance-convergence gate active — routing to acceptance review (acceptance_review_role=$_acc_review_role)" \
+            2>/dev/null || true
+          printf '%s' "acceptance-pending" > "$_fin_dir/last_comment"
         fi
-        if gh pr merge "$pr_num" -R "$CB_REPO" --merge 2>/dev/null; then
-          log "charter-finale: #$cid PR #$pr_num AUTO-merged → main (CB_AUTO_MERGE or auto:merge label)"
+        return 0
+      fi
+    fi
+
+    # ── verify-merged gate (replaces GHA-CI gate, charter #685) ──────────────────
+    # Mirror integrator lines 372-410: call verify-merged subcommand, extract RED_REASON,
+    # and route by exit code.  Branch: charter/<cid>; base: main.
+    local vm_exit=0 vm_out="" _vmreason=""
+    vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged "charter/$cid" "main" \
+         --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null) || vm_exit=$?
+    _vmreason=$(printf '%s\n' "$vm_out" | sed -n 's/^RED_REASON: //p' | head -1)
+
+    case "$vm_exit" in
+      0)
+        # verify-merged PASS: fix-2: write ci_state=green ONLY on PASS.
+        printf '%s' "green" > "$_fin_dir/ci_state"
+        log "charter-finale: #$cid PR #$pr_num verify-merged PASS → promoting + admin-merge"
+        gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+        if gh pr merge "$pr_num" -R "$CB_REPO" --merge --admin 2>/dev/null; then
+          log "charter-finale: #$cid PR #$pr_num AUTO-merged (admin) → main"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
           printf '%s' "merged" > "$_fin_dir/last_comment"
           return 0
         fi
-        log "charter-finale: #$cid PR #$pr_num auto-merge failed — left ready for human"
-      fi
-      if [ "$last_comment" != "green" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
-          2>/dev/null || true
-        printf '%s' "green" > "$_fin_dir/last_comment"
-      fi
-      return 0 ;;
-    red)
-      log "charter-finale: #$cid PR #$pr_num CI failed — stays draft"
-      if [ "$last_comment" != "red" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI failed — stays draft" \
-          2>/dev/null || true
-        printf '%s' "red" > "$_fin_dir/last_comment"
-      fi
-      return 1 ;;
-    timeout)
-      log "charter-finale: #$cid PR #$pr_num CI check timeout — stays draft"
-      if [ "$last_comment" != "timeout" ]; then
-        gh issue comment "$cid" -R "$CB_REPO" \
-          --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
-          2>/dev/null || true
-        printf '%s' "timeout" > "$_fin_dir/last_comment"
-      fi
-      return 2 ;;
-  esac
+        log "charter-finale: #$cid PR #$pr_num admin-merge failed — left ready for human"
+        ;;
+      1)
+        # Terminal RED: fix-1: do NOT persist a "red" cached state (avoids permanent-stuck regression).
+        # fix-3: post idempotent comment on charter issue with RED_REASON (dedup via last_comment).
+        log "charter-finale: #$cid verify-merged terminal RED: ${_vmreason:-RED}"
+        if [ "$last_comment" != "verify-red" ]; then
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: verify-merged RED (${_vmreason:-RED}) — deferring merge" \
+            2>/dev/null || true
+          printf '%s' "verify-red" > "$_fin_dir/last_comment"
+        fi
+        return 1
+        ;;
+      3)
+        # Retryable: log and retry next tick.  No ci_state write.
+        log "charter-finale: #$cid verify-merged retryable (exit 3) — retry next tick"
+        return 1
+        ;;
+      *)
+        # Infra error (exit 2) or other: log and retry.  No ci_state write.
+        log "charter-finale: #$cid verify-merged infra error (exit $vm_exit) — retry next tick"
+        return 1
+        ;;
+    esac
+  fi
+
+  # No auto-merge (or auto-merge admin-merge failed above): promote PR and post human-review
+  # comment.  Write ci_state=green so the early-exit cache fires on subsequent ticks.
+  log "charter-finale: #$cid PR #$pr_num CI green → promoting to ready"
+  gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
+  printf '%s' "green" > "$_fin_dir/ci_state"
+  if [ "$last_comment" != "green" ]; then
+    gh issue comment "$cid" -R "$CB_REPO" \
+      --body "charter-finale: PR #$pr_num (charter/$cid → main) CI green — ready for human review" \
+      2>/dev/null || true
+    printf '%s' "green" > "$_fin_dir/last_comment"
+  fi
+  return 0
+
+  # timeout case: handled by early-exit cache above (ci_state=timeout → return 2).
+  # Kept here as documentation; unreachable unless ci_state is set externally to timeout.
+  #   if [ "$last_comment" != "timeout" ]; then
+  #     gh issue comment "$cid" -R "$CB_REPO" \
+  #       --body "charter-finale: PR #$pr_num (charter/$cid → main) CI check timeout — stays draft" \
+  #       2>/dev/null || true
+  #     printf '%s' "timeout" > "$_fin_dir/last_comment"
+  #   fi
+  #   return 2
 }
 
 # ── charter auto-rebase helper (issue #255) ──────────────────────────────────
