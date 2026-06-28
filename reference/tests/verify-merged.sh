@@ -26,4 +26,5 @@ for t in "$HERE"/*.test.sh; do
   printf '=== %s\n' "$_base"
   bash "$t" || fail=1
 done
+[ "$fail" -eq 0 ] && printf '\nALL-GREEN\n'
 exit "$fail"
