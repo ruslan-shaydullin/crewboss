@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=59, union=81  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=22, EXCLUDED=60, union=82  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -180,3 +180,7 @@ EXCLUDED test-quality-gate
 #   EXCLUDED prevents per-leaf verify-merged from blocking the QA leaf before the fix lands.
 #   EXCLUDED (transitional: RED until #738 lands).
 EXCLUDED synthetic-phases
+# #809 api-state-304-regression: starts crewboss-api.py + stub gh as background processes,
+#   exercises the ETag/304 path end-to-end (charter #707 regression test).
+#   Background/process-bound → EXCLUDED (fail-closed).
+EXCLUDED api-state-304-regression
