@@ -1,84 +1,50 @@
-You are the executor for issue #826 in repo stratch1989/crewboss.
+You are the executor for issue #949 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/826-1782649873, based on the charter integration branch 'charter/685' (NOT main). Sibling leaves of charter #685 may already be merged into 'charter/685'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/685 --title '<short>' --body 'Closes #826'. The PR base MUST be 'charter/685', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/949-1782667664, based on the charter integration branch 'charter/499' (NOT main). Sibling leaves of charter #499 may already be merged into 'charter/499'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/499 --title '<short>' --body 'Closes #949'. The PR base MUST be 'charter/499', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #826) ----
-Charter: #685
-Depends-on: #823
+---- TASK (issue #949) ----
+Charter: #499
+Depends-on: #947, #948
 
-## Context (self-contained)
+## Context
 
-Charter #685 fixes a queue-blocking bug: charter finale was gating auto-merge
-on GHA-CI green, which is permanently red, so charters stayed stuck in finale
-for hours blocking the entire queue. The fix replaces the GHA-CI gate with a
-verify-merged call and uses gh pr merge --admin on PASS.
+Charter #499 fixes a cockpit visibility bug: old open charters (#305, #306) were evicted from the `/api/state` board by the `per_page=100` cap in `build_state()` when newer leaves filled the window.
 
-This leaf performs the cross-leaf integration review to verify correctness
-before the charter is considered complete. All sibling leaves must be merged:
-- #815 (qa-engineer): updated gh stub + new RED-f/RED-g test scenarios
-- #821 (infra-engineer): verify-merged gate implementation in _finale_check_ci
-- #823 (security-reviewer): admin-merge bypass scope sign-off
+The fix (leaf-A, issue #948) splits the single `gh api /repos/{REPO}/issues -F state=all -F per_page=100` call into two independent `gh api` calls, each with its own ETag key in `_etag_store`, and merges results so open charters are always present. The test (leaf-B, issue #947) writes `reference/tests/board-charter-visibility.test.sh` and registers it in `reference/runtime/per-leaf-manifest`.
 
-## Task
+Your job is to review both PRs for correctness and confirm all acceptance criteria are met before approving.
 
-Review the merged state of reference/runtime/crewboss-launcher-gh.sh and
-reference/tests/charter-finale.test.sh (after all sibling leaves are merged)
-and verify all of the following invariants:
+## Review Checklist
 
-### 1. verify-merged call parameters match integrator pattern (lines 372-410)
-Confirm the verify-merged call in _finale_check_ci uses:
-  - branch: charter/CHARTER_ID (not a literal string, derived from cid)
-  - base: main
-  - --remote GIT_REMOTE (same remote variable used by integrator)
-  - --repo CB_REPO
-Compare directly against the integrator call at lines 372-373.
+### leaf-A (fix in `ui/server/crewboss-api.py`)
 
-### 2. ci_state=red is NEVER written (fix-1)
-Grep the entire updated function for any line that writes "red" to the
-ci_state file. There must be zero such writes. Confirm the early-exit case
-for ci_state=red (was lines 481-482) has been removed.
+- [ ] New `_cached_charters = None` module-level global is present alongside `_cached_issues`.
+- [ ] **Call 1** uses `_etag_store["charters"]` (or equivalent distinct key) and `_cached_charters` — two independent ETag keys, two independent cache variables.
+- [ ] **Call 2** (existing general-board call) uses its original `_etag_store` key and `_cached_issues` — key name and cache variable unchanged.
+- [ ] **Critical fix**: Call 2's 304 branch is `issues = _cached_issues` (assign + fall through), NOT `return _cached_issues` (early exit). The `return` statement at the old line 197 must be gone. Without this change, a 304 on the general call would discard all charter results from Call 1.
+- [ ] A 304 on either call does NOT suppress the other call — both calls always run.
+- [ ] **Merge step**: `by_n.setdefault(it["number"], it)` — charter-call results win on conflict with general-call results (not overwritten).
+- [ ] The existing `for it in issues:` board-building loop (labels/state parsing logic) is unchanged.
+- [ ] `python3 -c "import ast; ast.parse(open('ui/server/crewboss-api.py').read())"` passes (no syntax errors).
 
-### 3. last_comment dedup prevents comment spam on repeated exit 1 (fix-3)
-Verify that the verify-red comment is posted only when last_comment != "verify-red"
-and that "verify-red" is written to _fin_dir/last_comment immediately after.
-Subsequent ticks with vm_exit=1 must not re-post the comment.
+### leaf-B (test `reference/tests/board-charter-visibility.test.sh`)
 
-### 4. Test stub distinguishes --admin vs non-admin merges (fix-2)
-In charter-finale.test.sh, verify the pr merge handler in the gh stub logs
-"pr-merge-admin N" when --admin is present and "pr-merge N" otherwise.
-Verify charter_pr_merged_admin() helper greps for "pr-merge-admin".
-
-### 5. Both test paths are covered by assertions
-- RED-f (verify-green + CB_AUTO_MERGE=1): asserts charter_pr_merged_admin
-  AND charter issue is CLOSED.
-- RED-g (verify-red): asserts NO admin-merge, charter issue remains OPEN,
-  RED_REASON comment is present, loop terminates normally.
-
-### 6. Acceptance-convergence gate (lines 515-535) is unaffected
-Confirm the acceptance_review_role check and status:acceptance-review routing
-block is still in place and positioned BEFORE the verify-merged call.
-
-### 7. Queue-continues invariant
-Verify line ~845: _finale_check_ci CHARTER_ID PR_NUM || true
-The || true must be present (non-zero return from _finale_check_ci never
-blocks the queue). Confirm no other call sites to _finale_check_ci lack || true.
-
-### 8. Run the full test suite
-Run reference/tests/charter-finale.test.sh and confirm passed=N failed=0.
-
-### Post findings
-Post a review comment on charter issue #685 in stratch1989/crewboss:
-- CROSS-REVIEW: PASS - if all 8 invariants are satisfied
-- CROSS-REVIEW: FAIL: <item> - if any invariant is violated (block the charter)
+- [ ] Stub intercepts `gh api` (matching `$1 == "api"` + route path), NOT `gh issue list`.
+- [ ] REST API JSON schema used throughout: lowercase `"state": "open"/"closed"`, labels as object arrays `[{"name":"..."}]`.
+- [ ] Low-numbered open charters (#5, #10, #15) are present in the charter-call stub response but **absent** from the general-call stub response — this correctly models the N>100 eviction scenario.
+- [ ] 304 short-circuit path exercised for both ETag keys independently.
+- [ ] `build_state()` is invoked directly via `python3 -c` — no background HTTP server started.
+- [ ] `ALLOW board-charter-visibility` is present in `reference/runtime/per-leaf-manifest` with the criterion justification comment.
+- [ ] Header count comment updated to `ALLOW=23` (was 22).
+- [ ] `reference/tests/verify-merged.sh` exits ALL-GREEN on Linux.
 
 ## Acceptance (machine)
-- check: bash reference/tests/charter-finale.test.sh 2>&1 | tail -3 | grep -E "^passed=[0-9]+ failed=0$"
-- check: gh issue view 685 -R stratch1989/crewboss --comments | grep -qi "CROSS-REVIEW"
 
-## Notes
-- This leaf does not produce code changes. Its output is the review comment and
-  a passing test run confirming all invariants hold together.
-- Depends on #823 (security-reviewer) which depends on #821 (infra-engineer)
-  which depends on #815 (qa-engineer) -- full chain must be merged first.
+- check: grep -q "_cached_charters" ui/server/crewboss-api.py
+- check: grep -q "by_n.setdefault" ui/server/crewboss-api.py
+- check: grep -qv "return _cached_issues" ui/server/crewboss-api.py
+- check: grep -q "ALLOW board-charter-visibility" reference/runtime/per-leaf-manifest
+- check: reference/tests/board-charter-visibility.test.sh
+- check: reference/tests/verify-merged.sh 2>&1 | grep -q "ALL-GREEN"
