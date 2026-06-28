@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=22, EXCLUDED=60, union=82  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=62, union=85  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -28,7 +28,7 @@
 # #206 also adds charter-finale-regen (the A-persistence integration test): heavy
 #   git (clone/merge/push to prove persistence on MAIN) ⇒ EXCLUDED. union 45→46.
 
-# ── ALLOW (20 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
+# ── ALLOW (23 — leaf-unit-safe: verdict = f(merged content), no processes/timing) ──
 ALLOW acceptance-block
 ALLOW cli-smoke
 ALLOW gate-comment-payload
@@ -57,7 +57,7 @@ ALLOW composition-parse
 #   calls _detect_ui_artifact() directly, not cmd_verify_merged. Meets ALLOW criterion.
 ALLOW verify-ui-artifact-detect
 
-# ── EXCLUDED (54 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
+# ── EXCLUDED (62 — launcher-self / integration / timing / heavy-git / recursive-verify) ──
 EXCLUDED base-freshness
 EXCLUDED charter-branch
 EXCLUDED charter-finale
@@ -92,7 +92,10 @@ EXCLUDED provision-build
 EXCLUDED rework-contract
 EXCLUDED run-env-contract
 EXCLUDED run-liveness
-EXCLUDED ui-api-contract
+# ALLOW: static grep/awk analysis of .ts/.tsx and crewboss-api.py source files;
+#        no background process, no network, no timing;
+#        verdict = pure function of merged content
+ALLOW ui-api-contract
 EXCLUDED ui-loop-mode
 EXCLUDED ui-run-contract
 # #131 P2/Ф1 manifest pipeline — invoke launcher/prep-spawn (heavy/launcher-context):
@@ -180,6 +183,17 @@ EXCLUDED test-quality-gate
 #   EXCLUDED prevents per-leaf verify-merged from blocking the QA leaf before the fix lands.
 #   EXCLUDED (transitional: RED until #738 lands).
 EXCLUDED synthetic-phases
+# recovery-cap: drives the REAL launcher (crewboss-launcher-gh.sh) through completion
+#   ticks with a stateful gh stub; launcher-context, background spawns — EXCLUDED (fail-closed).
+EXCLUDED recovery-cap
+# triage: drives the REAL launcher through multiple completion ticks; Test 8B creates a
+#   triage spawn stub containing sleep 30 — violates both the background-process and
+#   timing criteria. EXCLUDED (fail-closed).
+EXCLUDED triage
+# triage-bounce-evidence: drives the REAL launcher through completion ticks with a stateful
+#   gh stub to verify ordering of comment vs label-transition; launcher-context,
+#   background spawns — EXCLUDED (fail-closed).
+EXCLUDED triage-bounce-evidence
 # #809 api-state-304-regression: starts crewboss-api.py + stub gh as background processes,
 #   exercises the ETag/304 path end-to-end (charter #707 regression test).
 #   Background/process-bound → EXCLUDED (fail-closed).
