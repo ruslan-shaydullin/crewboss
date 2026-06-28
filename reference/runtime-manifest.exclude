@@ -16,3 +16,6 @@ payload-edit.sh	seccomp profiling payload — inside-jail file-edit probe for st
 payload-exec.sh	seccomp profiling payload — inside-jail exec+commit+push+PR probe for strace capture (R4b discovery); not a production runtime file
 payload-git.sh	seccomp profiling payload — inside-jail git clone+push probe for strace capture (R4 discovery); not a production runtime file
 probe.sh	syscall probe script — runs forbidden syscalls inside jail during seccomp surface profiling only (R3c); not a production runtime file
+find-unknown.sh	kafel policy-name discovery script — iterates syscall names through nsjail to find policy-parse failures; used only during seccomp surface profiling (R4 discovery), not a production runtime file
+run-r4-slice.sh	R4 full edit→PR slice probe — drives Claude inside the hardened jail (FS+net+seccomp) to capture the strace surface for the commit/push/PR workflow; development-only probe, not a production runtime file
+sc-edit.list	R4 seccomp surface syscall list — raw strace output of allowed syscalls for the edit workflow; data artifact from seccomp surface profiling, not a production runtime file
