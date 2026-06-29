@@ -75,13 +75,33 @@ MERGED_DIR="$(cd "$MERGED_DIR" && pwd)"
 # ── Derive the changed-file set (command-injection safe: paths are only ever used
 #    quoted, never eval'd) ──────────────────────────────────────────────────────────
 FILES=()
+# #1015: the real-run smoke gate validates LIVE RUNTIME artifacts (proto/,
+# reference/runtime/, ui/server/) — NOT test-suite files and NOT the frozen box
+# snapshot. Test files intentionally embed broken commands as NEGATIVE fixtures
+# (`gh issue list --paginate`, `while True:`) and `_box-snapshot/` is a captured
+# mirror, not a deployable artifact; EXECUTING either here is a false RED rather
+# than a real-artifact failure. Both are skipped from every selection path.
+_is_excluded() {
+  case "$1" in
+    *.test.sh|*.test.py)             return 0 ;;
+    */tests/*|tests/*)               return 0 ;;
+    */_box-snapshot/*|_box-snapshot/*) return 0 ;;
+  esac
+  return 1
+}
 add_file() {
   local p="$1"
+  _is_excluded "$p" && return 0
   case "$p" in
     /*) : ;;
     *)  p="$MERGED_DIR/$p" ;;
   esac
   [ -f "$p" ] && FILES+=("$p")
+}
+_find_artifacts() {
+  while IFS= read -r line; do
+    [ -n "$line" ] && { _is_excluded "$line" || FILES+=("$line"); }
+  done < <(find "$MERGED_DIR" -type f \( -name '*.sh' -o -name '*api.py' \) 2>/dev/null)
 }
 
 if [ -n "${CB_SMOKE_CHANGED:-}" ]; then
@@ -89,18 +109,31 @@ if [ -n "${CB_SMOKE_CHANGED:-}" ]; then
   while IFS= read -r line; do
     [ -n "$line" ] && add_file "$line"
   done < <(printf '%s\n' "$CB_SMOKE_CHANGED" | tr ' \t' '\n\n')
-elif git -C "$MERGED_DIR" rev-parse --git-dir >/dev/null 2>&1 && [ -n "${CB_SMOKE_BASE:-}" ]; then
-  # diff against the charter/integration base on the merged tree
-  while IFS= read -r line; do
-    [ -n "$line" ] && add_file "$line"
-  done < <(git -C "$MERGED_DIR" diff --name-only "${CB_SMOKE_BASE}..HEAD" 2>/dev/null)
+elif git -C "$MERGED_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # #1015: a merged tree (charter integration) is built by the integrator with
+  # `git merge --no-commit --no-ff origin/<leaf>` onto origin/<base>, so HEAD is the
+  # BASE and the leaf's change set is exactly the uncommitted diff (`git diff HEAD`).
+  # Scope the smoke to THAT change set (plus an explicit CB_SMOKE_BASE..HEAD diff if a
+  # committed merge is used) so every artifact the leaf TOUCHES is smoked WITHOUT
+  # re-running unchanged snapshots / test fixtures each merge — the #969-class false
+  # RED. If neither yields a change set (e.g. a clean checkout) fall back to the
+  # detector-relevant whole-tree scan — never a silent no-op false-green.
+  _changed="$( { git -C "$MERGED_DIR" diff --name-only HEAD 2>/dev/null; \
+                 [ -n "${CB_SMOKE_BASE:-}" ] && \
+                   git -C "$MERGED_DIR" diff --name-only "${CB_SMOKE_BASE}..HEAD" 2>/dev/null; \
+               } | sort -u )"
+  if [ -n "$_changed" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && add_file "$line"
+    done < <(printf '%s\n' "$_changed")
+  else
+    _find_artifacts
+  fi
 else
-  # No git base available (e.g. a fixture tree) -> enumerate the detector-relevant
+  # No git metadata (e.g. a hermetic fixture tree) -> enumerate the detector-relevant
   # artifacts present in the merged dir. We scope find to the file types we smoke,
   # so this never fans out across an entire repo.
-  while IFS= read -r line; do
-    [ -n "$line" ] && FILES+=("$line")
-  done < <(find "$MERGED_DIR" -type f \( -name '*.sh' -o -name '*api.py' \) 2>/dev/null)
+  _find_artifacts
 fi
 
 if [ "${#FILES[@]}" -eq 0 ]; then
