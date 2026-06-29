@@ -349,6 +349,99 @@ _pr_a=$(grep -c '^5 solution-analyst' "$PLAN_REVIEW_LOG" 2>/dev/null)
   || ko "AGREED-SKIP: charter state=$(issue_state 5) (expected approved)"
 
 # =============================================================================
+# LIMBO-RECOVER: charter with plan:agreed + composition:approved but NO status:plan-review
+#   must be caught by the reconcile block and transitioned to status:approved.
+#   (Regression test for the fix that adds the idempotent reconcile block — charter #955.)
+# =============================================================================
+echo "=== LIMBO-RECOVER: plan:agreed + composition:approved, no status:plan-review === status:approved ==="
+CBHOME_L="$ROOT/cbhome_l"; LOG_L="$ROOT/loop_l.log"
+reset_sandbox "$CBHOME_L"
+printf '0' > "$PLAN_CRITIQUE_FLAG"
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_L" "$LOG_L" "CB_PLAN_CONVERGE_CAP=5"
+
+_pr_l=$(grep -c '^5 solution-analyst' "$PLAN_REVIEW_LOG" 2>/dev/null)
+[ "$_pr_l" -eq 0 ] \
+  && ok "LIMBO-RECOVER: plan-reviewer NOT spawned (plan:agreed already present)" \
+  || ko "LIMBO-RECOVER: plan-reviewer spawned ${_pr_l}x despite plan:agreed (short-circuit broken)"
+
+[ "$(issue_state 5)" = "approved" ] \
+  && ok "LIMBO-RECOVER: charter reached status:approved (reconcile block fired)" \
+  || ko "LIMBO-RECOVER: charter state=$(issue_state 5) (expected approved — reconcile block missing or not firing)"
+
+grep -q "plan:agreed" "$LOG_L" && grep -q "status:approved" "$LOG_L" \
+  && ok "LIMBO-RECOVER: log contains 'plan:agreed' and 'status:approved' (reconcile gate logged release)" \
+  || ko "LIMBO-RECOVER: log missing plan:agreed/status:approved release entry (reconcile gate did not fire)"
+
+# =============================================================================
+# NORMAL-FLOW-INTACT: charter with status:plan-review + composition:approved + plan:agreed
+#   must still reach status:approved via the existing gate (reconcile block must not break this).
+# =============================================================================
+echo "=== NORMAL-FLOW-INTACT: status:plan-review + composition:approved + plan:agreed === status:approved ==="
+CBHOME_N="$ROOT/cbhome_n"; LOG_N="$ROOT/loop_n.log"
+reset_sandbox "$CBHOME_N"
+printf '0' > "$PLAN_CRITIQUE_FLAG"
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_N" "$LOG_N" "CB_PLAN_CONVERGE_CAP=5"
+
+_pr_n=$(grep -c '^5 solution-analyst' "$PLAN_REVIEW_LOG" 2>/dev/null)
+[ "$_pr_n" -eq 0 ] \
+  && ok "NORMAL-FLOW-INTACT: plan-reviewer NOT spawned (plan:agreed short-circuits review)" \
+  || ko "NORMAL-FLOW-INTACT: plan-reviewer spawned ${_pr_n}x despite plan:agreed"
+
+[ "$(issue_state 5)" = "approved" ] \
+  && ok "NORMAL-FLOW-INTACT: charter released to status:approved (existing gate still fires)" \
+  || ko "NORMAL-FLOW-INTACT: charter state=$(issue_state 5) (expected approved — existing gate broken)"
+
+# =============================================================================
+# NO-PREMATURE-APPROVE: charters that lack both conditions must NOT receive status:approved.
+#   Three sub-cases (separate runs); each asserts issue_state != "approved".
+# =============================================================================
+echo "=== NO-PREMATURE-APPROVE: partial-condition charters must NOT reach status:approved ==="
+
+# Sub-case a: plan:agreed present but NO composition:approved === NOT approved
+CBHOME_Pa="$ROOT/cbhome_pa"; LOG_Pa="$ROOT/loop_pa.log"
+reset_sandbox "$CBHOME_Pa"
+printf '0' > "$PLAN_CRITIQUE_FLAG"
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_Pa" "$LOG_Pa" "CB_PLAN_CONVERGE_CAP=5"
+
+[ "$(issue_state 5)" != "approved" ] \
+  && ok "NO-PREMATURE-APPROVE(a): plan:agreed-only charter NOT approved (composition:approved absent)" \
+  || ko "NO-PREMATURE-APPROVE(a): charter reached approved without composition:approved (premature release)"
+
+# Sub-case b: composition:approved present but NO plan:agreed === NOT approved
+CBHOME_Pb="$ROOT/cbhome_pb"; LOG_Pb="$ROOT/loop_pb.log"
+reset_sandbox "$CBHOME_Pb"
+printf '0' > "$PLAN_CRITIQUE_FLAG"
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_Pb" "$LOG_Pb" "CB_PLAN_CONVERGE_CAP=5"
+
+[ "$(issue_state 5)" != "approved" ] \
+  && ok "NO-PREMATURE-APPROVE(b): composition:approved-only charter NOT approved (plan:agreed absent)" \
+  || ko "NO-PREMATURE-APPROVE(b): charter reached approved without plan:agreed (premature release)"
+
+# Sub-case c: plan:agreed + composition:approved present AND hold label === NOT approved
+CBHOME_Pc="$ROOT/cbhome_pc"; LOG_Pc="$ROOT/loop_pc.log"
+reset_sandbox "$CBHOME_Pc"
+printf '0' > "$PLAN_CRITIQUE_FLAG"
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"},{"name":"hold"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+run_loop "$CBHOME_Pc" "$LOG_Pc" "CB_PLAN_CONVERGE_CAP=5"
+
+[ "$(issue_state 5)" != "approved" ] \
+  && ok "NO-PREMATURE-APPROVE(c): held charter (plan:agreed + composition:approved + hold) NOT approved" \
+  || ko "NO-PREMATURE-APPROVE(c): held charter reached approved (hold label not respected)"
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
