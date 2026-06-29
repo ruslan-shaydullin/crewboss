@@ -324,7 +324,7 @@ else
       PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware wrapper: \`source /cbnet/cb-pr-create.sh && cb_pr_create --base $CB --title '<short>' --body 'Closes #$ID'\`. \`cb_pr_create\` is a retry-with-backoff wrapper around \`gh pr create --base $CB\` that loud-fails (exit 75 + \`CB_PR_CREATE_FAILED\`) instead of silently dropping the PR under GitHub rate-limit pressure. Source it by its absolute path \`/cbnet/cb-pr-create.sh\` (read-only in the jail). The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
 $_ROLE_BODY
@@ -335,7 +335,7 @@ $(bash "$BOARD" get "$ID" prompt)"
       PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request: \`gh pr create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
+- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware wrapper: \`source /cbnet/cb-pr-create.sh && cb_pr_create --base $CB --title '<short>' --body 'Closes #$ID'\`. \`cb_pr_create\` is a retry-with-backoff wrapper around \`gh pr create --base $CB\` that loud-fails (exit 75 + \`CB_PR_CREATE_FAILED\`) instead of silently dropping the PR under GitHub rate-limit pressure. Source it by its absolute path \`/cbnet/cb-pr-create.sh\` (read-only in the jail). The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
 ---- TASK (issue #$ID) ----
@@ -344,7 +344,7 @@ $(bash "$BOARD" get "$ID" prompt)"
   else
     PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
 - You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
-- When the work is done and the verification gate is green, push the current branch (\`git push -u origin HEAD\`) and open ONE pull request with \`gh pr create\`; the PR body MUST contain the line \`Closes #$ID\`. Then STOP — do not merge, do not touch other issues.
+- When the work is done and the verification gate is green, push the current branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware wrapper: \`source /cbnet/cb-pr-create.sh && cb_pr_create --title '<short>' --body 'Closes #$ID'\`. \`cb_pr_create\` is a retry-with-backoff wrapper around \`gh pr create\` that loud-fails (exit 75 + \`CB_PR_CREATE_FAILED\`) instead of silently dropping the PR under GitHub rate-limit pressure. Source it by its absolute path \`/cbnet/cb-pr-create.sh\` (read-only in the jail). The PR body MUST contain the line \`Closes #$ID\`. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
 ---- TASK (issue #$ID) ----
