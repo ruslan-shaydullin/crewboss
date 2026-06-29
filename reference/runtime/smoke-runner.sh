@@ -300,6 +300,18 @@ detect_sh() {
 # to the contractual PASS.
 # =============================================================================
 for f in "${FILES[@]}"; do
+  # Smoke ONLY real, deployed runtime artifacts. Skip:
+  #   * test files (*.test.sh / *.test.py) and anything under a tests/ directory —
+  #     they intentionally embed BROKEN/LEGACY gh fixtures (e.g. a `gh issue list
+  #     --paginate` #969 reproduction) that are NOT a deploy defect; running them
+  #     live would self-RED the gate on its own regression corpus.
+  #   * the frozen _box-snapshot/ capture — a historical box image, not a live
+  #     artifact tree; it is exercised through deploy, never smoked in place.
+  # This selection is what makes the gate a deploy-defect detector rather than a
+  # whole-repo grep for the substring "--paginate".
+  case "$f" in
+    *.test.sh|*.test.py|*/tests/*|*/_box-snapshot/*) continue ;;
+  esac
   case "$(basename "$f")" in
     *api.py) detect_api "$f" ;;
   esac
