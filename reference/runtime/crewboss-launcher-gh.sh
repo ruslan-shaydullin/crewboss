@@ -166,7 +166,7 @@ _loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
   # escalation waits for a human outside the run; that charter does NOT hold the loop).
   if [ -n "${CB_MANIFEST:-}" ]; then
     local _all_issues _cid _cst _hd_open
-    _all_issues=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+    _all_issues=$(gh issue list -R "$CB_REPO" --state all --paginate \
                   --json number,state,labels,body 2>/dev/null || echo "[]")
     for _cid in $(printf '%s' "$_all_issues" | jq -r '
       .[] | select(.state=="OPEN")
@@ -693,7 +693,7 @@ _tqg_cycle(){
   # the issue. This sub-step adds status:needs-rework (idempotent) so the launcher's
   # existing rework dispatch path claims it on the next tick.
   local _tqg_routing_leaves _tqg_rl
-  _tqg_routing_leaves=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+  _tqg_routing_leaves=$(gh issue list -R "$CB_REPO" --state open --paginate \
     --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
       def numsAfter($b; $k):
         [($b // "") | split("\n")[]
@@ -722,7 +722,7 @@ _tqg_cycle(){
 
   # Guard: all leaves for this charter must be closed (same condition as finale)
   local _tqg_open
-  _tqg_open=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+  _tqg_open=$(gh issue list -R "$CB_REPO" --state open --paginate \
     --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
       def numsAfter($b; $k):
         [($b // "") | split("\n")[]
@@ -735,7 +735,7 @@ _tqg_cycle(){
 
   # Find the qa-engineer leaf (closed type:agent with role:qa-engineer label)
   local _qa_leaf
-  _qa_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+  _qa_leaf=$(gh issue list -R "$CB_REPO" --state closed --paginate \
     --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
       def numsAfter($b; $k):
         [($b // "") | split("\n")[]
@@ -748,7 +748,7 @@ _tqg_cycle(){
 
   # Find the executor/impl leaf (closed type:agent with role:executor label)
   local _impl_leaf
-  _impl_leaf=$(gh issue list -R "$CB_REPO" --state closed -L 200 \
+  _impl_leaf=$(gh issue list -R "$CB_REPO" --state closed --paginate \
     --json number,labels,body 2>/dev/null | jq -r --argjson c "$cid" '
       def numsAfter($b; $k):
         [($b // "") | split("\n")[]
@@ -804,7 +804,7 @@ _charter_finale_cycle(){
 
   # Snapshot the board (single gh call)
   local all_issues
-  all_issues=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+  all_issues=$(gh issue list -R "$CB_REPO" --state all --paginate \
                --json number,state,labels,body 2>/dev/null) || all_issues="[]"
 
   # Iterate over OPEN charters
@@ -958,7 +958,7 @@ _charter_finale_cycle(){
 # Called once per cmd_run tick; cheap (single gh issue list, same pattern as _loop_is_alive). [#262]
 _serializing_charter(){
   local _s
-  _s=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+  _s=$(gh issue list -R "$CB_REPO" --state open --paginate \
        --json number,state,labels 2>/dev/null || echo "[]")
   printf '%s' "$_s" | jq -r '
     [ .[] | select(.state=="OPEN")
@@ -1147,7 +1147,7 @@ cmd_run(){
             # execute against the outdated decomposition.
             # numsAfter numeric equality: "Charter: #5" does NOT match "Charter: #50".
             if [ "$cst" = "needs-plan" ]; then
-              _gc_snap=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+              _gc_snap=$(gh issue list -R "$CB_REPO" --state open --paginate \
                          --json number,state,labels,body 2>/dev/null || echo "[]")
               for _gc_lid in $(printf '%s' "$_gc_snap" | jq -r --argjson c "$id" '
                 def numsAfter($b; $k):
@@ -1231,7 +1231,7 @@ cmd_run(){
               # MUST run before auto-approve: prevents premature status:approved when 0 leaves.
               _rdl=$(manifest_policy "${CB_MANIFEST:-}" require_decomp_leaves 2>/dev/null || true)
               if [ -n "$_rdl" ] && [ "$cst" = "plan-review" ]; then
-                _leaf_count=$(gh issue list -R "$CB_REPO" --state all -L 200 \
+                _leaf_count=$(gh issue list -R "$CB_REPO" --state all --paginate \
                   --json number,labels,body 2>/dev/null \
                   | jq -r --argjson c "$id" \
                     '[.[] | select([.labels[].name] | any(. == "type:agent"))
@@ -1525,7 +1525,7 @@ cmd_run(){
           done
           # Also pick up needs-analysis charters that are NOT in plannable_scoped
           # (they already transitioned past needs-plan, so plannable_scoped won't list them)
-          _analysis_boards=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+          _analysis_boards=$(gh issue list -R "$CB_REPO" --state open --paginate \
                              --json number,labels 2>/dev/null | jq -r '
             .[] | select([.labels[].name] | index("type:charter") != null)
                 | select([.labels[].name] | index("status:needs-analysis") != null)
@@ -1554,7 +1554,7 @@ cmd_run(){
           _approval_role=$(manifest_policy "$CB_MANIFEST" approval_role 2>/dev/null || true)
           _approval_threshold=$(manifest_policy "$CB_MANIFEST" human_approval_above_usd 2>/dev/null || true)
           if [ -n "$_approval_role" ] && [ -n "$_approval_threshold" ]; then
-            _tr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+            _tr_charters=$(gh issue list -R "$CB_REPO" --state open --paginate \
                            --json number,labels 2>/dev/null | jq -r '
               .[] | select([.labels[].name] | index("type:charter") != null)
                   | select([.labels[].name] | index("status:team-review") != null)
@@ -1583,7 +1583,7 @@ cmd_run(){
                 # must NOT consume a substance-review round and prematurely escalate (the #350 finding).
                 _fround=$(sget "$cid" fround); _fround=${_fround:-0}; _fcap="${CB_FORMAT_CAP:-${CB_CONVERGE_CAP:-4}}"
                 if [ "$_fround" -ge "$_fcap" ]; then
-                  _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+                  _all_hd=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels,body 2>/dev/null || echo "[]")
                   _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
                   if [ "${_ex_hd:-0}" = "0" ]; then
                     gh issue create -R "$CB_REPO" \
@@ -1616,7 +1616,7 @@ Charter: #$cid" \
                   _cround=$(sget "$cid" cround); _cround=${_cround:-0}
                   _ccap="${CB_CONVERGE_CAP:-4}"
                   if [ "$_cround" -ge "$_ccap" ]; then
-                    _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+                    _all_hd=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels,body 2>/dev/null || echo "[]")
                     _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
                     if [ "${_ex_hd:-0}" = "0" ]; then
                       gh issue create -R "$CB_REPO" \
@@ -1667,7 +1667,7 @@ Charter: #$cid" \
               fi
               if [ "$_escalate" = "1" ]; then
                 # Idempotent: only one open human-decision per charter (check by body text)
-                _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+                _all_hd=$(gh issue list -R "$CB_REPO" --state open --paginate \
                   --json number,labels,body 2>/dev/null || echo "[]")
                 _existing_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '
                   [.[] | select([.labels[].name] | index("type:human-decision") != null)
@@ -1715,7 +1715,7 @@ Charter: #$cid"
         fi
         # conflict-resolution cycle: for charters with status:needs-conflict-resolution,
         # spawn git-resolver to resolve merge conflicts so the finale can proceed. [#187 L2]
-        _conflict_boards=$(gh issue list -R "$CB_REPO" --state open -L 200 \
+        _conflict_boards=$(gh issue list -R "$CB_REPO" --state open --paginate \
                            --json number,labels 2>/dev/null | jq -r '
           .[] | select([.labels[].name] | index("type:charter") != null)
               | select([.labels[].name] | index("status:needs-conflict-resolution") != null)
@@ -1762,7 +1762,7 @@ Charter: #$cid"
         # → escalate. plan:agreed → status:approved (release leaves). Mirror of the #334 composition gate.
         _plan_review_role=$(manifest_policy "${CB_MANIFEST:-}" plan_review_role 2>/dev/null || true)
         if [ -n "$_plan_review_role" ]; then
-          _plr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+          _plr_charters=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels 2>/dev/null | jq -r '
             .[] | select([.labels[].name] | index("type:charter") != null)
                 | select([.labels[].name] | index("status:plan-review") != null)
                 | select([.labels[].name] | index("hold") == null)
@@ -1784,7 +1784,7 @@ Charter: #$cid"
             _pround=$(sget "$cid" pround); _pround=${_pround:-0}
             _pcap="${CB_PLAN_CONVERGE_CAP:-${CB_CONVERGE_CAP:-4}}"
             if [ "$_pround" -ge "$_pcap" ]; then
-              _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+              _all_hd=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels,body 2>/dev/null || echo "[]")
               _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
               if [ "${_ex_hd:-0}" = "0" ]; then
                 gh issue create -R "$CB_REPO" \
@@ -1822,7 +1822,7 @@ Charter: #$cid" \
         #     status:plan-review between the AGREE and the next loop tick, plan:agreed +
         #     composition:approved are both present but neither gate fires — this block catches it.
         if [ -n "$_plan_review_role" ]; then
-          _limbo_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+          _limbo_charters=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels 2>/dev/null | jq -r '
             .[] | select([.labels[].name] | index("type:charter") != null)
                 | select([.labels[].name] | index("plan:agreed") != null)
                 | select([.labels[].name] | index("composition:approved") != null)
@@ -1846,7 +1846,7 @@ Charter: #$cid" \
         # in manifest → active; mirrors plan-convergence (#382). accept:agreed → release to merge.
         _acc_review_role=$(manifest_policy "${CB_MANIFEST:-}" acceptance_review_role 2>/dev/null || true)
         if [ -n "$_acc_review_role" ]; then
-          _acr_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+          _acr_charters=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels 2>/dev/null | jq -r '
             .[] | select([.labels[].name] | index("type:charter") != null)
                 | select([.labels[].name] | index("status:acceptance-review") != null)
                 | select([.labels[].name] | index("hold") == null)
@@ -1874,7 +1874,7 @@ Charter: #$cid" \
             _aound=$(sget "$cid" aound); _aound=${_aound:-0}
             _acap="${CB_ACCEPT_CONVERGE_CAP:-${CB_CONVERGE_CAP:-4}}"
             if [ "$_aound" -ge "$_acap" ]; then
-              _all_hd=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels,body 2>/dev/null || echo "[]")
+              _all_hd=$(gh issue list -R "$CB_REPO" --state open --paginate --json number,labels,body 2>/dev/null || echo "[]")
               _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
               if [ "${_ex_hd:-0}" = "0" ]; then
                 gh issue create -R "$CB_REPO" \
