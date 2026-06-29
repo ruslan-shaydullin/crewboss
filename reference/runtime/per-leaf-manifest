@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=23, EXCLUDED=63, union=85  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=65, union=88  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -197,3 +197,13 @@ EXCLUDED triage-bounce-evidence
 # #910 verify-merged-leaf-regen: calls cmd_verify_merged against bare-remote fixtures
 #   (recursive verify-merged calls) — disqualifies from ALLOW per fail-closed criterion.
 EXCLUDED verify-merged-leaf-regen
+# charter #993 / #996 (фикс 2): bare-charter-auto-init was previously UNCLASSIFIED (real
+#   pre-existing RED in leaf-verifier Test 7, independent of smoke). It spawns / auto-inits
+#   a charter via the launcher path (background process, launcher-context) -> violates ALLOW
+#   purity. EXCLUDED (fail-closed default).
+EXCLUDED bare-charter-auto-init
+# charter #993 / #996 (фикс 2/3): smoke-runner regression suite drives the REAL
+#   smoke-runner.sh harness (process-spawn of artifacts, per-detector timeouts, real-gh
+#   BOX-ONLY valid-PASS lane) — timing + process + network violate ALLOW purity.
+#   EXCLUDED (fail-closed default); GHA full suite only.
+EXCLUDED smoke-runner
