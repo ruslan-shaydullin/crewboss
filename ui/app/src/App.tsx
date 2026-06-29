@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
+import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, searchBoard, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
 import TeamPage from './TeamPage'
 
 // ── Lifecycle stage badge helpers ──────────────────────────────────────────
@@ -138,6 +138,10 @@ export default function App() {
   const [pendingQueue, setPendingQueue] = useState<number[]>([])
   const dirtyRef = useRef(false)
 
+  const [searchQuery, setSearchQuery]     = useState('')
+  const [searchResults, setSearchResults] = useState<Task[] | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
+
   const isLoopRunning = state?.loop?.running ?? false
   const mergeBlockReason: string | undefined =
     state?.loop?.stage === "finale" ? "Loop is already integrating this charter"
@@ -156,6 +160,21 @@ export default function App() {
     }
   }, setConn), [])
   useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i) }, [])
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults(null)
+      setSearchLoading(false)
+      return
+    }
+    setSearchLoading(true)
+    const timer = setTimeout(async () => {
+      const results = await searchBoard(searchQuery)
+      setSearchResults(results)
+      setSearchLoading(false)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   const handleQueueChange = useCallback(async (newOrder: number[]) => {
     dirtyRef.current = true
@@ -198,29 +217,55 @@ export default function App() {
       {view === 'board' ? (
         <>
           <Hero state={state} />
-          <div className="layout">
-            <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
-              queueOrder={queueOrder} onQueueChange={handleQueueChange}
-              loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} mergeBlockReason={mergeBlockReason} />
-            <div className="sidebar-col">
-              <aside className="sidebar">
-                <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
-              </aside>
-              <div className="queue-panel--sticky">
-                <QueuePanel
-                  queueOrder={queueOrder}
-                  savedOrder={savedOrder}
-                  board={state?.board ?? []}
-                  isLoopRunning={isLoopRunning}
-                  onQueueChange={handleQueueChange}
-                  onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
-                  pendingQueue={pendingQueue}
-                  onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
-                  onOpen={setOpen}
-                />
+          <input
+            type="search"
+            className="board-search"
+            placeholder="Поиск (#номер, заголовок, статус)…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+          {searchQuery.trim() ? (
+            <div className="board-search-results">
+              {searchLoading && <p className="board-search-hint">Поиск…</p>}
+              {!searchLoading && searchResults !== null && (
+                <>
+                  <p className="board-search-hint">Найдено: {searchResults.length}</p>
+                  {searchResults.length === 0
+                    ? <p className="board-search-hint">Ничего не найдено</p>
+                    : searchResults.map(t => (
+                        <div key={t.n} data-flip-key={String(t.n)}>
+                          <TaskCard t={t} onOpen={setOpen} />
+                        </div>
+                      ))
+                  }
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="layout">
+              <Board state={state} conn={conn} onAction={run} ask={ask} onOpen={setOpen}
+                queueOrder={queueOrder} onQueueChange={handleQueueChange}
+                loopRunning={isLoopRunning} onPendingAdd={onPendingAdd} mergeBlockReason={mergeBlockReason} />
+              <div className="sidebar-col">
+                <aside className="sidebar">
+                  <AgentsRail agents={state?.agents ?? []} onOpen={setOpen} />
+                </aside>
+                <div className="queue-panel--sticky">
+                  <QueuePanel
+                    queueOrder={queueOrder}
+                    savedOrder={savedOrder}
+                    board={state?.board ?? []}
+                    isLoopRunning={isLoopRunning}
+                    onQueueChange={handleQueueChange}
+                    onLaunch={async () => { await handleQueueChange(queueOrder); run('run') }}
+                    pendingQueue={pendingQueue}
+                    onRemovePending={(n) => setPendingQueue(prev => prev.filter(x => x !== n))}
+                    onOpen={setOpen}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </>
       ) : view === 'human' ? (
         <HumanDecisionsPage state={state} onOpen={setOpen} onResolve={resolveAsk} />
