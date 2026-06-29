@@ -44,11 +44,12 @@ def save_queue(order):
     Mirrors the tempfile+rename pattern used for other run-state writes; the launcher reads
     it via jq '.order[]' (#281). Empty order = cleared queue -> launcher default behaviour.
 
-    Belt path (#626): after writing queue.json, for each charter ID in order that has
+    Belt path (#900/#626): after writing queue.json, for each charter ID in order that has
     type:charter but no status:* label, stamp status:needs-analysis via gh issue edit so
     the launcher's analysis-cycle picks it up on the very next tick instead of silently
     idling (bare charter with no status label is never emitted by plannable_scoped or
-    matched by _analysis_boards without this stamp)."""
+    matched by _analysis_boards without this stamp). Failures are swallowed (best-effort);
+    the launcher's bare-charter guard (sibling leaf #898) acts as the suspenders fallback."""
     os.makedirs(RUN, exist_ok=True)
     path = os.path.join(RUN, "queue.json")
     fd, tmp = tempfile.mkstemp(dir=RUN, suffix=".tmp")
@@ -60,22 +61,30 @@ def save_queue(order):
         try: os.remove(tmp)
         except Exception: pass
         raise
-    # Belt path: stamp bare type:charter issues that have no status:* label
-    if REPO:
-        for n in order:
+    # Belt: stamp status:needs-analysis on any bare type:charter in the new order.
+    # Best-effort: failures are swallowed so a transient GitHub error never breaks
+    # save_queue. The launcher bare-charter guard acts as suspenders fallback.
+    import json as _json_sq
+    import subprocess as _sp_sq
+    _repo_sq = os.environ.get("CB_REPO", "")
+    if _repo_sq:
+        for _cid_sq in order:
             try:
-                raw = sh(["gh", "issue", "view", str(n), "-R", REPO, "--json", "labels"])
-                if not raw.strip():
-                    continue
-                labels = [l["name"] for l in json.loads(raw).get("labels", [])]
-                if "type:charter" not in labels:
-                    continue
-                if any(l.startswith("status:") for l in labels):
-                    continue
-                sh(["gh", "issue", "edit", str(n), "-R", REPO,
-                    "--add-label", "status:needs-analysis"])
+                _raw_sq = _sp_sq.check_output(
+                    ["gh", "issue", "view", str(_cid_sq), "-R", _repo_sq, "--json", "labels"],
+                    timeout=10
+                )
+                _labels_sq = [l["name"] for l in _json_sq.loads(_raw_sq).get("labels", [])]
+                _is_charter_sq = "type:charter" in _labels_sq
+                _has_status_sq = any(l.startswith("status:") for l in _labels_sq)
+                if _is_charter_sq and not _has_status_sq:
+                    _sp_sq.run(
+                        ["gh", "issue", "edit", str(_cid_sq), "-R", _repo_sq,
+                         "--add-label", "status:needs-analysis"],
+                        timeout=10, check=False
+                    )
             except Exception:
-                pass
+                pass  # best-effort; launcher fallback covers failures
     return {"ok": True}
 
 import re
