@@ -538,6 +538,24 @@ body {
   text-align: center;
 }
 
+/* ── board search ────────────────────────────────────────────────────────── */
+.board-search {
+  width: 100%;
+  max-width: 400px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--surface, #1e1e1e);
+  color: inherit;
+  font: inherit;
+  margin-bottom: 16px;
+}
+.board-search-hint {
+  color: var(--muted, #888);
+  font-size: 0.85em;
+  margin: 4px 0;
+}
+
 /* ── prefers-reduced-motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

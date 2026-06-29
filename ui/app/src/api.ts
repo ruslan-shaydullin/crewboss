@@ -188,6 +188,20 @@ export async function postQueue(order: number[]): Promise<void> {
   if (!r.ok) throw new Error('postQueue failed: ' + r.status)
 }
 
+export async function searchBoard(q: string): Promise<Task[] | null> {
+  try {
+    const r = await fetch(
+      config.url + '/api/search?q=' + encodeURIComponent(q),
+      { headers: { Authorization: 'Bearer ' + config.token } }
+    )
+    if (!r.ok) return null
+    const data = (await r.json()) as { results: Task[] }
+    return data.results
+  } catch {
+    return null
+  }
+}
+
 export type CmdResult = { ok: boolean; msg: string; verify_verdict?: string; verify_output?: string; merged?: boolean }
 export async function command(action: string, number?: number, comment?: string): Promise<CmdResult> {
   try {
