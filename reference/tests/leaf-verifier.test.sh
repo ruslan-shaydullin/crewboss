@@ -248,7 +248,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23 EXCLUDED=63) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23 EXCLUDED=65) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -270,13 +270,13 @@ else
     && ok "guard: ALLOW count=23" \
     || ko "guard: ALLOW count expected 23, got $_allow_count"
 
-  [ $_excl_count -eq 63 ] \
-    && ok "guard: EXCLUDED count=63" \
-    || ko "guard: EXCLUDED count expected 63, got $_excl_count"
+  [ $_excl_count -eq 65 ] \
+    && ok "guard: EXCLUDED count=65" \
+    || ko "guard: EXCLUDED count expected 65, got $_excl_count"
 
-  [ $_actual_count -eq 86 ] \
-    && ok "guard: actual *.test.sh count=86" \
-    || ko "guard: actual *.test.sh count expected 86, got $_actual_count"
+  [ $_actual_count -eq 88 ] \
+    && ok "guard: actual *.test.sh count=88" \
+    || ko "guard: actual *.test.sh count expected 88, got $_actual_count"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"
