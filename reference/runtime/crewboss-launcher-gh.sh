@@ -1472,6 +1472,22 @@ cmd_run(){
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
           log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none} accept-head=#${_q_accept_head:-none}"
         fi
+        # bare-charter guard: if _q_head is a type:charter with no status:* label,
+        # stamp status:needs-analysis so the analysis-cycle picks it up this tick.
+        # Uses a fresh gh issue view call — _cid_labels is only set inside
+        # plannable_scoped (line 1454) and is stale/uninitialized here.
+        if [ -n "$_q_head" ]; then
+          _q_head_labels=$(gh issue view "$_q_head" -R "$CB_REPO" --json labels 2>/dev/null \
+            | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+          _qh_is_charter=$(printf '%s' "$_q_head_labels" \
+            | jq -r 'any(.[]; . == "type:charter")' 2>/dev/null || echo "false")
+          _qh_has_status=$(printf '%s' "$_q_head_labels" \
+            | jq -r 'any(.[]; startswith("status:"))' 2>/dev/null || echo "false")
+          if [ "$_qh_is_charter" = "true" ] && [ "$_qh_has_status" = "false" ]; then
+            log "bare-charter guard: #$_q_head is type:charter with no status label — stamping status:needs-analysis"
+            gh issue edit "$_q_head" -R "$CB_REPO" --add-label "status:needs-analysis" >/dev/null 2>&1 || true
+          fi
+        fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
         # WITHOUT composition:approved (analysis not yet done) AND needs-analysis charters
