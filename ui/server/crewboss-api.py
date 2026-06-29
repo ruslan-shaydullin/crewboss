@@ -226,7 +226,8 @@ def search_board(q):
 
     all_issues = []
     page = 1
-    while True:
+    MAX_PAGES = 100            # hard cap: 100*100 = 10k issues; bounds rate-limit + guarantees termination
+    while page <= MAX_PAGES:
         raw = sh(["gh", "api", f"/repos/{REPO}/issues",
                   "-F", "state=all",        # search_board: MUST include state=all (matches build_state behaviour)
                   "-F", "per_page=100",
@@ -235,9 +236,14 @@ def search_board(q):
             batch = json.loads(raw)
         except Exception:
             break
-        if not batch:          # empty list → no more pages
+        # Terminate cleanly on anything that is not a non-empty list: an empty
+        # list (past the end) OR a JSON error OBJECT (HTTP 422/403 rate-limit) —
+        # the #969 trap that defeated a bare `if not batch:` (a dict is truthy).
+        if not isinstance(batch, list) or not batch:
             break
         all_issues.extend(batch)
+        if len(batch) < 100:   # short page → last page, no need to ask for more
+            break
         page += 1
 
     results = []
@@ -248,7 +254,7 @@ def search_board(q):
         elif "type:charter"   in labels: kind = "charter"
         else:                            kind = "leaf"
         # state — same logic as build_state()
-        if   it.get("state") == "CLOSED":          st = "done"
+        if   (it.get("state") or "").lower() == "closed":  st = "done"
         elif "hold"               in labels:        st = "held"
         elif "status:blocked"     in labels:        st = "blocked"
         elif "status:review"      in labels:        st = "review"
@@ -306,7 +312,8 @@ def build_state():
             # caching (charter #969 explicit trade-off).
             all_issues = []
             page = 1
-            while True:
+            MAX_PAGES = 100     # hard cap: 100*100 = 10k issues; bounds rate-limit + guarantees termination
+            while page <= MAX_PAGES:
                 raw = sh(["gh", "api", f"/repos/{REPO}/issues",
                           "-F", "state=all",
                           "-F", "per_page=100",
@@ -315,9 +322,13 @@ def build_state():
                     batch = json.loads(raw)
                 except Exception:
                     break
-                if not batch:   # empty list → no more pages
+                # Terminate on anything not a non-empty list: empty list (past the
+                # end) OR a JSON error OBJECT (HTTP 422/403) — the #969 hang trap.
+                if not isinstance(batch, list) or not batch:
                     break
                 all_issues.extend(batch)
+                if len(batch) < 100:   # short page → last page
+                    break
                 page += 1
             issues = all_issues
         except Exception: issues = []
@@ -331,7 +342,7 @@ def build_state():
         if   "type:milestone" in labels:           kind = "milestone"
         elif "type:charter"   in labels:           kind = "charter"
         else:                                      kind = "leaf"
-        if   it.get("state")=="CLOSED":            st="done"
+        if   (it.get("state") or "").lower()=="closed":  st="done"
         elif "hold" in labels:                     st="held"
         elif "status:blocked" in labels:           st="blocked"
         elif "status:review" in labels:            st="review"
