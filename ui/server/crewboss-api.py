@@ -179,6 +179,69 @@ def build_loop_info(board=None):
     return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel,
                 running=running, stage=stage)
 
+def search_board(q):
+    """Paginate through ALL GitHub issues and filter by query q.
+
+    Returns {"results": [board-item, ...]} where each board-item has the same
+    shape as the items built in build_state(): n, kind, state, title, labels.
+
+    q filtering rules:
+      - empty q → return {"results": []}
+      - q starts with "#" or q.isdigit() → match by issue number (str(n) == q.lstrip("#"))
+      - otherwise → case-insensitive substring match on title OR any label name
+    """
+    if not q:
+        return {"results": []}
+
+    all_issues = []
+    page = 1
+    while True:
+        raw = sh(["gh", "api", f"/repos/{REPO}/issues",
+                  "-F", "state=all",        # search_board: MUST include state=all (matches build_state behaviour)
+                  "-F", "per_page=100",
+                  "-F", f"page={page}"])
+        try:
+            batch = json.loads(raw)
+        except Exception:
+            break
+        if not batch:          # empty list → no more pages
+            break
+        all_issues.extend(batch)
+        page += 1
+
+    results = []
+    for it in all_issues:
+        labels = [l["name"] for l in it.get("labels", [])]
+        # kind — same logic as build_state()
+        if   "type:milestone" in labels: kind = "milestone"
+        elif "type:charter"   in labels: kind = "charter"
+        else:                            kind = "leaf"
+        # state — same logic as build_state()
+        if   it.get("state") == "CLOSED":          st = "done"
+        elif "hold"               in labels:        st = "held"
+        elif "status:blocked"     in labels:        st = "blocked"
+        elif "status:review"      in labels:        st = "review"
+        elif "status:in-progress" in labels:        st = "in-progress"
+        elif "status:approved"    in labels:        st = "approved"
+        elif "status:plan-review" in labels:        st = "plan-review"
+        elif "status:needs-plan"  in labels:        st = "needs-plan"
+        else:                                       st = "open"
+
+        item = {"n": it["number"], "kind": kind, "state": st,
+                "title": it.get("title", ""), "labels": labels}
+
+        # Filter
+        q_stripped = q.lstrip("#")
+        if q.startswith("#") or q.isdigit():
+            if str(item["n"]) == q_stripped:
+                results.append(item)
+        else:
+            ql = q.lower()
+            if ql in item["title"].lower() or ql in " ".join(labels).lower():
+                results.append(item)
+
+    return {"results": results}
+
 def build_state():
     global _cached_issues, _cached_charters
     issues = []
@@ -925,6 +988,10 @@ class H(BaseHTTPRequestHandler):
                     _webhook_kick.wait(timeout=int(os.environ.get("CB_API_POLL","10")))
                     _webhook_kick.clear()
             except Exception: return
+        if path == "/api/search":
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            return self._send(200, search_board(q))
         return self._send(404,{"ok":False,"msg":"not found"})
     def do_POST(self):
         path = self.path.split("?",1)[0]          # 1. extract path first
@@ -971,6 +1038,105 @@ class H(BaseHTTPRequestHandler):
         return self._send(200, {"ok": True})
 
 if __name__=="__main__":
+    if "--selftest-search" in sys.argv:
+        from unittest.mock import patch
+        import json as _json
+        _failures = []
+
+        # --- Test 1: empty q returns {"results": []} with no gh calls ---
+        with patch("subprocess.run") as _mock_no_call:
+            _r1 = search_board("")
+            if _r1 != {"results": []}:
+                _failures.append(f"T1 FAIL empty q returned {_r1!r} expected {{'results': []}}")
+            if _mock_no_call.called:
+                _failures.append("T1 FAIL subprocess.run was called for empty q (should be no-op)")
+
+        # --- Test 2: number search by '#NNN' ---
+        _page1 = [
+            {"number": 42, "title": "Fix the thing", "state": "open", "labels": []},
+            {"number": 99, "title": "Another issue", "state": "open", "labels": [{"name": "type:charter"}]},
+        ]
+        _page2 = []  # signals end of pagination
+        _call_idx = [0]
+        def _fake_sh_num(args, timeout=30):
+            _call_idx[0] += 1
+            if _call_idx[0] == 1:
+                return _json.dumps(_page1)
+            return _json.dumps(_page2)
+        # Patch sh() directly in the module's global scope
+        import sys as _sys
+        _mod = _sys.modules[__name__]
+        _real_sh = _mod.sh
+        try:
+            _mod.sh = _fake_sh_num
+            _r2 = search_board("#42")
+            if len(_r2["results"]) != 1 or _r2["results"][0]["n"] != 42:
+                _failures.append(f"T2 FAIL '#42' search returned {_r2!r}")
+            # state=all must appear in the sh() call args
+            _call_idx[0] = 0
+
+            # --- Test 3: digit-only query '99' ---
+            def _fake_sh_digit(args, timeout=30):
+                _call_idx[0] += 1
+                if _call_idx[0] == 1:
+                    return _json.dumps(_page1)
+                return _json.dumps(_page2)
+            _call_idx[0] = 0
+            _mod.sh = _fake_sh_digit
+            _r3 = search_board("99")
+            if len(_r3["results"]) != 1 or _r3["results"][0]["n"] != 99:
+                _failures.append(f"T3 FAIL '99' search returned {_r3!r}")
+
+            # --- Test 4: text search, case-insensitive ---
+            def _fake_sh_text(args, timeout=30):
+                _call_idx[0] += 1
+                if _call_idx[0] == 1:
+                    return _json.dumps(_page1)
+                return _json.dumps(_page2)
+            _call_idx[0] = 0
+            _mod.sh = _fake_sh_text
+            _r4 = search_board("FIX")
+            if len(_r4["results"]) != 1 or _r4["results"][0]["n"] != 42:
+                _failures.append(f"T4 FAIL text 'FIX' search returned {_r4!r}")
+
+            # --- Test 5: label search ---
+            _page_labels = [
+                {"number": 7, "title": "Some task", "state": "open",
+                 "labels": [{"name": "status:in-progress"}, {"name": "type:charter"}]},
+            ]
+            def _fake_sh_label(args, timeout=30):
+                _call_idx[0] += 1
+                if _call_idx[0] == 1:
+                    return _json.dumps(_page_labels)
+                return _json.dumps([])
+            _call_idx[0] = 0
+            _mod.sh = _fake_sh_label
+            _r5 = search_board("in-progress")
+            if len(_r5["results"]) != 1 or _r5["results"][0]["n"] != 7:
+                _failures.append(f"T5 FAIL label 'in-progress' search returned {_r5!r}")
+
+            # --- Test 6: verify state=all is passed in the gh api call ---
+            _captured_args = []
+            def _fake_sh_args(args, timeout=30):
+                _captured_args.append(args)
+                return _json.dumps([])
+            _mod.sh = _fake_sh_args
+            search_board("something")
+            if not _captured_args:
+                _failures.append("T6 FAIL sh() was not called for non-empty q")
+            elif "state=all" not in _captured_args[0]:
+                _failures.append(f"T6 FAIL 'state=all' not found in gh api args: {_captured_args[0]!r}")
+
+        finally:
+            _mod.sh = _real_sh
+
+        if _failures:
+            for _f in _failures:
+                print(_f)
+            sys.exit(1)
+        print("PASS selftest-search: empty-q no-op, number-search, digit-search, text-search, label-search, state=all")
+        sys.exit(0)
+
     if "--selftest-synthetic-gate" in sys.argv:
         # Verify that synthetic chips respect loop_running
         _by_n = {
