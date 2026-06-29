@@ -414,8 +414,17 @@ if [ -n "${CB:-}" ]; then
             && git update-ref "refs/remotes/origin/$CB" "$main_sha" \
             || { echo "adapter-gh: ff push of $CB failed" >&2; exit 2; }
         else
-          echo "adapter-gh: $CB is behind origin/main by $behind commits with $own own commits — stale base, dispatch refused" >&2
-          exit 2
+          git checkout -q -b _cb_merge_tmp "origin/$CB"
+          git fetch -q origin main
+          if git merge --no-edit origin/main; then
+            git push -q origin "HEAD:refs/heads/$CB" \
+              || { echo "adapter-gh: merge push of $CB failed" >&2; exit 2; }
+            git update-ref "refs/remotes/origin/$CB" "$(git rev-parse HEAD)"
+          else
+            git merge --abort 2>/dev/null || true
+            echo "adapter-gh: $CB is behind origin/main with conflict — needs-conflict-resolution" >&2
+            exit 2
+          fi
         fi
       fi
     fi
