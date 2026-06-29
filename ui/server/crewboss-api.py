@@ -15,6 +15,7 @@ Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate
 """
 import hmac, hashlib
 import json, os, shutil, subprocess, sys, tempfile, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO   = os.environ.get("CB_REPO", "")
@@ -210,34 +211,81 @@ def build_loop_info(board=None):
     return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel,
                 running=running, stage=stage)
 
+# Hard page cap for the issue paginator (charter #969 / issue #1020). per_page=100
+# -> 100 pages == 10 000 issues, comfortably above the live repo (~1000 and growing)
+# so it never re-caps below repo size, yet GUARANTEES a clean terminating exit in a
+# small, fixed number of `gh` calls. Bump only if the repo ever nears this ceiling.
+MAX_ISSUE_PAGES = 100
+# How many pages to fetch concurrently per wave. One wave covers PAGE_BATCH*100
+# issues, so the live repo (~1000) drains in ~1-2 waves and `/api/state` returns in
+# a couple of seconds instead of paying gh's ~1s subprocess startup serially per
+# page (11 serial pages ≈ 14s — the latency this batches away). Kept modest because
+# each `gh` is a Go/TLS process: oversubscribing past ~the connection/core budget
+# trades startup latency for contention (measured slower at 16/20/24 than at ~12 on
+# 4c). 12 drains the live repo (~1000 / 11 pages) in ONE wave (~4s) and degrades
+# gracefully to extra bounded waves as the repo grows, all under MAX_ISSUE_PAGES.
+PAGE_BATCH = 12
+
+def _fetch_issue_page(page, per_page):
+    """One GET of the issues endpoint. Returns a list, or None on a non-list error
+    OBJECT / parse failure (the #969 trap signal -> caller treats it as "stop")."""
+    raw = sh(["gh", "api", "-X", "GET", f"/repos/{REPO}/issues",
+              "-f", "state=all", "-f", f"per_page={per_page}", "-f", f"page={page}"])
+    try:
+        batch = json.loads(raw)
+    except Exception:
+        return None
+    return batch if isinstance(batch, list) else None
+
 def paginate_issues():
-    """Fetch ALL repo issues (state=all) in a single BOUNDED `gh api --paginate` GET.
+    """Fetch ALL repo issues (state=all) under a HARD page cap, terminating cleanly.
 
-    Charter #969 fix. Three lessons baked in here:
+    Charter #969 fix (issue #1020 owns this contract). The defect that bracketed the
+    live box was a `page=1; while True: gh api ... page+=1` client loop that could
+    NEVER terminate when the endpoint returned a non-list error OBJECT (HTTP 422/403
+    rate-limit): `if not batch:` is False on a truthy dict, so `/api/state` and
+    `/api/search` spun -> HTTP 000, 40s+ timeout, cockpit OFFLINE (lesson #973).
 
-      * `--paginate` is a REAL flag on `gh api` (it is NOT on `gh issue list`); gh
-        walks every page server-side and concatenates the JSON arrays into one
-        array, so we never POST-by-accident or hand-roll page math.
-      * The previous `page=1; while True: gh api ... page+=1` client loop could
-        never terminate when the endpoint returned a non-list error object
-        (`if not batch` stayed False forever) -> `/api/state` hung (lesson #973).
-        Letting gh own the page walk removes the unbounded client loop entirely;
-        the only bound left is gh's finite page set + the sh() subprocess timeout.
-      * The query string is GET (params in the URL), NOT `-F`/`-f` fields — `gh api`
-        silently switches to POST the moment a field flag is present.
+    The replacement walks pages under an explicit `while page <= MAX_ISSUE_PAGES:`
+    hard cap (no `while True`, cannot spin) in bounded CONCURRENT waves, with three
+    independent clean exits so the request always completes in a couple of seconds
+    and is economical with the GitHub rate limit:
 
-    Returns a list of issue dicts (possibly empty); never raises, never hangs.
+      * page cap   -> the loop variable is hard-bounded by MAX_ISSUE_PAGES.
+      * list-guard -> a non-list error OBJECT (the #969 trap) surfaces as None and
+                      stops the walk instead of reading as a truthy "more pages".
+      * short-page -> a page with < per_page rows is the last page; stop the wave
+                      there so we never burn needless extra `gh` calls.
+
+    Pages within a wave are fetched concurrently (gh subprocess startup dominates a
+    single-page GET; serial paging is what made this ~14s). `-X GET` forces the GET
+    method so `-f` fields become URL query params (without it `gh api` silently
+    POSTs the moment a field flag is present). Returns a list of issue dicts
+    (possibly empty), in page order; never raises, never hangs.
     """
     if not REPO:
         return []
-    raw = sh(["gh", "api",
-              f"/repos/{REPO}/issues?state=all&per_page=100",
-              "--paginate"])
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return []
-    return data if isinstance(data, list) else []
+    per_page = 100
+    all_issues = []
+    page = 1
+    while page <= MAX_ISSUE_PAGES:
+        hi = min(page + PAGE_BATCH - 1, MAX_ISSUE_PAGES)
+        pages = list(range(page, hi + 1))
+        with ThreadPoolExecutor(max_workers=len(pages)) as ex:
+            batches = list(ex.map(lambda p: _fetch_issue_page(p, per_page), pages))
+        stop = False
+        for batch in batches:           # consume in strict page order
+            if not batch:               # None or empty list -> last page reached
+                stop = True
+                break
+            all_issues.extend(batch)
+            if len(batch) < per_page:   # short page == last page -> clean exit
+                stop = True
+                break
+        if stop:
+            break
+        page = hi + 1
+    return all_issues
 
 def search_board(q):
     """Paginate through ALL GitHub issues and filter by query q.
@@ -317,12 +365,13 @@ def build_state():
         except Exception:
             charters = []
         try:
-            # Fetch ALL issues in ONE bounded `gh api --paginate` GET (mirrors
+            # Fetch ALL issues via the bounded paginate_issues() walk (mirrors
             # search_board()). ETag caching is dropped for this call — multi-page
             # fetches cannot share a single ETag; correctness (seeing all 614+
             # issues) outweighs caching (charter #969 explicit trade-off). The old
-            # `page=1; while True:` client loop is gone: it could never terminate on
-            # a non-list error object and hung /api/state (lesson #973).
+            # `page=1; while True:` client loop is gone, replaced by a hard
+            # MAX_ISSUE_PAGES cap: it could never terminate on a non-list error
+            # object and hung /api/state (lesson #973 / issue #1020).
             issues = paginate_issues()
         except Exception: issues = []
         by_n = {it["number"]: it for it in issues}
