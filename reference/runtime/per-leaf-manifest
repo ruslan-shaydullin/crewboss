@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=23, EXCLUDED=59, union=82  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=63, union=85  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -185,3 +185,15 @@ EXCLUDED test-quality-gate
 #   EXCLUDED prevents per-leaf verify-merged from blocking the QA leaf before the fix lands.
 #   EXCLUDED (transitional: RED until #738 lands).
 EXCLUDED synthetic-phases
+# charter #612 recovery-cap: drives the REAL crewboss-launcher-gh.sh (stub board state + gh
+#   stubs, but real launcher loop). Launcher-context test class — EXCLUDED (fail-closed).
+EXCLUDED recovery-cap
+# charter #793 triage: drives the REAL crewboss-launcher-gh.sh through triage routing paths
+#   (launcher-context, real triage-parse.sh). EXCLUDED (fail-closed).
+EXCLUDED triage
+# charter #784 triage-bounce-evidence: drives the REAL crewboss-launcher-gh.sh to verify
+#   evidence comment before label-transition (launcher-context). EXCLUDED (fail-closed).
+EXCLUDED triage-bounce-evidence
+# #910 verify-merged-leaf-regen: calls cmd_verify_merged against bare-remote fixtures
+#   (recursive verify-merged calls) — disqualifies from ALLOW per fail-closed criterion.
+EXCLUDED verify-merged-leaf-regen

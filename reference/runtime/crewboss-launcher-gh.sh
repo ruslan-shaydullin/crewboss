@@ -400,8 +400,26 @@ _integrator_cycle(){
         fi
         continue
       elif [ "$vm_exit" -eq 3 ]; then
-        # Retryable RED (#195: red-counter < N, not yet confirmed) — stay in review, retry. [#196]
-        log "integrator: #$rid PR #$pr_num verify-merged retryable red (exit 3, <N) — staying in review, retry next tick"
+        # Retryable RED (#195: red-counter < N, not yet confirmed).
+        # CB_VERIFY_FLAKE_CAP: per-leaf ceiling on retryable-red retries; default 5.
+        # Distinct from CB_RETRY_CAP (executor-spawn cap) — different semantic.
+        # Tracks flake count in state dir keyed by leaf sha; once cap reached → defer.
+        local _flake_cap _flake_n
+        _flake_cap="${CB_VERIFY_FLAKE_CAP:-5}"
+        _flake_n=$(sget "$rid" flake_n); _flake_n=${_flake_n:-0}
+        _flake_n=$((_flake_n + 1))
+        sset "$rid" flake_n "$_flake_n"
+        if [ "$_flake_n" -ge "$_flake_cap" ]; then
+          log "integrator: #$rid PR #$pr_num verify-merged flake-cap (${_flake_n}/${_flake_cap}) — deferring (#612)"
+          gh issue edit "$rid" -R "$CB_REPO" \
+            --remove-label status:review --add-label status:deferred 2>/dev/null || true
+          gh issue comment "$rid" -R "$CB_REPO" \
+            --body "verify-merged: retryable red exceeded flake cap (${_flake_n}/${_flake_cap} retries, CB_VERIFY_FLAKE_CAP) — deferred for human triage" \
+            2>/dev/null || true
+          sset "$rid" int_done "deferred"
+        else
+          log "integrator: #$rid PR #$pr_num verify-merged retryable red (exit 3, <N, flake ${_flake_n}/${_flake_cap}) — staying in review, retry next tick"
+        fi
         continue
       elif [ "$vm_exit" -eq 2 ]; then
         # Infra error — log and retry next tick (same as try-merge infra). [F6]
