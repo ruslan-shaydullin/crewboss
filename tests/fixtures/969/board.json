@@ -1,0 +1,7 @@
+[
+  {"number": 250, "state": "OPEN", "labels": [{"name": "type:charter"}, {"name": "status:approved"}], "body": ""},
+  {"number": 249, "state": "OPEN", "labels": [], "body": "Charter: #250\n\n## Acceptance (machine)\n\n- check: echo probe-ok\n"},
+  {"number": 248, "state": "CLOSED", "labels": [{"name": "type:agent"}, {"name": "status:review"}], "body": "Charter: #250\n"},
+  {"number": 1000001, "state": "OPEN", "labels": [], "body": ""},
+  {"number": 1000002, "state": "OPEN", "labels": [], "body": ""}
+]

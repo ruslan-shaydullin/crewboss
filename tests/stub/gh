@@ -1,0 +1,109 @@
+#!/bin/sh
+# tests/stub/gh — subcommand-AWARE gh stub for the #969 regression suite.
+#
+# Mirrors real gh semantics for the one fact the #969 escape turned on:
+#   * `--paginate` is a VALID flag ONLY on `gh api`.
+#   * `--paginate` is a NON-EXISTENT flag on `gh issue list`
+#     (real gh prints "unknown flag: --paginate" and exits non-zero).
+#
+# This is the OPPOSITE of the legacy subcommand-BLIND stub
+# (`--paginate) use_paginate=1` on ANY subcommand) that false-greened the broken
+# `gh issue list --paginate` code in charter #969.
+#
+# Env knobs (all optional):
+#   GH_FIXTURE       path to a JSON array of issue objects to emit.
+#   GH_API_ENDLESS=1 make `gh api` emit a non-empty page for EVERY page=N
+#                    (hang/bound simulation: a client `while True` never terminates).
+#
+# Never reads or echoes any token.
+set -u
+
+sub1="${1:-}"
+sub2="${2:-}"
+
+# Detect --paginate anywhere in the argv.
+has_paginate=0
+for a in "$@"; do
+  [ "$a" = "--paginate" ] && has_paginate=1
+done
+
+emit_fixture() {
+  f="${GH_FIXTURE:-}"
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    cat "$f"
+  else
+    printf '[]\n'
+  fi
+}
+
+case "$sub1" in
+  issue)
+    case "$sub2" in
+      list)
+        if [ "$has_paginate" = "1" ]; then
+          # Mirror real gh exactly: reject the non-existent flag.
+          echo "unknown flag: --paginate" >&2
+          exit 4
+        fi
+        # Honor a -L N window (legacy window-bug simulation); else full fixture.
+        limit=""
+        prev=""
+        for a in "$@"; do
+          [ "$prev" = "-L" ] && limit="$a"
+          prev="$a"
+        done
+        if [ -n "$limit" ]; then
+          emit_fixture | python3 -c 'import sys,json
+d=json.load(sys.stdin); n=int(sys.argv[1]); print(json.dumps(d[:n]))' "$limit" 2>/dev/null \
+            || emit_fixture
+        else
+          emit_fixture
+        fi
+        ;;
+      view)
+        echo '{"number":0,"state":"OPEN","labels":[],"body":""}'
+        ;;
+      *)
+        # edit / comment / develop / ... — no-op success, like a happy gh write.
+        :
+        ;;
+    esac
+    ;;
+
+  api)
+    # `--paginate` IS valid here. Also support client-side paging via `-F page=N`
+    # (gh passes the value as a bare `page=N` token after -F/-f).
+    page=""
+    for a in "$@"; do
+      case "$a" in
+        page=*) page="${a#page=}" ;;
+      esac
+    done
+    if [ "${GH_API_ENDLESS:-0}" = "1" ]; then
+      # Pathological feed: every page is non-empty -> an unbounded `while True` hangs.
+      emit_fixture
+      exit 0
+    fi
+    if [ "$has_paginate" = "1" ]; then
+      # Server-side pagination: one shot, full set.
+      emit_fixture
+      exit 0
+    fi
+    if [ -n "$page" ] && [ "$page" -gt 1 ] 2>/dev/null; then
+      # Past the first client page -> signal end-of-results.
+      printf '[]\n'
+      exit 0
+    fi
+    emit_fixture
+    exit 0
+    ;;
+
+  label)
+    exit 0
+    ;;
+
+  *)
+    exit 0
+    ;;
+esac
+exit 0
