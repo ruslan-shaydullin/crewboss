@@ -1472,6 +1472,23 @@ cmd_run(){
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
           log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none} accept-head=#${_q_accept_head:-none}"
         fi
+        # bare-charter suspenders path (#626): if the queue head is a type:charter with
+        # no status:* label, stamp status:needs-analysis so the _analysis_boards loop
+        # picks it up in the same tick.  Without this, a bare charter added via
+        # gh issue create / cockpit "add to queue" silently idles forever.
+        if [ -n "$_q_head" ]; then
+          _bc_labels=$(gh issue view "$_q_head" -R "$CB_REPO" --json labels \
+                       2>/dev/null | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+          _bc_is_charter=$(printf '%s' "$_bc_labels" | \
+                           jq -r 'index("type:charter") != null' 2>/dev/null || echo "false")
+          _bc_has_status=$(printf '%s' "$_bc_labels" | \
+                           jq -r 'any(.[]; startswith("status:"))' 2>/dev/null || echo "true")
+          if [ "$_bc_is_charter" = "true" ] && [ "$_bc_has_status" = "false" ]; then
+            log "bare-charter #$_q_head detected (no status:* label) — stamping status:needs-analysis"
+            gh issue edit "$_q_head" -R "$CB_REPO" --add-label status:needs-analysis \
+              >/dev/null 2>&1 || true
+          fi
+        fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
         # WITHOUT composition:approved (analysis not yet done) AND needs-analysis charters
