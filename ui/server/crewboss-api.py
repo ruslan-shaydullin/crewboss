@@ -210,6 +210,35 @@ def build_loop_info(board=None):
     return dict(integrate=integrate, max_ticks=max_ticks, max_parallel=max_parallel,
                 running=running, stage=stage)
 
+def paginate_issues():
+    """Fetch ALL repo issues (state=all) in a single BOUNDED `gh api --paginate` GET.
+
+    Charter #969 fix. Three lessons baked in here:
+
+      * `--paginate` is a REAL flag on `gh api` (it is NOT on `gh issue list`); gh
+        walks every page server-side and concatenates the JSON arrays into one
+        array, so we never POST-by-accident or hand-roll page math.
+      * The previous `page=1; while True: gh api ... page+=1` client loop could
+        never terminate when the endpoint returned a non-list error object
+        (`if not batch` stayed False forever) -> `/api/state` hung (lesson #973).
+        Letting gh own the page walk removes the unbounded client loop entirely;
+        the only bound left is gh's finite page set + the sh() subprocess timeout.
+      * The query string is GET (params in the URL), NOT `-F`/`-f` fields — `gh api`
+        silently switches to POST the moment a field flag is present.
+
+    Returns a list of issue dicts (possibly empty); never raises, never hangs.
+    """
+    if not REPO:
+        return []
+    raw = sh(["gh", "api",
+              f"/repos/{REPO}/issues?state=all&per_page=100",
+              "--paginate"])
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
 def search_board(q):
     """Paginate through ALL GitHub issues and filter by query q.
 
@@ -224,21 +253,7 @@ def search_board(q):
     if not q:
         return {"results": []}
 
-    all_issues = []
-    page = 1
-    while True:
-        raw = sh(["gh", "api", f"/repos/{REPO}/issues",
-                  "-F", "state=all",        # search_board: MUST include state=all (matches build_state behaviour)
-                  "-F", "per_page=100",
-                  "-F", f"page={page}"])
-        try:
-            batch = json.loads(raw)
-        except Exception:
-            break
-        if not batch:          # empty list → no more pages
-            break
-        all_issues.extend(batch)
-        page += 1
+    all_issues = paginate_issues()
 
     results = []
     for it in all_issues:
@@ -247,8 +262,10 @@ def search_board(q):
         if   "type:milestone" in labels: kind = "milestone"
         elif "type:charter"   in labels: kind = "charter"
         else:                            kind = "leaf"
-        # state — same logic as build_state()
-        if   it.get("state") == "CLOSED":          st = "done"
+        # state — same logic as build_state(). Case-insensitive: `gh issue list`
+        # returns state=CLOSED, `gh api` returns state=closed — both classify "done"
+        # (charter #969 case-mismatch fix).
+        if   str(it.get("state", "")).lower() == "closed":  st = "done"
         elif "hold"               in labels:        st = "held"
         elif "status:blocked"     in labels:        st = "blocked"
         elif "status:review"      in labels:        st = "review"
@@ -300,26 +317,13 @@ def build_state():
         except Exception:
             charters = []
         try:
-            # Paginate through ALL issues (mirrors searchBoard() pattern).
-            # ETag caching is dropped for this call — multi-page fetches cannot
-            # share a single ETag; correctness (seeing all 614+ issues) outweighs
-            # caching (charter #969 explicit trade-off).
-            all_issues = []
-            page = 1
-            while True:
-                raw = sh(["gh", "api", f"/repos/{REPO}/issues",
-                          "-F", "state=all",
-                          "-F", "per_page=100",
-                          "-F", f"page={page}"])
-                try:
-                    batch = json.loads(raw)
-                except Exception:
-                    break
-                if not batch:   # empty list → no more pages
-                    break
-                all_issues.extend(batch)
-                page += 1
-            issues = all_issues
+            # Fetch ALL issues in ONE bounded `gh api --paginate` GET (mirrors
+            # search_board()). ETag caching is dropped for this call — multi-page
+            # fetches cannot share a single ETag; correctness (seeing all 614+
+            # issues) outweighs caching (charter #969 explicit trade-off). The old
+            # `page=1; while True:` client loop is gone: it could never terminate on
+            # a non-list error object and hung /api/state (lesson #973).
+            issues = paginate_issues()
         except Exception: issues = []
         by_n = {it["number"]: it for it in issues}
         for it in charters:
@@ -331,7 +335,8 @@ def build_state():
         if   "type:milestone" in labels:           kind = "milestone"
         elif "type:charter"   in labels:           kind = "charter"
         else:                                      kind = "leaf"
-        if   it.get("state")=="CLOSED":            st="done"
+        # Case-insensitive: gh issue list -> CLOSED, gh api -> closed (charter #969).
+        if   str(it.get("state","")).lower()=="closed": st="done"
         elif "hold" in labels:                     st="held"
         elif "status:blocked" in labels:           st="blocked"
         elif "status:review" in labels:            st="review"
