@@ -26,18 +26,18 @@ case "$cmd" in
     # A non-empty but non-existent CB_MANIFEST (stale env in test / non-manifest deploy)
     # must NOT activate composition gating — prevents false-empty launchable sets.
     _comp_flag=$([ -d "${CB_MANIFEST:-}" ] && echo --require-composition || true)
-    gh issue list -R "$REPO" --state all --paginate --json number,state,labels,body \
+    gh issue list -R "$REPO" --state all --limit 2000 --json number,state,labels,body \
       | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${_comp_flag:+$_comp_flag} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
-    gh issue list -R "$REPO" --state open --paginate --json number,labels | jq -r '
+    gh issue list -R "$REPO" --state open --limit 2000 --json number,labels | jq -r '
       .[] | select([.labels[].name] as $l
         | ($l|index("type:charter")) and ($l|index("status:needs-plan")) and (($l|index("hold"))|not))
       | .number' ;;
 
   review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
     # body is fetched to parse Charter: line; CREWBOSS_CHARTER scopes to one charter if set.
-    gh issue list -R "$REPO" --state open --paginate --json number,state,labels,body | jq -r \
+    gh issue list -R "$REPO" --state open --limit 2000 --json number,state,labels,body | jq -r \
         --argjson cs "${CREWBOSS_CHARTER:-0}" '
       .[] | select(.state == "OPEN")
            | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))

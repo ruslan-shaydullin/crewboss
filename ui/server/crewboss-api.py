@@ -35,6 +35,11 @@ def sh(args, timeout=30):
     try: return subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
     except Exception: return ""
 
+# Hard pagination bound (#969 defect 2). 100 pages * 100/page = 10k issues — far
+# beyond any real board — guarantees the client-side pagination loops terminate
+# even when gh returns a non-empty error object (422 / 403 rate-limit) on every page.
+_MAX_PAGES = int(os.environ.get("CB_MAX_PAGES", "100"))
+
 def read_json(path, default):
     try: return json.load(open(path))
     except Exception: return default
@@ -226,8 +231,10 @@ def search_board(q):
 
     all_issues = []
     page = 1
-    while True:
-        raw = sh(["gh", "api", f"/repos/{REPO}/issues",
+    # BOUNDED pagination (#969 defect 2): mirror build_state() — explicit -X GET,
+    # only a non-empty list continues, short page ends, hard page cap terminates.
+    while page <= _MAX_PAGES:
+        raw = sh(["gh", "api", "-X", "GET", f"/repos/{REPO}/issues",
                   "-F", "state=all",        # search_board: MUST include state=all (matches build_state behaviour)
                   "-F", "per_page=100",
                   "-F", f"page={page}"])
@@ -235,9 +242,11 @@ def search_board(q):
             batch = json.loads(raw)
         except Exception:
             break
-        if not batch:          # empty list → no more pages
+        if not isinstance(batch, list) or not batch:   # error dict / empty page → stop
             break
         all_issues.extend(batch)
+        if len(batch) < 100:   # short page → last page
+            break
         page += 1
 
     results = []
@@ -248,7 +257,10 @@ def search_board(q):
         elif "type:charter"   in labels: kind = "charter"
         else:                            kind = "leaf"
         # state — same logic as build_state()
-        if   it.get("state") == "CLOSED":          st = "done"
+        # #969 defect 3: gh REST returns lowercase "closed" (gh issue list returned
+        # "CLOSED"); compare case-insensitively so a merged/closed leaf with a
+        # residual status:review label classifies as done, not review.
+        if   (it.get("state") or "").upper() == "CLOSED": st = "done"
         elif "hold"               in labels:        st = "held"
         elif "status:blocked"     in labels:        st = "blocked"
         elif "status:review"      in labels:        st = "review"
@@ -296,8 +308,14 @@ def build_state():
                         _etag_store["charters"] = line.split(":", 1)[1].strip()
                         break
                 _cached_charters = json.loads(body_c)
+                # Guard: a non-2xx charter response (e.g. 403 rate-limit) is a JSON
+                # *object*, not a list — never let it through as `charters` (#969).
+                if not isinstance(_cached_charters, list):
+                    _cached_charters = []
                 charters = _cached_charters
         except Exception:
+            charters = []
+        if not isinstance(charters, list):
             charters = []
         try:
             # Paginate through ALL issues (mirrors searchBoard() pattern).
@@ -306,8 +324,15 @@ def build_state():
             # caching (charter #969 explicit trade-off).
             all_issues = []
             page = 1
-            while True:
-                raw = sh(["gh", "api", f"/repos/{REPO}/issues",
+            # BOUNDED pagination (#969 defect 2): the old `while True` had no exit
+            # bound. With -F fields and no `-X GET`, gh defaulted to POST and every
+            # error response (422 / 403-rate-limit) is a non-empty JSON *object* —
+            # `if not batch` is false on a dict, so the loop spun forever, hung
+            # /api/state and burned the whole rate-limit. Hardened: explicit -X GET,
+            # only a non-empty *list* continues paging, a short page ends paging, and
+            # a hard page cap guarantees termination no matter what gh returns.
+            while page <= _MAX_PAGES:
+                raw = sh(["gh", "api", "-X", "GET", f"/repos/{REPO}/issues",
                           "-F", "state=all",
                           "-F", "per_page=100",
                           "-F", f"page={page}"])
@@ -315,9 +340,11 @@ def build_state():
                     batch = json.loads(raw)
                 except Exception:
                     break
-                if not batch:   # empty list → no more pages
+                if not isinstance(batch, list) or not batch:  # error dict / empty page → stop
                     break
                 all_issues.extend(batch)
+                if len(batch) < 100:   # short page → last page
+                    break
                 page += 1
             issues = all_issues
         except Exception: issues = []
@@ -331,7 +358,7 @@ def build_state():
         if   "type:milestone" in labels:           kind = "milestone"
         elif "type:charter"   in labels:           kind = "charter"
         else:                                      kind = "leaf"
-        if   it.get("state")=="CLOSED":            st="done"
+        if   (it.get("state") or "").upper()=="CLOSED": st="done"  # #969 defect 3: case-insensitive (gh REST = "closed")
         elif "hold" in labels:                     st="held"
         elif "status:blocked" in labels:           st="blocked"
         elif "status:review" in labels:            st="review"
