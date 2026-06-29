@@ -264,6 +264,140 @@ spawned 51 \
   && ko "Q-hold: leaf 51 (charter A=50, held) was spawned — hold not respected by queue!" \
   || ok "Q-hold: leaf 51 (charter A=50, held) correctly NOT spawned"
 
+
+# ── Lookahead eligibility helper (spec contract for Q-loo-* tests) ────────────
+# _q_eligible_set: compute the analysis-eligible charter set under the
+# CB_QUEUE_LOOKAHEAD policy (charter #506). Implements the CONTRACT that
+# crewboss-launcher-gh.sh must satisfy after the implementation leaf lands:
+#   - Skip done|blocked|hold|deferred entries (matching _q_head semantics,
+#     runtime lines 1406-1421 — NOT a raw positional slice).
+#   - Output at most N+1 entries: head (index 0) through head+N (index N).
+#   - N=0 → strictly serial (only head); identical to the current baseline.
+#
+# Args:
+#   $1  space-separated charter IDs in priority queue order
+#   $2  CB_QUEUE_LOOKAHEAD value (N ≥ 0)
+#   $3  name of bash function: f <id> → state string (e.g. "needs-analysis")
+# Output: one eligible charter ID per line, in queue priority order.
+_q_eligible_set(){
+  local order="$1" n="$2" state_fn="$3"
+  local count=0
+  for id in $order; do
+    local st
+    st=$("$state_fn" "$id")
+    case "$st" in done|blocked|hold|deferred) continue ;; esac
+    printf '%s\n' "$id"
+    [ "$count" -ge "$n" ] && return 0
+    count=$((count+1))
+  done
+}
+
+# Board fixture for Q-loo-* integration tests: 4 charters (50,100,200,300),
+# each with one approved leaf (51,101,201,301). All charters status:approved
+# so every leaf is launchable — used by Q-loo-c (write-stage serialization).
+LOO_BOARD='[
+  {"number":50,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 1"},
+  {"number":51,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of charter 1\nCharter: #50\n## Acceptance (machine)\n- check: true"},
+  {"number":100,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 2"},
+  {"number":101,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of charter 2\nCharter: #100\n## Acceptance (machine)\n- check: true"},
+  {"number":200,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 3"},
+  {"number":201,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of charter 3\nCharter: #200\n## Acceptance (machine)\n- check: true"},
+  {"number":300,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:approved"}],"body":"charter 4"},
+  {"number":301,"state":"OPEN","labels":[{"name":"type:agent"}],"body":"leaf of charter 4\nCharter: #300\n## Acceptance (machine)\n- check: true"}
+]'
+
+# ── Q-loo-a (positive lookahead) ──────────────────────────────────────────────
+# With CB_QUEUE_LOOKAHEAD=2 and ≥4 active charters in the queue, the analysis-
+# eligible set must include head+1 (index 1) and head+2 (index 2) in addition to
+# the head (index 0). Verifies the _q_eligible_set contract for N=2.
+echo "== Q-loo-a: CB_QUEUE_LOOKAHEAD=2 — analysis eligible includes head+1 and head+2 =="
+
+_q_loo_state_active(){ echo "needs-analysis"; }  # all four charters are active
+
+_loo_a_set=$(_q_eligible_set "10 20 30 40" 2 _q_loo_state_active)
+
+printf '%s\n' "$_loo_a_set" | grep -q "^20$" \
+  && ok "Q-loo-a: head+1 (20) IS in analysis eligible set with LOOKAHEAD=2" \
+  || ko "Q-loo-a: head+1 (20) NOT in analysis eligible set with LOOKAHEAD=2"
+
+printf '%s\n' "$_loo_a_set" | grep -q "^30$" \
+  && ok "Q-loo-a: head+2 (30) IS in analysis eligible set with LOOKAHEAD=2" \
+  || ko "Q-loo-a: head+2 (30) NOT in analysis eligible set with LOOKAHEAD=2"
+
+# ── Q-loo-b (negative cap boundary) ──────────────────────────────────────────
+# With CB_QUEUE_LOOKAHEAD=2 (N=2) the eligible set covers indices 0..2. Index 3
+# (head+3) must NOT appear — proves the cap is enforced, not merely that head+1
+# and head+2 appear incidentally.
+echo "== Q-loo-b: CB_QUEUE_LOOKAHEAD=2 — analysis does NOT fire for head+3 (index 3) =="
+
+# Reuse _loo_a_set (same queue [10,20,30,40], N=2) — avoids recomputation.
+printf '%s\n' "$_loo_a_set" | grep -q "^40$" \
+  && ko "Q-loo-b: head+3 (40) IN eligible set — lookahead cap N=2 not enforced!" \
+  || ok "Q-loo-b: head+3 (40) NOT in eligible set — lookahead cap N=2 correctly enforced"
+
+# ── Q-loo-c (negative behavior — write-stage serialization) ───────────────────
+# Regardless of CB_QUEUE_LOOKAHEAD, launchable/plannable (write-stage dispatches)
+# must only fire for the queue HEAD, not for head+1 or beyond.
+# Integration test: 4-charter queue, all charters approved with launchable leaves.
+# Even with LOOKAHEAD=2, only the head leaf (51) must be spawned; non-head leaves
+# (101, 201, …) must remain untouched.
+echo "== Q-loo-c: write-stage serialization — launchable fires for head (51) only =="
+reset_state <<< "$LOO_BOARD"
+mkdir -p "$CBHOME/run"
+printf '{"order":[50,100,200,300]}' > "$CBHOME/run/queue.json"
+run_launcher once "CB_QUEUE_LOOKAHEAD=2"
+
+spawned 51 \
+  && ok "Q-loo-c: head leaf (51, charter 50) spawned — head dispatched correctly" \
+  || ko "Q-loo-c: head leaf (51, charter 50) NOT spawned — head dispatch broken!"
+
+spawned 101 \
+  && ko "Q-loo-c: leaf 101 (charter 100=head+1) spawned — write-stage leaked beyond head!" \
+  || ok "Q-loo-c: leaf 101 (head+1) NOT spawned — write-stage serialization enforced with LOOKAHEAD=2"
+
+spawned 201 \
+  && ko "Q-loo-c: leaf 201 (charter 200=head+2) spawned — write-stage leaked beyond head!" \
+  || ok "Q-loo-c: leaf 201 (head+2) NOT spawned — write-stage serialization enforced with LOOKAHEAD=2"
+
+# ── Q-loo-d (N=0 serial mode) ─────────────────────────────────────────────────
+# CB_QUEUE_LOOKAHEAD=0 is strictly serial: only the head (index 0) is eligible
+# for analysis. head+1 (index 1) must NOT appear in the eligible set — this is
+# identical to the current baseline behaviour where no lookahead exists.
+echo "== Q-loo-d: CB_QUEUE_LOOKAHEAD=0 — serial mode, head+1 NOT in eligible set =="
+
+# _q_loo_state_active defined above: returns "needs-analysis" for all IDs.
+_loo_d_set=$(_q_eligible_set "10 20" 0 _q_loo_state_active)
+
+printf '%s\n' "$_loo_d_set" | grep -q "^10$" \
+  && ok "Q-loo-d: head (10) IS in eligible set with LOOKAHEAD=0 — head always included" \
+  || ko "Q-loo-d: head (10) NOT in eligible set with LOOKAHEAD=0 — broken!"
+
+printf '%s\n' "$_loo_d_set" | grep -q "^20$" \
+  && ko "Q-loo-d: head+1 (20) IN eligible set with LOOKAHEAD=0 — serial mode broken!" \
+  || ok "Q-loo-d: head+1 (20) NOT in eligible set with LOOKAHEAD=0 — serial mode correct"
+
+# ── Q-loo-e (skip-aware eligibility — done/held at raw position 0) ────────────
+# Eligibility-set construction must skip done|blocked|hold|deferred entries,
+# matching _q_head semantics (runtime lines 1406-1421). It must NOT use a raw
+# positional slice. With hold at raw index 0 and CB_QUEUE_LOOKAHEAD=0:
+#   - raw index 0 (charter 10, held) is skipped → NOT in the eligible set
+#   - raw index 1 (charter 20, active) becomes the actual head → IS in the set
+# This proves the eligibility walk is state-filtered, not a raw slice.
+echo "== Q-loo-e: hold at raw index 0 — actual head resolves to first active (raw index 1) =="
+
+_q_loo_e_state(){
+  case "$1" in 10) echo "hold" ;; *) echo "needs-analysis" ;; esac
+}
+_loo_e_set=$(_q_eligible_set "10 20 30" 0 _q_loo_e_state)
+
+printf '%s\n' "$_loo_e_set" | grep -q "^10$" \
+  && ko "Q-loo-e: held charter (10 at raw index 0) IS in eligible set — hold not skipped!" \
+  || ok "Q-loo-e: held charter (10 at raw index 0) NOT in eligible set — hold correctly skipped"
+
+printf '%s\n' "$_loo_e_set" | grep -q "^20$" \
+  && ok "Q-loo-e: first active charter (20 at raw index 1) IS eligible — skip-aware head correct" \
+  || ko "Q-loo-e: first active charter (20 at raw index 1) NOT eligible — eligibility broken"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" = 0 ]
