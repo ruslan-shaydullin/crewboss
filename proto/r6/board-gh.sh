@@ -19,6 +19,23 @@ ensure_label(){ gh label create "$1" -R "$REPO" --color "${2:-ededed}" 2>/dev/nu
 iview(){ gh issue view "$1" -R "$REPO" --json number,state,labels,body; }
 haslabel(){ jq -e --arg l "$1" '[.labels[].name]|any(.==$l)' >/dev/null; }
 
+# issues_snapshot <state:open|closed|all> -> normalized JSON array on stdout.
+# Scalable board fetch: paginate the REST issues endpoint (follows Link headers,
+# NO magic cap) and normalize to the `gh issue list --json number,state,labels,body`
+# shape (state upper-cased, PRs dropped) consumed by launchable.sh / the jq filters
+# below. Replaces the non-existent issue-list pagination flag AND the `--limit`
+# magic-number stopgap; always emits a valid JSON array ([] on any failure) so the
+# pipeline never hangs and nothing downstream sees a half-written snapshot.
+issues_snapshot(){
+  local _state="${1:-all}" _raw
+  _raw="$(gh api --paginate -X GET "repos/$REPO/issues" \
+            -f "state=$_state" -f per_page=100 2>/dev/null)" || _raw=""
+  printf '%s' "$_raw" | jq -s '(add // [])
+    | map(select(has("pull_request")|not)
+          | {number, state:(.state|ascii_upcase),
+             labels:[.labels[]?|{name}], body:(.body // "")})' 2>/dev/null || echo "[]"
+}
+
 cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
@@ -26,18 +43,18 @@ case "$cmd" in
     # A non-empty but non-existent CB_MANIFEST (stale env in test / non-manifest deploy)
     # must NOT activate composition gating — prevents false-empty launchable sets.
     _comp_flag=$([ -d "${CB_MANIFEST:-}" ] && echo --require-composition || true)
-    gh issue list -R "$REPO" --state all --limit 100000 --json number,state,labels,body \
+    issues_snapshot all \
       | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${_comp_flag:+$_comp_flag} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
-    gh issue list -R "$REPO" --state open --limit 100000 --json number,labels | jq -r '
+    issues_snapshot open | jq -r '
       .[] | select([.labels[].name] as $l
         | ($l|index("type:charter")) and ($l|index("status:needs-plan")) and (($l|index("hold"))|not))
       | .number' ;;
 
   review-leaves)  # open agent leaves currently in status:review (awaiting integrator merge)
     # body is fetched to parse Charter: line; CREWBOSS_CHARTER scopes to one charter if set.
-    gh issue list -R "$REPO" --state open --limit 100000 --json number,state,labels,body | jq -r \
+    issues_snapshot open | jq -r \
         --argjson cs "${CREWBOSS_CHARTER:-0}" '
       .[] | select(.state == "OPEN")
            | select([.labels[].name] | (any(. == "type:agent") and any(. == "status:review")))
