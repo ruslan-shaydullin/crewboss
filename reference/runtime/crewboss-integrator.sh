@@ -496,6 +496,28 @@ cmd_verify_merged() {
     fi
   fi
 
+  # ── Real-run smoke gate EXECUTION (charter #993) ──────────────────────────
+  # MUST run BEFORE merged_dir cleanup — smoke-runner.sh starts REAL processes
+  # from the merged tree (mirroring the visual gate above; the original "insert
+  # before final classification" plan was rejected because the tree is already
+  # rm -rf'd by then). Classification of smoke_rc happens POST-cleanup, in the
+  # verdict block below — here we ONLY execute and capture.
+  # Self-bootstrap / graceful degrade: if the harness is ABSENT in the merged
+  # tree, smoke is a NO-OP pass (smoke_rc=0). This is the fail-safe default that
+  # lets charter #993 itself merge through the current (pre-smoke) verify-merged;
+  # smoke activates for future leaves once the harness is merged + deployed.
+  # FROZEN exit-code contract (#997): 0=PASS, 1=FAIL (artifact proven broken;
+  # prints `SMOKE_REASON: <detector>` on stdout), 2/3=INFRA (never a silent pass).
+  # A hanging artifact fails BY timeout INSIDE the harness, so this call never
+  # blocks the integrator indefinitely.
+  local smoke_rc=0 smoke_reason=""
+  if [ -f "$merged_dir/reference/runtime/smoke-runner.sh" ]; then
+    local _smoke_out
+    _smoke_out="$(bash "$merged_dir/reference/runtime/smoke-runner.sh" "$merged_dir" 2>/dev/null)"
+    smoke_rc=$?
+    smoke_reason="$(printf '%s\n' "$_smoke_out" | sed -n 's/^SMOKE_REASON:[[:space:]]*//p' | head -1)"
+  fi
+
   rm -rf "$merged_dir"
   _BMT_DIR=""
 
@@ -527,6 +549,44 @@ cmd_verify_merged() {
         [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
         exit 3
       fi
+    fi
+  fi
+
+  # ── Smoke gate CLASSIFICATION (charter #993) ──────────────────────────────
+  # Consume smoke_rc ONLY here (post-cleanup), mirroring the visual-gate sibling
+  # block above. NEVER a silent pass on infra.
+  if [ "$smoke_rc" -eq 1 ]; then
+    # Real FAIL (artifact proven broken). Flow through the SAME single-counter
+    # N-confirmation + cache path as engine RED (~line 506/548) by setting
+    # suite_rc=1 and appending SMOKE_REASON to the shared reason file.
+    suite_rc=1
+    printf 'SMOKE_REASON: %s\n' "${smoke_reason:-unknown}"
+    printf 'smoke:%s\n' "${smoke_reason:-unknown}" >> "$_reason_file"
+  elif [ "$smoke_rc" -eq 2 ] || [ "$smoke_rc" -eq 3 ]; then
+    # INFRA (port/network/rate-limit/self-error). Mirror the visual-gate
+    # infra-tick pattern: bump a counter, ceiling -> blocked/exit 1, else
+    # retry/exit 3. NEVER a silent pass.
+    local SMOKE_INFRA_MAX_TICKS=5
+    local _smoke_infra_file="" smoke_infra_error_ticks=0
+    [ -n "$_cache_file" ] && _smoke_infra_file="${_cache_file}.smoke_infra_ticks"
+    [ -n "$_smoke_infra_file" ] && [ -f "$_smoke_infra_file" ] && \
+      smoke_infra_error_ticks="$(cat "$_smoke_infra_file" 2>/dev/null || echo 0)"
+    smoke_infra_error_ticks=$((smoke_infra_error_ticks + 1))
+    [ -n "$_smoke_infra_file" ] && printf '%s' "$smoke_infra_error_ticks" > "$_smoke_infra_file"
+    local _smoke_leaf_id; _smoke_leaf_id=$(printf '%s' "$branch" | grep -oE 'leaf/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
+    if [ "$smoke_infra_error_ticks" -ge "$SMOKE_INFRA_MAX_TICKS" ]; then
+      local _smoke_blocked_msg="Smoke gate infra unavailable for ${smoke_infra_error_ticks} ticks (smoke_rc=${smoke_rc}). Manual intervention required."
+      log "verify-merged: $_smoke_blocked_msg"
+      if [ -n "$_smoke_leaf_id" ] && [ -n "${repo:-}" ]; then
+        gh issue comment "$_smoke_leaf_id" -R "$repo" --body "$_smoke_blocked_msg" 2>/dev/null || true
+        gh issue edit "$_smoke_leaf_id" -R "$repo" --add-label "status:blocked" 2>/dev/null || true
+      fi
+      [ -n "$verdict_file" ] && printf 'infra' > "$verdict_file"
+      exit 1
+    else
+      log "verify-merged: smoke gate infra error (smoke_rc=$smoke_rc), tick $smoke_infra_error_ticks/$SMOKE_INFRA_MAX_TICKS — retrying"
+      [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+      exit 3
     fi
   fi
 
