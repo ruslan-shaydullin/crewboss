@@ -42,7 +42,13 @@ def read_json(path, default):
 def save_queue(order):
     """Atomically persist the operator queue (ordered charter numbers) to run/queue.json.
     Mirrors the tempfile+rename pattern used for other run-state writes; the launcher reads
-    it via jq '.order[]' (#281). Empty order = cleared queue -> launcher default behaviour."""
+    it via jq '.order[]' (#281). Empty order = cleared queue -> launcher default behaviour.
+
+    Belt path (#626): after writing queue.json, for each charter ID in order that has
+    type:charter but no status:* label, stamp status:needs-analysis via gh issue edit so
+    the launcher's analysis-cycle picks it up on the very next tick instead of silently
+    idling (bare charter with no status label is never emitted by plannable_scoped or
+    matched by _analysis_boards without this stamp)."""
     os.makedirs(RUN, exist_ok=True)
     path = os.path.join(RUN, "queue.json")
     fd, tmp = tempfile.mkstemp(dir=RUN, suffix=".tmp")
@@ -54,6 +60,22 @@ def save_queue(order):
         try: os.remove(tmp)
         except Exception: pass
         raise
+    # Belt path: stamp bare type:charter issues that have no status:* label
+    if REPO:
+        for n in order:
+            try:
+                raw = sh(["gh", "issue", "view", str(n), "-R", REPO, "--json", "labels"])
+                if not raw.strip():
+                    continue
+                labels = [l["name"] for l in json.loads(raw).get("labels", [])]
+                if "type:charter" not in labels:
+                    continue
+                if any(l.startswith("status:") for l in labels):
+                    continue
+                sh(["gh", "issue", "edit", str(n), "-R", REPO,
+                    "--add-label", "status:needs-analysis"])
+            except Exception:
+                pass
     return {"ok": True}
 
 import re
