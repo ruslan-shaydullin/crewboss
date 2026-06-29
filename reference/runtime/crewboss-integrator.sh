@@ -438,7 +438,7 @@ cmd_verify_merged() {
     # below (rm -rf). Persistence is EXCLUSIVELY the charter-finale regen-persist
     # commit (#206 Part A). No-op when the tool/manifest is absent (fixtures).
     [ -f reference/bin/regen-manifest.sh ] && \
-      bash reference/bin/regen-manifest.sh >/dev/null 2>&1 || true
+      bash reference/bin/regen-manifest.sh >/dev/null 2>&1 || exit 2
     fail=0
     for t in reference/tests/*.test.sh; do
       _base="$(basename "$t" .test.sh)"
@@ -537,7 +537,7 @@ cmd_verify_merged() {
   #           (exit 3, NOT cached); >=N → confirmed terminal red (exit 1, cached fail).
   #    else → infra (exit 2, not cached).
   local _redcount_file="" _confirm_n="${CB_VERIFY_CONFIRM_N:-2}" _rn=0
-  [ -n "$_cache_file" ] && _redcount_file="${_cache_file}.redcount"
+  [ -n "$_cache_dir" ] && [ -n "$_leaf_sha" ] && _redcount_file="${_cache_dir}/${_leaf_sha}.redcount"
 
   if [ "$suite_rc" -eq 0 ]; then
     [ -n "$verdict_file" ] && printf 'pass' > "$verdict_file"

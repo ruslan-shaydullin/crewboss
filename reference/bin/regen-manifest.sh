@@ -36,7 +36,7 @@ manifest="$root/reference/runtime-manifest.tsv"
 # fixtures) must not error — regen simply has nothing to do.
 [ -f "$manifest" ] || exit 0
 
-tmp="$(mktemp 2>/dev/null)" || exit 0
+tmp="$(mktemp 2>/dev/null)" || exit 1
 
 changed=0
 while IFS= read -r line || [ -n "$line" ]; do
