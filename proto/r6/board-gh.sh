@@ -22,8 +22,12 @@ haslabel(){ jq -e --arg l "$1" '[.labels[].name]|any(.==$l)' >/dev/null; }
 cmd="${1:?need subcommand}"; shift || true
 case "$cmd" in
   launchable)
+    # Only pass --require-composition when CB_MANIFEST points to an existing directory.
+    # A non-empty but non-existent CB_MANIFEST (stale env in test / non-manifest deploy)
+    # must NOT activate composition gating — prevents false-empty launchable sets.
+    _comp_flag=$([ -d "${CB_MANIFEST:-}" ] && echo --require-composition || true)
     gh issue list -R "$REPO" --state all --paginate --json number,state,labels,body \
-      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${CB_MANIFEST:+--require-composition} ;;
+      | bash "$LAUNCHABLE" ${CREWBOSS_CHARTER:+--charter "$CREWBOSS_CHARTER"} ${_comp_flag:+$_comp_flag} ;;
 
   plannable)  # charters awaiting decomposition: type:charter + status:needs-plan, open, not held
     gh issue list -R "$REPO" --state open --paginate --json number,labels | jq -r '
