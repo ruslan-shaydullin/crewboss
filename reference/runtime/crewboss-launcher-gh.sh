@@ -1771,6 +1771,42 @@ Charter: #$cid" \
             log "bg-spawn plan-review ($_plan_review_role) round $((_pround+1)) for charter #$cid (running=$running/$MAXP)"
           done
         fi
+        # ── PLAN-limbo reconcile (#957): idempotent catch-all for charters that reached
+        # plan:agreed + composition:approved WITHOUT status:plan-review being present.
+        # Root-cause: the gate above (line 1736) filters by status:plan-review; if that label
+        # was removed between the plan-reviewer AGREE round and the next tick (e.g. by an
+        # external actor or a race with the critique/re-plan cycle), the existing gate silently
+        # skips the charter and it hangs in limbo forever.  This block is the safety net.
+        # Documented root-cause traces:
+        #   • line 1225: leaf-count gate (RETRY_CAP reached) removes status:plan-review then
+        #     calls `board route` to set status:blocked atomically — no ambiguity, no fix needed.
+        #   • line 1231: leaf-count gate (retry) removes status:plan-review + adds
+        #     status:needs-plan atomically — no fix needed.
+        #   • plan-reviewer CRITIQUE path: removes status:plan-review + adds status:needs-plan
+        #     atomically.  On the final AGREE round it adds plan:agreed but leaves status:plan-review
+        #     in place so the gate above catches it.  Edge case: if anything external removes
+        #     status:plan-review between the AGREE and the next loop tick, plan:agreed +
+        #     composition:approved are both present but neither gate fires — this block catches it.
+        if [ -n "$_plan_review_role" ]; then
+          _limbo_charters=$(gh issue list -R "$CB_REPO" --state open -L 200 --json number,labels 2>/dev/null | jq -r '
+            .[] | select([.labels[].name] | index("type:charter") != null)
+                | select([.labels[].name] | index("plan:agreed") != null)
+                | select([.labels[].name] | index("composition:approved") != null)
+                | select([.labels[].name] | index("status:approved") == null)
+                | select([.labels[].name] | index("status:blocked") == null)
+                | select([.labels[].name] | index("hold") == null)
+                | .number' 2>/dev/null || true)
+          for cid in $_limbo_charters; do
+            [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
+            [ -n "$_block" ] && [ "$cid" != "$_block" ] && continue
+            if [ -n "$_q_order" ]; then [ -z "$_q_plan_head" ] && break; [ "$cid" = "$_q_plan_head" ] || continue; fi
+            [ -n "$(sget "$cid" pid)" ] && continue
+            [ -n "$(sget "$cid" term)" ] && continue
+            gh issue edit "$cid" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
+            sset "$cid" term 1
+            log "#$cid plan:agreed → status:approved (leaves released)"
+          done
+        fi
         # ── ACCEPTANCE-convergence gate (#522): after finale CI green + CB_AUTO_MERGE, the
         # acceptance-reviewer reviews before the charter merges to main.  acceptance_review_role
         # in manifest → active; mirrors plan-convergence (#382). accept:agreed → release to merge.
