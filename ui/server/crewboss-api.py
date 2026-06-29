@@ -300,27 +300,26 @@ def build_state():
         except Exception:
             charters = []
         try:
-            cmd = ["gh", "api", f"/repos/{REPO}/issues", "--include", "-X", "GET",
-                   "-F", "state=all", "-F", "per_page=100"]
-            if _etag_store.get("issues"):
-                cmd += ["-H", f"If-None-Match: {_etag_store['issues']}"]
-            raw = sh(cmd)
-            # Split on first blank line (headers / body separator)
-            sep = "\r\n\r\n" if "\r\n\r\n" in raw else "\n\n"
-            parts = raw.split(sep, 1)
-            headers_block = parts[0] if len(parts) > 1 else ""
-            body = parts[1] if len(parts) > 1 else raw
-            # 304 Not Modified → assign cached issues (no early return — charter results must flow through)
-            if "304" in (headers_block.splitlines()[0] if headers_block else ""):
-                issues = _cached_issues or []
-            else:
-                # Extract and store ETag for next call
-                for line in headers_block.splitlines():
-                    if line.lower().startswith("etag:"):
-                        _etag_store["issues"] = line.split(":", 1)[1].strip()
-                        break
-                _cached_issues = json.loads(body)
-                issues = _cached_issues
+            # Paginate through ALL issues (mirrors searchBoard() pattern).
+            # ETag caching is dropped for this call — multi-page fetches cannot
+            # share a single ETag; correctness (seeing all 614+ issues) outweighs
+            # caching (charter #969 explicit trade-off).
+            all_issues = []
+            page = 1
+            while True:
+                raw = sh(["gh", "api", f"/repos/{REPO}/issues",
+                          "-F", "state=all",
+                          "-F", "per_page=100",
+                          "-F", f"page={page}"])
+                try:
+                    batch = json.loads(raw)
+                except Exception:
+                    break
+                if not batch:   # empty list → no more pages
+                    break
+                all_issues.extend(batch)
+                page += 1
+            issues = all_issues
         except Exception: issues = []
         by_n = {it["number"]: it for it in issues}
         for it in charters:
