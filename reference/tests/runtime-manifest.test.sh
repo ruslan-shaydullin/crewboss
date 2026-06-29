@@ -70,7 +70,7 @@ else
          {
            p = $1; gsub(/\r/, "", p)
            sub(/.*\//, "", p)   # extract basename
-           if (p == n) { found=1; exit }
+           if (p == n) { found=1 }   # no early exit: consume all input (avoid SIGPIPE under pipefail, #996)
          }
          END { exit !found }
        ' 2>/dev/null; then
@@ -84,7 +84,7 @@ else
            fname = $1; gsub(/\r/, "", fname)
            # must also have a non-empty reason (field 2+)
            rest = $0; sub(/^[^[:space:]]+[[:space:]]+/, "", rest)
-           if (fname == n && length(rest) > 0) { found=1; exit }
+           if (fname == n && length(rest) > 0) { found=1 }   # no early exit: consume all input (avoid SIGPIPE under pipefail, #996)
          }
          END { exit !found }
        ' 2>/dev/null; then
