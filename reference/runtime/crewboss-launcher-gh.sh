@@ -1488,6 +1488,22 @@ cmd_run(){
             gh issue edit "$_q_head" -R "$CB_REPO" --add-label "status:needs-analysis" >/dev/null 2>&1 || true
           fi
         fi
+        # analysis-lookahead eligibility set: charters eligible for analysis (head through head+N).
+        # Mirrors the done|blocked|hold|deferred skip logic from _q_head computation.
+        # CB_QUEUE_LOOKAHEAD (default 2): lookahead positions ahead of head eligible for analysis.
+        # N=0 → strictly serial (head only); N=2 → head plus the next two active charters.
+        _q_eligible=""
+        if [ -n "$_q_order" ]; then
+          _loo_n=${CB_QUEUE_LOOKAHEAD:-2}
+          _loo_count=0
+          for _qe in $_q_order; do
+            _qest=$(board get "$_qe" state 2>/dev/null || echo "unknown")
+            case "$_qest" in done|blocked|hold|deferred) continue ;; esac
+            _q_eligible="${_q_eligible:+$_q_eligible }$_qe"
+            _loo_count=$((_loo_count+1))
+            [ "$_loo_count" -gt "$_loo_n" ] && break
+          done
+        fi
         # analysis-cycle (manifest mode only): before tech-lead decomposition, charters
         # MUST pass through the analysis stage.  Re-entrant: matches needs-plan charters
         # WITHOUT composition:approved (analysis not yet done) AND needs-analysis charters
@@ -1496,10 +1512,14 @@ cmd_run(){
         if [ -n "${CB_MANIFEST:-}" ]; then
           for cid in $(plannable_scoped); do
             [ "$running" -ge "$MAXP" ] && break
-            # queue-mode: only head charter is eligible for analysis
+            # queue-mode: analysis eligible for head through head+CB_QUEUE_LOOKAHEAD
             if [ -n "$_q_order" ]; then
               [ -z "$_q_head" ] && break
-              [ "$cid" = "$_q_head" ] || continue
+              _in_set=0
+              for _eq in $_q_eligible; do
+                [ "$_eq" = "$cid" ] && { _in_set=1; break; }
+              done
+              [ "$_in_set" = "0" ] && continue
             fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
@@ -1534,10 +1554,14 @@ cmd_run(){
           for cid in $_analysis_boards; do
             [ "$running" -ge "$MAXP" ] && break
             [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
-            # queue-mode: only head charter is eligible for analysis
+            # queue-mode: analysis eligible for head through head+CB_QUEUE_LOOKAHEAD
             if [ -n "$_q_order" ]; then
               [ -z "$_q_head" ] && break
-              [ "$cid" = "$_q_head" ] || continue
+              _in_set=0
+              for _eq in $_q_eligible; do
+                [ "$_eq" = "$cid" ] && { _in_set=1; break; }
+              done
+              [ "$_in_set" = "0" ] && continue
             fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
