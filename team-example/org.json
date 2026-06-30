@@ -15,6 +15,7 @@
     { "role": "qa-engineer",     "reports_to": "cto" },
     { "role": "go-lead",         "reports_to": "backend-head" },
     { "role": "go-backend-dev",  "reports_to": "go-lead" },
-    { "role": "go-algo-dev",     "reports_to": "go-lead" }
+    { "role": "go-algo-dev",     "reports_to": "go-lead" },
+    { "role": "recovery-lead",   "reports_to": "cto" }
   ]
 }
