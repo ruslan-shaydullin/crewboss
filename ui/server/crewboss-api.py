@@ -401,6 +401,8 @@ def build_state():
                         break
                 _cached_charters = json.loads(body_c)
                 charters = _cached_charters
+                if not isinstance(charters, list):
+                    charters = []
         except Exception:
             charters = []
         try:
@@ -413,9 +415,12 @@ def build_state():
             # object and hung /api/state (lesson #973 / issue #1020).
             issues = paginate_issues()
         except Exception: issues = []
-        by_n = {it["number"]: it for it in issues}
+        if not isinstance(issues, list):
+            issues = []
+        by_n = {it["number"]: it for it in issues if isinstance(it, dict) and "number" in it}
         for it in charters:
-            by_n.setdefault(it["number"], it)  # charter wins if not in general call
+            if isinstance(it, dict) and "number" in it:
+                by_n.setdefault(it["number"], it)  # charter wins if not in general call
         issues = list(by_n.values())
     board = []
     for it in issues:
