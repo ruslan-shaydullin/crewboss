@@ -70,10 +70,120 @@ sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
 # consumer is unchanged: drop pull requests (REST /issues mixes PRs in; `gh issue
 # list` does not), upcase .state ("open"→"OPEN"), reduce labels to [{name}].
 # $1 = state (all|open|closed, default all).
-_cb_issue_list(){
-  gh api --paginate -X GET "/repos/$CB_REPO/issues" -f state="${1:-all}" -f per_page=100 2>/dev/null \
+#
+# ── Rate-limit reduction (charter #1004) ──────────────────────────────────────
+# The crewboss loop exhausted GitHub's 5000/h primary REST limit: `_cb_issue_list`
+# is hit ~20×/tick, each re-paginating >600 issues, with CB_POLL→~180 ticks/h.
+# Two layers fix this without changing any downstream jq consumer:
+#   (1) ONE-FETCH-PER-TICK CACHE. cmd_run primes a per-tick in-memory snapshot via
+#       _cb_tick_cache_refresh(); _cb_issue_list then serves every call site (and the
+#       per-charter/per-leaf board scans) from that snapshot — all|open|closed are
+#       jq-filtered views of a single `all` fetch. Freshness-within-a-tick is fine;
+#       point-of-mutation critical checks (claim/route guards) stay point-fresh by
+#       querying `gh issue view`/`board` directly, never this cache.
+#   (2) CONDITIONAL REQUESTS (option b — sort=updated, NOT created-sort first-page).
+#       With the default sort=created,desc a label/state change on an OLDER issue
+#       bumps updated_at but the row stays on a later page, so the page-1 ETag wrongly
+#       304s and the launcher serves stale state (the api.py:367 failure that forced
+#       dropping ETag there). Fetching sort=updated,direction=desc floats ANY touched
+#       issue to the TOP of page 1, so a 304 on the page-1 If-None-Match provably means
+#       the whole list is unchanged → reuse the cached snapshot at NO primary-RL cost
+#       (GitHub does not bill 304s against the primary limit). Reuses the build_state()
+#       header pattern from ui/server/crewboss-api.py.
+#
+# _CB_ISSUE_ETAG    : page-1 ETag from the last full (non-304) fetch.
+# _CB_TICK_CACHE_ALL: cached `all` snapshot JSON (normalized gh-issue-list shape).
+# _CB_TICK_CACHE_OK : non-empty once a snapshot has been primed this run.
+_CB_ISSUE_ETAG="${_CB_ISSUE_ETAG:-}"
+_CB_TICK_CACHE_ALL=""
+_CB_TICK_CACHE_OK=""
+
+# _cb_issue_fetch: the raw paginated fetch (no cache). sort=updated direction=desc so
+# the page-1 ETag conditional in _cb_tick_cache_refresh is sound (see above). Follows
+# Link headers to completion at ~1 request/100 issues; normalized to the exact
+# `gh issue list --json number,state,labels,body` shape so consumers are unchanged.
+# $1 = state (all|open|closed, default all).
+_cb_issue_fetch(){
+  gh api --paginate -X GET "/repos/$CB_REPO/issues" \
+      -f state="${1:-all}" -f per_page=100 -f sort=updated -f direction=desc 2>/dev/null \
     | jq -s 'add // [] | map(select(has("pull_request")|not)
               | {number, state:(.state|ascii_upcase), labels:[.labels[]|{name}], body})' 2>/dev/null
+}
+
+# _cb_issue_list: serve from the per-tick cache when primed (cmd_run), else fetch live
+# (cmd_once / reconcile / startup, where no tick cache exists). all|open|closed are
+# views of the single cached `all` snapshot — no extra REST cost per call site.
+_cb_issue_list(){
+  local _state="${1:-all}"
+  if [ -n "$_CB_TICK_CACHE_OK" ]; then
+    case "$_state" in
+      open)   printf '%s' "$_CB_TICK_CACHE_ALL" | jq 'map(select(.state=="OPEN"))'   2>/dev/null ;;
+      closed) printf '%s' "$_CB_TICK_CACHE_ALL" | jq 'map(select(.state=="CLOSED"))' 2>/dev/null ;;
+      *)      printf '%s' "$_CB_TICK_CACHE_ALL" ;;
+    esac
+    return 0
+  fi
+  _cb_issue_fetch "$_state"
+}
+
+# _cb_tick_cache_refresh: prime/refresh the per-tick snapshot at the start of each
+# cmd_run tick. Sends a conditional If-None-Match probe on page 1 (sort=updated):
+#   * 304  → the whole list is provably unchanged → reuse the cached snapshot at no
+#            primary-RL cost (only when we already hold a snapshot to reuse).
+#   * else → store the fresh page-1 ETag and re-paginate the full `all` list.
+# The probe uses --include to read response headers (build_state() pattern).
+_cb_tick_cache_refresh(){
+  local _probe _hdrs _status _new_etag _line
+  local _cmd=(gh api --include -X GET "/repos/$CB_REPO/issues"
+              -f state=all -f per_page=100 -f sort=updated -f direction=desc)
+  [ -n "$_CB_ISSUE_ETAG" ] && _cmd+=( -H "If-None-Match: $_CB_ISSUE_ETAG" )
+  _probe="$("${_cmd[@]}" 2>/dev/null)" || _probe=""
+  # Header block = everything up to the first blank line (CRLF or LF).
+  _hdrs="$(printf '%s' "$_probe" | sed -n '1,/^[[:space:]]*$/p')"
+  _status="$(printf '%s' "$_hdrs" | head -1)"
+  if printf '%s' "$_status" | grep -q '304' && [ -n "$_CB_TICK_CACHE_OK" ]; then
+    # Unchanged list — keep the cached snapshot (no full re-fetch, no primary-RL spend).
+    return 0
+  fi
+  # Changed (or first prime / probe failed): capture the new page-1 ETag, re-paginate.
+  _new_etag=""
+  while IFS= read -r _line; do
+    case "$(printf '%s' "$_line" | tr 'A-Z' 'a-z')" in
+      etag:*) _new_etag="$(printf '%s' "$_line" | sed 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//;s/[[:space:]]*$//')"; break ;;
+    esac
+  done <<EOF
+$_hdrs
+EOF
+  _CB_TICK_CACHE_ALL="$(_cb_issue_fetch all)"
+  [ -n "$_CB_TICK_CACHE_ALL" ] || _CB_TICK_CACHE_ALL="[]"
+  _CB_TICK_CACHE_OK=1
+  [ -n "$_new_etag" ] && _CB_ISSUE_ETAG="$_new_etag"
+  return 0
+}
+
+# ── Rate-limit backoff guard (charter #1004) ─────────────────────────────────
+# Query gh api /rate_limit `remaining`; below CB_RL_FLOOR, defer the gh-heavy tick by
+# sleeping toward the hourly reset so the loop never drives the primary limit to 0
+# (the #996 paralysis). Never fully stalls without real RL pressure: an unreadable or
+# healthy `remaining` returns immediately. The wait is capped (CB_RL_BACKOFF_MAX) so a
+# skewed reset clock cannot wedge the loop. No tokens are ever logged.
+CB_RL_FLOOR="${CB_RL_FLOOR:-1000}"
+_cb_rl_remaining(){ gh api /rate_limit -q '.resources.core.remaining' 2>/dev/null || echo ""; }
+_cb_rl_backoff(){
+  local _rl_remaining _reset _now _wait
+  _rl_remaining="$(_cb_rl_remaining)"
+  # Unreadable (no creds/network) → do not stall artificially (charter constraint).
+  [ -n "$_rl_remaining" ] || return 0
+  if [ "$_rl_remaining" -lt "$CB_RL_FLOOR" ] 2>/dev/null; then
+    _reset="$(gh api /rate_limit -q '.resources.core.reset' 2>/dev/null || echo 0)"
+    _now="$(date -u +%s)"
+    _wait=$(( _reset - _now )); [ "$_wait" -lt 0 ] 2>/dev/null && _wait=0
+    [ "$_wait" -gt "${CB_RL_BACKOFF_MAX:-60}" ] 2>/dev/null && _wait="${CB_RL_BACKOFF_MAX:-60}"
+    log "rate-limit pressure: remaining=$_rl_remaining < floor=$CB_RL_FLOOR — deferring gh-heavy ops ${_wait}s"
+    sleep "$_wait" 2>/dev/null || true
+    return 1
+  fi
+  return 0
 }
 # ── CB_MANIFEST: optional team manifest directory ────────────────────────────
 # When CB_MANIFEST is set:
@@ -1061,6 +1171,13 @@ cmd_run(){
       # kill-switch: stop the loop now (running spawns finish on their own / next reconcile).
       # exit 42: kill-switch-blocked (machine-readable; hint: unkill to clear the flag).
       [ -f "$RUN/kill_switch" ] && { log "kill-switch present — run blocked (hint: unkill to clear $RUN/kill_switch)"; exit 42; }
+      # ── rate-limit backoff (charter #1004): defer gh-heavy work when remaining < floor,
+      #    so the loop never drives the primary REST limit to 0 (the #996 paralysis). ──
+      _cb_rl_backoff || true
+      # ── one-fetch-per-tick (charter #1004): prime/refresh the in-memory issue snapshot
+      #    ONCE here (conditional If-None-Match, sort=updated). Every _cb_issue_list call
+      #    site below then serves from this snapshot at no extra primary-RL cost. ──
+      _cb_tick_cache_refresh
       # route finished background spawns (by status.json phase; phase=unknown -> treat as crash/fail)
       for d in "$STATE"/*/; do [ -e "$d" ] || continue; id=$(basename "$d"); pid=$(sget "$id" pid)
         { [ -n "$pid" ] && [ "$pid" != PENDING ]; } || continue

@@ -245,9 +245,9 @@ grep -qF -e "---- TASK (issue #$LEAF_ID) ----" "$PROMPT_SAVED" \
   && ok "Pin-3: prompt contains '---- TASK (issue #$LEAF_ID) ----' marker" \
   || ko "Pin-3: prompt missing ---- TASK marker"
 
-grep -qF "gh pr create --base charter/$CHARTER_ID" "$PROMPT_SAVED" \
-  && ok "Pin-3: prompt contains 'gh pr create --base charter/$CHARTER_ID' (PR base hard-rule)" \
-  || ko "Pin-3: prompt missing 'gh pr create --base charter/$CHARTER_ID'"
+grep -qF "cb_pr_create --base charter/$CHARTER_ID" "$PROMPT_SAVED" \
+  && ok "Pin-3: prompt contains 'cb_pr_create --base charter/$CHARTER_ID' (PR base hard-rule)" \
+  || ko "Pin-3: prompt missing 'cb_pr_create --base charter/$CHARTER_ID'"
 
 # =============================================================================
 # Pin-4: without CB_MANIFEST, prompt is original executor format — no role body
