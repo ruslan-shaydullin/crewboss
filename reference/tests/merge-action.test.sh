@@ -476,6 +476,39 @@ kill "$API_PID_X" 2>/dev/null || true
 API_PID_X=""
 
 # =============================================================================
+# (Q-queue-prune) do_command merge removes the merged charter from queue.json
+# =============================================================================
+echo "== Q-queue-prune: post_merge removes charter from queue.json =="
+N_Q=150; PR_Q=55
+
+# Pre-seed queue.json with [150, 999]
+printf '{"order":[150,999]}' > "$RUN/queue.json"
+
+# Pre-seed state dir so the API can find pr_num
+mkdir -p "$RUN/state/finale-$N_Q"
+echo "$PR_Q" > "$RUN/state/finale-$N_Q/pr_num"
+
+# Reset log for clean assertions
+: > "$GH_LOG"
+
+# Trigger the merge via HTTP
+post_merge "$N_Q"
+
+# Assert: charter 150 must be gone from queue
+if jq -e '.order | index(150) == null' "$RUN/queue.json" > /dev/null 2>&1; then
+  ok "(Q) charter 150 pruned from queue.json after merge"
+else
+  FAIL "(Q) charter 150 still present in queue.json after merge"
+fi
+
+# Assert: charter 999 must remain (unrelated — must not be touched)
+if jq -e '.order | index(999) != null' "$RUN/queue.json" > /dev/null 2>&1; then
+  ok "(Q) charter 999 retained in queue.json (unrelated, untouched)"
+else
+  FAIL "(Q) charter 999 was incorrectly removed from queue.json"
+fi
+
+# =============================================================================
 echo
 printf 'passed=%d\n' "$passed"
 printf 'failed=%d\n' "$failed"
