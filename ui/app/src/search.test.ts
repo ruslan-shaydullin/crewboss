@@ -171,3 +171,50 @@ describe('searchBoard special character encoding', () => {
     expect(url).toBe(config.url + '/api/search?q=' + encodeURIComponent('a b'))
   })
 })
+
+
+// ---------------------------------------------------------------------------
+// Test 9 — Abort / no-hang (charter #994 — "search must not hang")
+// ---------------------------------------------------------------------------
+// The live defect: a stalled backend (HTTP 000, 40s+) made the cockpit search
+// hang. The fix wires an AbortController + timeout signal into the search fetch,
+// so a never-resolving backend is aborted within the client timeout and
+// searchBoard() resolves to null instead of hanging forever.
+//
+// NOTE: vitest is the canonical runner for this file but is NOT installable in
+// the executor/gate box (no npm registry). The BEHAVIORAL no-hang proof that
+// runs on stock node v18 with zero deps lives in tests/994-search-abort.test.mjs.
+describe('searchBoard abort / no-hang', () => {
+  it('Test 9: a stalled backend (fetch never resolves) is aborted within the timeout → null, does NOT hang', async () => {
+    vi.useFakeTimers()
+    // fetch never resolves on its own; it only settles when its AbortSignal fires.
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        if (signal) {
+          if (signal.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'))
+            return
+          }
+          signal.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'))
+          })
+        }
+        // no signal → would hang; the assertion below would then time out (red).
+      })
+    })
+    const p = searchBoard('stalls-forever')
+    // advance past any plausible client timeout; the abort must fire and resolve p.
+    await vi.advanceTimersByTimeAsync(60_000)
+    const result = await p
+    expect(result).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('Test 10: searchBoard passes an AbortSignal to fetch (timeout is wired)', async () => {
+    makeFetchOk()
+    await searchBoard('foo')
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(opts.signal).toBeDefined()
+  })
+})

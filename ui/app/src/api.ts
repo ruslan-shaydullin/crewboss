@@ -188,17 +188,27 @@ export async function postQueue(order: number[]): Promise<void> {
   if (!r.ok) throw new Error('postQueue failed: ' + r.status)
 }
 
+// Defense-in-depth (charter #994): even a stalled/degraded backend must never
+// hang the cockpit search. An AbortController aborts the in-flight fetch after
+// ~5s, so a never-resolving backend resolves this to null (the existing
+// contract — the UI clears its spinner) instead of leaving searchLoading
+// pending forever. Timeout/abort/network-error/non-ok all map to null; never
+// throws, never hangs. The {results}->Task[] parsing contract is unchanged.
 export async function searchBoard(q: string): Promise<Task[] | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
   try {
     const r = await fetch(
       config.url + '/api/search?q=' + encodeURIComponent(q),
-      { headers: { Authorization: 'Bearer ' + config.token } }
+      { headers: { Authorization: 'Bearer ' + config.token }, signal: controller.signal }
     )
     if (!r.ok) return null
     const data = (await r.json()) as { results: Task[] }
     return data.results
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 
