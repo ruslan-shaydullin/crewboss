@@ -53,6 +53,18 @@ HERE_LAUNCHER="$(cd "$(dirname "$0")" && pwd)"
 REWORK_SPAWN="${CB_REWORK_SPAWN:-$HERE_LAUNCHER/rework-prep.sh}"
 GIT_REMOTE="${CB_GIT_REMOTE:-}"
 INTEGRATOR_SCRIPT="${CB_INTEGRATOR:-$HERE_LAUNCHER/crewboss-integrator.sh}"
+# ── recovery escalation (charter #1049) ──────────────────────────────────────
+# NEW kind=recovery cross-TICK state machine: when the simple triage/rework route does
+# not resolve a confirmed-RED leaf, escalate to a manager (recovery-lead) that posts a
+# `## Recovery (machine)` plan; the launcher then executes that plan step-by-step.
+# CB_RECOVERY_SPAWN: spawn script for the recovery-lead manager role. Default = PLAN_SPAWN
+# so existing setups that only set CB_PLAN_SPAWN get recovery escalation for free.
+RECOVERY_SPAWN="${CB_RECOVERY_SPAWN:-$PLAN_SPAWN}"
+# CB_RECOVERY_LEAD_CAP: max recovery-lead escalations per leaf (NEW; default 1). Tracked
+# via run-state recovery_lead_n. DISTINCT from CB_RECOVERY_CAP (charter-bounce counter).
+CB_RECOVERY_LEAD_CAP="${CB_RECOVERY_LEAD_CAP:-1}"
+# CB_RECOVERY_PARSE: parser for the manager's `## Recovery (machine)` plan block.
+CB_RECOVERY_PARSE="${CB_RECOVERY_PARSE:-$HERE_LAUNCHER/recovery-parse.sh}"
 mkdir -p "$STATE"
 now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
@@ -288,6 +300,14 @@ _loop_is_alive(){   # args: running fresh → exit 0 = alive, exit 1 = idle
   [ -n "$(_review_leaves_scoped | head -1)" ] && return 0
   # finale-in-progress: draft PR created, CI pending, deadline not expired [F4 #118]
   _finale_in_progress && return 0
+  # recovery-in-progress liveness (charter #1049): keep the loop alive while any leaf is
+  # mid-recovery (kind=recovery, not yet terminal) so its cross-TICK plan can finish.
+  local _rec_d _rec_id
+  for _rec_d in "$STATE"/*/; do
+    [ -e "$_rec_d" ] || continue
+    _rec_id=$(basename "$_rec_d")
+    [ "$(sget "$_rec_id" kind)" = "recovery" ] && [ -z "$(sget "$_rec_id" term)" ] && return 0
+  done
   # manifest-pipeline liveness: keep alive while a charter is in needs-analysis,
   # or in team-review WITHOUT an open type:human-decision issue for it (N-1: over-threshold
   # escalation waits for a human outside the run; that charter does NOT hold the loop).
@@ -321,10 +341,10 @@ reconcile(){
   local d id pid
   for d in "$STATE"/*/; do [ -e "$d" ] || continue
     id=$(basename "$d"); pid=$(sget "$id" pid); [ -n "$pid" ] || continue
-    # kind=triage guard: triage agent has its own completion handler; do NOT requeue as orphan.
-    # The completion-detect loop will handle verdict routing when the triage agent finishes.
-    if [ "$(sget "$id" kind)" = "triage" ]; then
-      log "reconcile: #$id kind=triage — skip (triage agent; handled by completion-detect)"
+    # kind=triage/recovery guard: these have their own completion handlers; do NOT requeue as
+    # orphan. The completion-detect loop routes them when the agent/step finishes.
+    if [ "$(sget "$id" kind)" = "triage" ] || [ "$(sget "$id" kind)" = "recovery" ]; then
+      log "reconcile: #$id kind=$(sget "$id" kind) — skip (handled by completion-detect)"
       continue
     fi
     if kill -0 "$pid" 2>/dev/null; then
@@ -378,6 +398,121 @@ claim_and_spawn(){ # id
   route "$id" "$ex"
 }
 
+# ── recovery escalation + cross-TICK plan executor (charter #1049) ────────────
+# _recovery_escalate <id> <red_reason>
+#   Manager escalation hook (component a). Routes the leaf to the NEW status:needs-recovery
+#   label and spawns the recovery-lead manager INSTEAD of writing status:blocked.
+#   (e) Graceful degradation: gated behind RED_REASON availability (charter #1110 — the
+#       manager is blind without it, "ЗАВИСИТ от слоя 1"). With an empty reason this
+#       returns 1 so the caller falls through to the current triage/blocked behaviour.
+#   Bounded by CB_RECOVERY_LEAD_CAP (recovery_lead_n). Returns 0 when it escalated (the
+#   caller MUST `continue`), 1 when it declined (caller falls through to blocked).
+_recovery_escalate() {
+  local _id="$1" _reason="${2:-}"
+  [ -n "$_reason" ] || { log "#$_id recovery: no RED_REASON (manager blind, #1110) — falling through to blocked"; return 1; }
+  local _rln; _rln=$(sget "$_id" recovery_lead_n); _rln=${_rln:-0}
+  if [ "$_rln" -ge "$CB_RECOVERY_LEAD_CAP" ]; then
+    log "#$_id recovery: lead-cap ($_rln/$CB_RECOVERY_LEAD_CAP) reached — falling through to blocked"
+    return 1
+  fi
+  _rln=$((_rln + 1)); sset "$_id" recovery_lead_n "$_rln"
+  sset "$_id" red_reason "$_reason"
+  gh issue edit "$_id" -R "$CB_REPO" \
+    --remove-label status:blocked \
+    --remove-label status:review \
+    --remove-label status:needs-rework \
+    --remove-label status:needs-triage \
+    --add-label status:needs-recovery >/dev/null 2>&1 || true
+  # NEW kind=recovery state machine; fresh plan/cursor for this escalation.
+  sset "$_id" kind recovery
+  sset "$_id" recovery_plan ""
+  sset "$_id" recovery_cursor ""
+  sset "$_id" recovery_await ""
+  sset "$_id" term ""
+  sset "$_id" starttime "$(now)"
+  ( "$RECOVERY_SPAWN" "$_id" recovery-lead >/dev/null 2>&1 ) & sset "$_id" pid "$!"
+  log "#$_id recovery: escalated to recovery-lead ($_rln/$CB_RECOVERY_LEAD_CAP; reason: $_reason)"
+  return 0
+}
+
+# _recovery_terminal <id> <why> [detail]
+#   Component (d): terminal sink. NEVER status:blocked / human-halt — always status:deferred
+#   plus an evidence comment, and clears recovery run-state.
+_recovery_terminal() {
+  local _id="$1" _why="$2" _detail="${3:-}"
+  gh issue edit "$_id" -R "$CB_REPO" \
+    --remove-label status:needs-recovery \
+    --remove-label status:needs-rework \
+    --remove-label status:review \
+    --add-label status:deferred >/dev/null 2>&1 || true
+  gh issue comment "$_id" -R "$CB_REPO" \
+    --body "$(printf 'recovery: %s — routed status:deferred (never blocked). %s' "$_why" "$_detail")" >/dev/null 2>&1 || true
+  sset "$_id" kind ""; sset "$_id" pid ""; sset "$_id" term 1; sset "$_id" recovery_await ""
+  log "#$_id recovery: terminal ($_why) -> deferred"
+}
+
+# _recovery_reverify <id>  -> prints "GREEN" or "RED:<reason>"
+#   Component (c) re-verify read: run verify-merged on the leaf's open PR (mirrors the
+#   integrator). Gated behind RED_REASON availability via GIT_REMOTE (#1110/#176).
+_recovery_reverify() {
+  local _id="$1"
+  [ -n "$GIT_REMOTE" ] || { printf 'RED:no-remote'; return 0; }
+  local _pr_entry _ph _pb _vm_exit=0 _vm_out _reason
+  _pr_entry=$(gh pr list -R "$CB_REPO" --state open --json number,headRefName,baseRefName 2>/dev/null \
+    | jq -r --arg rid "$_id" '
+        [.[] | select((.headRefName | startswith("leaf/\($rid)-")) or
+                      (.headRefName | startswith("rework/\($rid)-")))
+             | select(.baseRefName | startswith("charter/"))]
+        | sort_by(.number) | last
+        | if . then [.headRefName, .baseRefName] | join("\t") else "" end' 2>/dev/null || true)
+  _ph=$(printf '%s' "$_pr_entry" | cut -f1); _pb=$(printf '%s' "$_pr_entry" | cut -f2)
+  [ -n "$_ph" ] || { printf 'RED:no-pr'; return 0; }
+  _vm_out=$(bash "$INTEGRATOR_SCRIPT" verify-merged "$_ph" "$_pb" \
+            --remote "$GIT_REMOTE" --repo "$CB_REPO" 2>/dev/null) || _vm_exit=$?
+  _reason=$(printf '%s\n' "$_vm_out" | sed -n 's/^RED_REASON: //p' | head -1)
+  if [ "$_vm_exit" -eq 0 ]; then printf 'GREEN'; else printf 'RED:%s' "${_reason:-engine-red}"; fi
+}
+
+# _recovery_dispatch_step <id>
+#   Component (c): dispatch the step at recovery_cursor via existing label transitions, then
+#   return control to the loop. Component (d): exhaustion -> deferred (never blocked).
+_recovery_dispatch_step() {
+  local _id="$1" _plan _cursor _len _row _route _terminal _ch
+  _plan=$(sget "$_id" recovery_plan)
+  _cursor=$(sget "$_id" recovery_cursor); _cursor=${_cursor:-0}
+  _terminal=$(printf '%s\n' "$_plan" | awk -F'\t' '$1=="terminal"{print $2}')
+  _len=$(printf '%s\n' "$_plan" | awk -F'\t' '$1 ~ /^[0-9]+$/' | wc -l | tr -d ' ')
+  # (d) cursor exceeds plan length (exhaustion) -> deferred.
+  if [ "$_cursor" -ge "${_len:-0}" ]; then
+    _recovery_terminal "$_id" "plan-exhausted" "all ${_len} recovery steps RED (terminal=${_terminal:-?})"
+    return 0
+  fi
+  _row=$(printf '%s\n' "$_plan" | awk -F'\t' -v c="$_cursor" '$1==c{print; exit}')
+  _route=$(printf '%s' "$_row" | awk -F'\t' '{print $4}')
+  log "#$_id recovery: dispatch step $_cursor route=$_route (terminal=${_terminal:-?}, len=$_len)"
+  case "$_route" in
+    test-bug|executor-rework)
+      # re-claim by an executor via the existing needs-rework dispatch path.
+      gh issue edit "$_id" -R "$CB_REPO" \
+        --remove-label status:needs-recovery --add-label status:needs-rework >/dev/null 2>&1 || true
+      sset "$_id" recovery_await "$_cursor"; sset "$_id" term ""; sset "$_id" pid ""
+      ;;
+    needs-analysis)
+      # bounce the parent charter to analysis (re-plan); the leaf hands off and is deferred.
+      _ch=$(board get "$_id" charter 2>/dev/null || true)
+      [ -n "$_ch" ] && gh issue edit "$_ch" -R "$CB_REPO" \
+        --remove-label status:approved --add-label status:needs-analysis >/dev/null 2>&1 || true
+      _recovery_terminal "$_id" "step-$_cursor-needs-analysis" "bounced charter #${_ch:-?} to analysis for re-plan"
+      ;;
+    *)
+      log "#$_id recovery: step $_cursor unknown route '$_route' — advancing cursor"
+      sset "$_id" recovery_cursor "$((_cursor + 1))"
+      _recovery_dispatch_step "$_id"
+      ;;
+  esac
+  return 0
+}
+
 # ── integrator cycle: merge review-state leaf PRs into charter/C ─────────────
 # Called every tick of cmd_run after finished-spawn routing.
 # GREEN-BEFORE-MERGE: verify-merged (engine suite on merged tree) must pass before merge.
@@ -409,6 +544,10 @@ _integrator_cycle(){
     # Skip leaves already handled this run (merged or blocked for no-CI)
     local done; done=$(sget "$rid" int_done)
     [ -n "$done" ] && continue
+    # charter #1049: a leaf mid-recovery (kind=recovery) is owned by the recovery state
+    # machine, which does its own verify/merge decision — the integrator must not double-
+    # process it (would re-trigger rework/blocked escalation and fight the cursor).
+    [ "$(sget "$rid" kind)" = "recovery" ] && continue
 
     # Find the open PR: headRefName must start with leaf/$rid- OR rework/$rid-
     # AND base must be charter/*; when multiple matches, take the highest PR number (newest).
@@ -509,13 +648,20 @@ _integrator_cycle(){
           if [ -z "$_td" ]; then
             gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-triage >/dev/null 2>&1 || true
             sset "$rid" kind triage
+            sset "$rid" red_reason "$_vmreason"   # carry RED_REASON so a no-verdict triage can escalate to recovery (#1049/#1110)
             sset "$rid" starttime "$(now)"
             ( "$TRIAGE_SPAWN" "$rid" triage >/dev/null 2>&1 ) & sset "$rid" pid "$!"
             sset "$rid" int_done "triage-pending"
             log "triage: spawned for #$rid (integrator path)"
             continue
           fi
-          # triage_done is set: fall through to blocked write
+          # triage_done is set: the simple route did not resolve and the rework-cap was hit a
+          # SECOND time. charter #1049 (a): escalate to the recovery-lead (status:needs-recovery)
+          # INSTEAD of status:blocked, gated behind RED_REASON availability (#1110). Falls
+          # through to the blocked write only when the manager would be blind / lead-cap reached.
+          if _recovery_escalate "$rid" "${_vmreason}"; then
+            continue
+          fi
           gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:blocked >/dev/null 2>&1 || true
           gh issue comment "$rid" -R "$CB_REPO" --body "verify-merged confirmed engine RED after ${_rwk} reworks — failing: ${_vmreason:-engine RED}" >/dev/null 2>&1 || true
         else
@@ -1455,15 +1601,79 @@ cmd_run(){
           fi
           continue
         fi
+        # kind=recovery completion handler (charter #1049): sibling of kind=triage. Drives the
+        # NEW cross-TICK recovery state machine. Fires whenever a kind=recovery spawn finishes:
+        #   - recovery_plan EMPTY  -> the recovery-lead manager just posted: ingest the plan (b).
+        #   - recovery_plan SET    -> a re-dispatched step executor finished: read the re-verify
+        #                             outcome and advance the cursor / honor terminal (c)/(d).
+        if [ "$(sget "$id" kind)" = "recovery" ]; then
+          _rplan=$(sget "$id" recovery_plan)
+          if [ -z "$_rplan" ]; then
+            # (b) plan ingestion + cursor persistence: read the latest ## Recovery (machine)
+            # comment, parse it with recovery-parse.sh, persist plan + cursor.
+            _rcmt=$(gh issue view "$id" -R "$CB_REPO" --json comments 2>/dev/null \
+              | jq -r '[.comments[]?.body | select(contains("## Recovery (machine)"))] | last // empty' \
+              2>/dev/null || true)
+            if [ -z "$_rcmt" ]; then
+              log "#$id kind=recovery: no ## Recovery (machine) comment found — deferring"
+              _recovery_terminal "$id" "no-recovery-plan" "recovery-lead posted no machine plan"
+              continue
+            fi
+            _rtsv=$(printf '%s\n' "$_rcmt" | bash "$CB_RECOVERY_PARSE" 2>/dev/null) || {
+              log "#$id kind=recovery: recovery-parse rejected the plan — deferring"
+              _recovery_terminal "$id" "recovery-plan-parse-failed" "recovery-parse.sh rejected the plan block"
+              continue
+            }
+            sset "$id" recovery_plan "$_rtsv"
+            sset "$id" recovery_cursor 0
+            sset "$id" pid ""
+            log "#$id recovery: plan ingested ($(printf '%s\n' "$_rtsv" | awk -F'\t' '$1 ~ /^[0-9]+$/' | wc -l | tr -d ' ') steps) — dispatching cursor 0"
+            _recovery_dispatch_step "$id"
+            continue
+          fi
+          # (c) step executor outcome (cross-TICK): the re-dispatched step's executor finished.
+          _rcursor=$(sget "$id" recovery_cursor); _rcursor=${_rcursor:-0}
+          _rterminal=$(printf '%s\n' "$_rplan" | awk -F'\t' '$1=="terminal"{print $2}')
+          _rphase=$(jq -r '.phase // "unknown"' "$RUN/work/$id/status.json" 2>/dev/null || echo unknown)
+          _routcome="RED:executor-crash"
+          [ "$_rphase" = "done" ] && _routcome=$(_recovery_reverify "$id")
+          if [ "${_routcome%%:*}" = "GREEN" ]; then
+            if [ "$_rterminal" = "merge" ]; then
+              # GREEN -> honor terminal=merge: hand back to the integrator to merge, clear recovery.
+              sset "$id" kind ""; sset "$id" recovery_await ""; sset "$id" pid ""; sset "$id" term 1
+              gh issue edit "$id" -R "$CB_REPO" \
+                --remove-label status:needs-recovery --remove-label status:needs-rework \
+                --add-label status:review >/dev/null 2>&1 || true
+              log "#$id recovery: step $_rcursor GREEN, terminal=merge -> review (integrator merges)"
+            else
+              # GREEN but terminal=defer: do NOT merge — deferred (d).
+              _recovery_terminal "$id" "step-$_rcursor-green-terminal-defer" "manager directive: defer (no merge)"
+            fi
+          else
+            # RED -> advance cursor and dispatch the next step (or exhaustion -> deferred).
+            log "#$id recovery: step $_rcursor RED (${_routcome#RED:}) -> advancing cursor"
+            sset "$id" recovery_cursor "$((_rcursor + 1))"
+            sset "$id" recovery_await ""
+            sset "$id" pid ""
+            _recovery_dispatch_step "$id"
+          fi
+          continue
+        fi
         # kind=triage completion handler: triage agent finished; route leaf by verdict. (#784)
         if [ "$(sget "$id" kind)" = "triage" ]; then
           _tvrd=$(gh issue view "$id" -R "$CB_REPO" --json comments 2>/dev/null \
             | jq -r '[.comments[]?.body | select(contains("## Triage (machine)"))] | last // empty' \
             2>/dev/null || true)
           if [ -z "$_tvrd" ]; then
+            # charter #1049 (a): triage returned NO verdict → escalate to the recovery-lead
+            # (status:needs-recovery) INSTEAD of blocked, gated behind RED_REASON (#1110).
+            sset "$id" triage_done "1"
+            if _recovery_escalate "$id" "$(sget "$id" red_reason)"; then
+              continue
+            fi
             log "#$id kind=triage: no verdict comment found — routing to blocked"
             board route "$id" blocked "triage: no verdict found" >/dev/null
-            sset "$id" pid ""; sset "$id" kind ""; sset "$id" triage_done "1"; sset "$id" term 1
+            sset "$id" pid ""; sset "$id" kind ""; sset "$id" term 1
             continue
           fi
           _ttsv=$(printf '%s\n' "$_tvrd" \
@@ -2072,7 +2282,10 @@ Charter: #$cid" \
             _bg_spawn="$REWORK_SPAWN"
             _bg_old_branch="$(sget "$id" pr_head)"
           fi
-          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"; sset "$id" kind "$(board get "$id" role)"
+          board claim "$id" "$LID" >/dev/null; sset "$id" starttime "$(now)"
+          # charter #1049: preserve kind=recovery across a recovery step's re-claim so the
+          # cross-TICK recovery handler still catches this executor when it finishes.
+          [ "$(sget "$id" kind)" = "recovery" ] || sset "$id" kind "$(board get "$id" role)"
           ( CB_OLD_BRANCH="$_bg_old_branch" "$_bg_spawn" "$id" "$(board get "$id" role)" >/dev/null 2>&1 ) & sset "$id" pid "$!"
           running=$((running+1)); log "bg-spawn #$id (running=$running/$MAXP)"
         done
