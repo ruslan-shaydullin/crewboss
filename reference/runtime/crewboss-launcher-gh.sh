@@ -1103,8 +1103,16 @@ cmd_redispatch(){
 }
 
 cmd_once(){
-  ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    reconcile
+  ( exec {lockfd}>"$LOCK"
+    # Root B (#1096): hold the flock on an auto-assigned high fd ({lockfd}, >=10) instead of
+    # the old hard-coded fd 9. The OUTER subshell keeps {lockfd} open to hold the lock; the
+    # whole cycle body runs in an INNER subshell with {lockfd} CLOSED (`{lockfd}>&-`), so NO
+    # backgrounded spawn — claim_and_spawn or ANY other site — inherits the lock fd. That
+    # severs lock-fd inheritance at every spawn site at once (a per-site `9>&-` point-fix
+    # would miss the non-claim_and_spawn sites), so a hung/slow spawn can never keep
+    # launcher.lock held after the loop subshell is gone and wedge keepalive recovery.
+    flock -n "$lockfd" || { log "another launcher holds the lock — exit"; exit 1; }
+    ( reconcile
     # ── queue-mode detection ─────────────────────────────────────────────────
     # Read $RUN/queue.json (.order[]); if non-empty, only the head-of-queue
     # charter (first in order not yet terminal-for-queue) may have leaves launched.
@@ -1150,7 +1158,8 @@ cmd_once(){
       [ "$rc" = "9" ] && break
     done
     log "cycle done: launched=$launched"
-  ) 9>"$LOCK"
+    ) {lockfd}>&-
+  )
 }
 
 # --- run: background-parallel poll-loop (§4.6) ---
@@ -1161,8 +1170,26 @@ running_count(){ local d id pid n=0
     [ -n "$pid" ] && [ "$pid" != PENDING ] && kill -0 "$pid" 2>/dev/null && n=$((n+1)); done
   echo "$n"; }
 cmd_run(){
-  ( flock -n 9 || { log "another launcher holds the lock — exit"; exit 1; }
-    local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_plan_head="" _q_accept_head="" _q_disp="" _qn="" _qst="" _id_ch=""
+  ( exec {lockfd}>"$LOCK"
+    # Root B (#1096): hold the flock on an auto-assigned high fd ({lockfd}, >=10) instead of
+    # the old hard-coded fd 9. The OUTER subshell keeps {lockfd} open to hold the lock; the
+    # whole loop body runs in an INNER subshell with {lockfd} CLOSED (`{lockfd}>&-`), so NO
+    # backgrounded spawn (claim_and_spawn, TRIAGE, ANALYSIS, REVIEW, APPROVAL, CONFLICT,
+    # PLAN, PLAN_REVIEW, ACCEPT_REVIEW, integrator bg_spawn, …) inherits the lock fd. That
+    # severs lock-fd inheritance at every spawn site at once (a per-site `9>&-` point-fix
+    # would miss the non-claim_and_spawn sites): a hung/slow spawn — even a detached
+    # grandchild — can no longer keep launcher.lock held after the loop subshell exits and
+    # wedge keepalive recovery.
+    flock -n "$lockfd" || { log "another launcher holds the lock — exit"; exit 1; }
+    # Root C (#1096): write run/launcher.pid UNDER the flock so it appears only once the
+    # loop genuinely owns the lock (a foreign holder makes us lose the flock above and
+    # exit without clobbering its view). This is the single liveness source the API and
+    # keepalive read via os.kill(pid,0). Overwriting a stale pid here reaps an orphaned
+    # lock: if the lock was free, the previous loop is dead and its pid-file is replaced.
+    # The EXIT trap removes it when this loop exits so a dead loop leaves no zombie pid.
+    echo "$$" > "$RUN/launcher.pid"
+    trap 'rm -f "$RUN/launcher.pid"' EXIT
+    ( local poll="${CB_POLL:-2}" maxticks="${CB_MAX_TICKS:-120}" ticks=0 stop="" id pid ph prev tries running idle_ticks=0 _q_order="" _q_head="" _q_plan_head="" _q_accept_head="" _q_disp="" _qn="" _qst="" _id_ch=""
     reconcile   # STARTUP ONLY: requeue orphans from a previous run/reboot. Inside the loop,
                 # the launcher started its own spawns, so a dead pid = finished (route by
                 # status.json) — NOT an orphan; running reconcile per-tick would requeue every
@@ -2061,11 +2088,12 @@ Charter: #$cid" \
       ticks=$((ticks+1)); [ "$ticks" -ge "$maxticks" ] && { log "max ticks ($maxticks) — stop"; break; }
       sleep "$poll"
     done
-  ) 9>"$LOCK"
+    ) {lockfd}>&-
+  )
 }
 
 case "${1:-once}" in
-  reconcile) ( flock -n 9 || { log locked; exit 1; }; reconcile ) 9>"$LOCK" ;;
+  reconcile) ( exec {lockfd}>"$LOCK"; flock -n "$lockfd" || { log locked; exit 1; }; ( reconcile ) {lockfd}>&- ) ;;
   once) cmd_once ;;
   run)  cmd_run ;;
   re-dispatch) cmd_redispatch "${2:-}" ;;
