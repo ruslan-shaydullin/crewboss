@@ -445,7 +445,25 @@ cmd_verify_merged() {
       # Only run tests explicitly classified as ALLOW in the manifest.
       # Unknown/unclassified/EXCLUDED tests are skipped (fail-safe default).
       grep -qE "^ALLOW[[:space:]]+${_base}$" "$_pl_manifest" 2>/dev/null || continue
-      if ! bash "$t" >/dev/null 2>&1; then fail=1; printf '%s\n' "$_base" >> "$_reason_file"; fi
+      # #1110: capture combined stdout+stderr IN-SUBSHELL via command substitution
+      # (no extra fd left open holding the caller's pipe — cf. the load-bearing
+      # redirect note below) so the RED reason can surface the EXACT failing
+      # assertion, not just the test basename (#1043 blind-fix loop). On failure,
+      # extract a BOUNDED single-line detail: grep FAIL/✗/assert markers (each
+      # match capped at 200 chars so a megabyte filler line cannot leak), fall back
+      # to the tail bytes if no marker, collapse newlines and drop commas (commas
+      # are reserved for the downstream `paste -sd,` join), then hard-cap at 200
+      # chars. Append "<base>: <detail>" — basename PRESERVED (backwards-compat).
+      # Everything downstream (sort -u | paste -sd, / ${_cache_file}.reason /
+      # RED_REASON print / smoke-reason / N-confirmation) stays untouched.
+      _out="$(bash "$t" 2>&1)"; _trc=$?
+      if [ "$_trc" -ne 0 ]; then
+        fail=1
+        _detail="$(printf '%s\n' "$_out" | grep -aoE '(FAIL|✗|[Aa]ssert)[^[:cntrl:]]{0,200}' 2>/dev/null | head -3 | tr '\n,' ';;')"
+        [ -z "$_detail" ] && _detail="$(printf '%s\n' "$_out" | tail -c 200 | tr '\n,' ';;')"
+        _detail="$(printf '%s' "$_detail" | cut -c1-200)"
+        printf '%s: %s\n' "$_base" "$_detail" >> "$_reason_file"
+      fi
     done
     exit "$fail"
   ) &

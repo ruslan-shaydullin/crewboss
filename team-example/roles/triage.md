@@ -24,6 +24,7 @@ Your first argument `$1` is the failed **leaf issue number**. Gather the followi
 
 - `executor-error` — implementation code bug; the test and plan are sound; the executor simply wrote wrong code. Route: `executor-rework`.
 - `test-bug` — the test asserts the wrong thing; the implementation is correct but the test is bad. Route: `test-bug`.
+  - Use the **failing-assertion text** now carried in the RED comment (`— failing: <base>: <assertion>`, #1110). Read it literally: if the assertion **pins a stale literal that the executor legitimately changed** (e.g. a regression-guard still grepping `gh pr create` after the executor correctly switched to `cb_pr_create`, #1043), the implementation is right and the test is stale → `test-bug`. Only call `executor-error` when the assertion describes behaviour the executor's code genuinely got wrong.
 - `test-flaky` — intermittent or environment-dependent failure; the same code passes sometimes and fails others. Route: `test-flaky`.
 - `plan-flaw` — the leaf plan or spec is contradictory or incomplete; fixing the code alone cannot satisfy the acceptance criteria. Route: `needs-plan`.
 - `approach-flaw` — the charter's architectural approach is wrong at a deeper level; the whole charter direction needs rethinking. Route: `needs-analysis`.
