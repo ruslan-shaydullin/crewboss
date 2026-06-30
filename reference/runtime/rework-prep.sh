@@ -14,7 +14,8 @@ BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"
 REDREASON="$(gh issue view "$ID" -R "$CB_REPO" --json comments --jq '[.comments[].body | select(test("verify-merged confirmed engine RED"))] | last // ""' 2>/dev/null)"
 FEEDBACK=""; [ -n "$REDREASON" ] && FEEDBACK="
 
-Most recent gate feedback to address specifically: $REDREASON"
+Most recent gate feedback to address specifically: $REDREASON
+Note (#1110): the feedback above now carries the EXACT failing assertion (— failing: <test>: <assertion>). Read it before changing code. If the assertion pins OUTDATED/stale text (e.g. an old literal you legitimately changed) while your implementation is actually correct, the fix is to UPDATE THE ASSERTION in the test — not to revert your code."
 C="$(printf '%s' "$BODY" | grep -oiE 'charter:[[:space:]]*#?[0-9]+' | head -1 | grep -oE '[0-9]+')"
 [ -n "$C" ] || { echo "rework #$ID: no 'Charter: #N' in body" >&2; exit 2; }
 WA="$RUN/work/$ID/repo"

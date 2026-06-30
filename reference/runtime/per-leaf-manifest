@@ -217,3 +217,11 @@ EXCLUDED 1073-pid-lifecycle
 EXCLUDED 1073-fd-noinherit
 EXCLUDED 1073-recovery
 EXCLUDED 1073-keepalive-singletick
+# charter #1048 / #1109 verify-merged rich-reason (qa-engineer leaf): both suites
+#   drive the REAL cmd_verify_merged against bare-remote fixtures (recursive
+#   verify-merged calls) — disqualifies from ALLOW per the fail-closed criterion,
+#   same precedent as integrator / verify-merged-leaf-regen. EXCLUDED is also what
+#   keeps these intentionally-RED RED→GREEN tests from blocking the qa leaf's own
+#   per-leaf verify-merged gate before the impl leaf lands.
+EXCLUDED 1109-verify-merged-rich-reason
+EXCLUDED 1109-verify-merged-rich-reason-live
