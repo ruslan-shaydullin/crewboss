@@ -2141,7 +2141,9 @@ Charter: #$cid"
             if [ -n "$_q_order" ]; then [ -z "$_q_plan_head" ] && break; [ "$cid" = "$_q_plan_head" ] || continue; fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
-            _plr_agreed=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null | jq -r '[.labels[].name] | index("plan:agreed") != null' 2>/dev/null || echo "false")
+            _plr_labels_json=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
+              | jq -r '[.labels[].name]' 2>/dev/null || echo "[]")
+            _plr_agreed=$(printf '%s' "$_plr_labels_json" | jq -r 'index("plan:agreed") != null' 2>/dev/null || echo "false")
             if [ "$_plr_agreed" = "true" ]; then
               gh issue edit "$cid" -R "$CB_REPO" --remove-label status:plan-review --add-label status:approved 2>/dev/null || true
               sset "$cid" term 1
@@ -2149,7 +2151,10 @@ Charter: #$cid"
               continue
             fi
             _pround=$(sget "$cid" pround); _pround=${_pround:-0}
-            _pcap="${CB_PLAN_CONVERGE_CAP:-${CB_CONVERGE_CAP:-4}}"
+            _charter_pcap_label=$(printf '%s' "$_plr_labels_json" \
+              | jq -r '.[] | select(startswith("converge-cap:")) | ltrimstr("converge-cap:")' \
+              | head -1)
+            _pcap="${_charter_pcap_label:-${CB_PLAN_CONVERGE_CAP:-${CB_CONVERGE_CAP:-6}}}"
             if [ "$_pround" -ge "$_pcap" ]; then
               _all_hd=$(_cb_issue_list open 2>/dev/null || echo "[]")
               _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
