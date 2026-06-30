@@ -359,6 +359,12 @@ def search_board(q):
     # Strip qualifier-bearing tokens (anything with ':') so the user supplies
     # plain TERMS only and cannot inject repo:/org:/is: to widen the scope.
     terms = [tok for tok in q.split() if ":" not in tok]
+    # If the query reduced to ZERO plain terms (e.g. the user typed ONLY
+    # qualifiers like "is:pr repo:other/x"), there is nothing to match. Issue
+    # #1057: do NOT fire a bare `repo:OWNER/REPO is:issue` search — that would
+    # flood back up to per_page unrelated repo issues. Return empty, no gh call.
+    if not terms:
+        return {"results": []}
     search_q = ("repo:%s is:issue " % REPO) + " ".join(terms)
     raw = sh(["gh", "api", "-X", "GET", "/search/issues",
               "-f", "q=%s" % search_q, "-f", "per_page=30"])
@@ -1157,7 +1163,7 @@ class H(BaseHTTPRequestHandler):
 if __name__=="__main__":
     if "--selftest-search" in sys.argv:
         # Inline proof for the NEW single-call search_board() (charter #994 /
-        # issue #1060). Drives the rewritten code path: search_board() makes
+        # issues #1054/#1057). Drives the rewritten code path: search_board() makes
         # EXACTLY ONE bounded gh call per query and NEVER walks the repo.
         #   * NUMBER query  -> ONE /repos/OWNER/REPO/issues/{N} returning a single
         #                      issue OBJECT (not an array).
@@ -1296,6 +1302,15 @@ if __name__=="__main__":
                 search_board(_qq)
                 if len(_calls) != 1:
                     _failures.append(f"T8 FAIL '{_qq}' made {len(_calls)} gh calls (expected exactly 1)")
+
+            # --- T9 (#1057): a qualifier-ONLY query reduces to zero plain terms
+            # -> {"results": []} with NO gh call (never a bare scope-only flood) ---
+            _calls.clear()
+            _r = search_board("is:pr repo:other/x org:foo")
+            if _r != {"results": []}:
+                _failures.append(f"T9 FAIL qualifier-only query returned {_r!r} (expected [])")
+            if _calls:
+                _failures.append(f"T9 FAIL qualifier-only query made gh calls: {_calls!r}")
 
         finally:
             _mod.sh = _real_sh
