@@ -604,6 +604,20 @@ def do_command(body):
         ks = os.path.join(RUN, "kill_switch")
         if os.path.exists(ks):
             return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
+        # Singleton guard (root D): consult run/launcher.pid before spawning. If a live
+        # loop already holds it, do NOT add another launcher process — keepalive and
+        # operators both hit action=run, so an unguarded Popen over-spawns launchers.
+        # A stale/absent pid (os.kill -> ProcessLookupError/OSError) means no live loop;
+        # fall through and spawn as today, preserving the run-env seeding below.
+        pid_file = os.path.join(RUN, "launcher.pid")
+        try:
+            with open(pid_file) as _pf:
+                _pid = int(_pf.read().strip())
+            os.kill(_pid, 0)
+        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+            pass  # absent / unreadable / stale -> proceed to spawn
+        else:
+            return {"ok": True, "msg": "launcher already running"}
         os.makedirs(RUN,exist_ok=True)
         # Build full env from run-env.sh so the loop gets the complete contract even when
         # the daemon was restarted with an empty env (e.g. after deploy-runtime.sh — issue #148).
