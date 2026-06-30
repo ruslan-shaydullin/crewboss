@@ -1,50 +1,50 @@
-You are the executor for issue #949 in repo stratch1989/crewboss.
-Hard rules for THIS run:
-- You are ALREADY on branch leaf/949-1782667664, based on the charter integration branch 'charter/499' (NOT main). Sibling leaves of charter #499 may already be merged into 'charter/499'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/499 --title '<short>' --body 'Closes #949'. The PR base MUST be 'charter/499', NOT main. Then STOP — do not merge, do not touch other issues.
-- This issue is self-contained; everything you need is below.
+You are fixing issue #1060 on the charter integration branch charter/994 in repo stratch1989/crewboss.
+You are ALREADY on branch rework/1060-1782812441, based on origin/charter/994. Implement the fix described below in the existing code on this branch.
+Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass.
+git add -A && git commit -m "fix(#1060): ..."; git push -u origin HEAD
+gh pr create --base charter/994 --title "fix(#1060): rework onto charter/994" --body "Closes #1060"
+STOP at the PR. Do NOT merge. base MUST be charter/994.
 
----- TASK (issue #949) ----
-Charter: #499
-Depends-on: #947, #948
+Issue #1060:
+Charter: #994
+Depends-on: #1059
 
-## Context
+Role: executor (994.1) — backend, Python. Scope: `ui/server/crewboss-api.py` only.
 
-Charter #499 fixes a cockpit visibility bug: old open charters (#305, #306) were evicted from the `/api/state` board by the `per_page=100` cap in `build_state()` when newer leaves filled the window.
+## Charter context (full — you see only this issue)
 
-The fix (leaf-A, issue #948) splits the single `gh api /repos/{REPO}/issues -F state=all -F per_page=100` call into two independent `gh api` calls, each with its own ETag key in `_etag_store`, and merges results so open charters are always present. The test (leaf-B, issue #947) writes `reference/tests/board-charter-visibility.test.sh` and registers it in `reference/runtime/per-leaf-manifest`.
+Cockpit board search does not work live, even though charter #500 shipped backend `/api/search`, frontend `searchBoard()`, and tests — all merged to main.
 
-Your job is to review both PRs for correctness and confirm all acceptance criteria are met before approving.
+Symptoms (operator, 2026-06-29 — observations, NOT a prescribed fix):
+- `curl "http://127.0.0.1:8787/api/search?q=993"` → **HTTP 000, no response 40+ seconds** (hangs). Same with/without token.
+- Endpoint/function exist (`def search_board`, route `/api/search`) but do not return in a sane time → frontend times out → empty search.
+- `gh search issues --repo stratch1989/crewboss "993"` returns instantly (comparison only).
 
-## Review Checklist
+Root cause (validated): `search_board(q)` calls `paginate_issues()` — a full repo walk (6+ pages now, growing). Under gh rate-limit throttle each page GET stalls toward the 30s `sh` timeout → 40s+ HTTP-000 hang. #500 tests were green on an instant mock and missed it ("merged + green ≠ live").
 
-### leaf-A (fix in `ui/server/crewboss-api.py`)
+## Task
 
-- [ ] New `_cached_charters = None` module-level global is present alongside `_cached_issues`.
-- [ ] **Call 1** uses `_etag_store["charters"]` (or equivalent distinct key) and `_cached_charters` — two independent ETag keys, two independent cache variables.
-- [ ] **Call 2** (existing general-board call) uses its original `_etag_store` key and `_cached_issues` — key name and cache variable unchanged.
-- [ ] **Critical fix**: Call 2's 304 branch is `issues = _cached_issues` (assign + fall through), NOT `return _cached_issues` (early exit). The `return` statement at the old line 197 must be gone. Without this change, a 304 on the general call would discard all charter results from Call 1.
-- [ ] A 304 on either call does NOT suppress the other call — both calls always run.
-- [ ] **Merge step**: `by_n.setdefault(it["number"], it)` — charter-call results win on conflict with general-call results (not overwritten).
-- [ ] The existing `for it in issues:` board-building loop (labels/state parsing logic) is unchanged.
-- [ ] `python3 -c "import ast; ast.parse(open('ui/server/crewboss-api.py').read())"` passes (no syntax errors).
+Rewrite `search_board(q)` so it **NO LONGER calls `paginate_issues()`**. Replace the full-repo walk with **single-call server-side resolution — exactly ONE bounded `gh` call per query, regardless of repo size**:
 
-### leaf-B (test `reference/tests/board-charter-visibility.test.sh`)
+- **Number query** (`q` is `#N` or all-digits): resolve via ONE direct `gh api -X GET /repos/OWNER/REPO/issues/{N}` → a **single issue OBJECT** (not an array). Instant, exact, and not subject to the search-API rate limit. A not-found / non-object / error response → return `{"results": []}` (NEVER raise).
+- **Text query**: ONE call `gh api -X GET /search/issues -f q="repo:OWNER/REPO is:issue <terms>"` with a bounded count (e.g. `per_page=30`). The search response carries results in a **`.items` array** (different shape from `/issues`) — read from `.items`.
+- **Scope / sanitize**: ALWAYS hard-prefix `repo:OWNER/REPO is:issue`; treat the user's `q` as plain search TERMS only. Do not let a user inject qualifiers (`repo:`, `org:`, `is:pr`) that widen scope to other repos. (No shell-injection risk — `sh()` uses an arg list, not `shell=True` — but qualifier injection is a real scope concern.)
+- **Output shape parity**: preserve the EXACT board-item shape `{n, kind, state, title, labels}` and the kind/state classification already used by `build_state()` / the old `search_board()` (closed→done; `type:milestone`→milestone, `type:charter`→charter, else leaf; status-label→state mapping; case-insensitive state). Empty `q` → `{"results": []}`.
+- **Do not touch other endpoints**: keep the `/api/search` handler, the `{"results": [...]}` envelope, `build_state`, ETag/auth paths, and `paginate_issues()` (still used by `/api/state`) UNCHANGED. Only `search_board()` stops using `paginate_issues()`.
+- **Update the inline `--selftest-search` harness** (currently ~lines 1125–1221 of `ui/server/crewboss-api.py`) to drive the NEW code path: mock `sh()` to return a single issue OBJECT for `/repos/.../issues/N` and `{"items": [...]}` for `/search/issues`; assert single-call-per-query, number/digit/text paths, case-insensitivity, scoping (no qualifier injection), empty→`[]`, not-found→`[]`. This inline harness is YOUR proof (the executor's), separate from the qa `tests/` artifacts.
 
-- [ ] Stub intercepts `gh api` (matching `$1 == "api"` + route path), NOT `gh issue list`.
-- [ ] REST API JSON schema used throughout: lowercase `"state": "open"/"closed"`, labels as object arrays `[{"name":"..."}]`.
-- [ ] Low-numbered open charters (#5, #10, #15) are present in the charter-call stub response but **absent** from the general-call stub response — this correctly models the N>100 eviction scenario.
-- [ ] 304 short-circuit path exercised for both ETag keys independently.
-- [ ] `build_state()` is invoked directly via `python3 -c` — no background HTTP server started.
-- [ ] `ALLOW board-charter-visibility` is present in `reference/runtime/per-leaf-manifest` with the criterion justification comment.
-- [ ] Header count comment updated to `ALLOW=23` (was 22).
-- [ ] `reference/tests/verify-merged.sh` exits ALL-GREEN on Linux.
+## Constraints
+- Search must NOT hang/timeout — responsiveness is the whole point. Target: well under a couple of seconds.
+- Must scale beyond the current ~600 issues (O(1) gh calls, not O(pages)).
+- Economical with gh rate-limit (search API ~30/min; one call per query + frontend debounce keeps within it).
+- Do not break `build_state` / other endpoints / the cockpit.
+
+## Ownership / rules
+- You MUST NOT modify anything under `tests/` or matching `*.test.*` — those are owned by the qa leaf #1059 (enforced at gate level). The `--selftest-search` harness lives INSIDE `crewboss-api.py` and IS yours to edit.
+- Depends-on #1059 (the qa live-contract tests merge first; `tests/825-search-api.test.sh` is rewritten there to the new contract and is one of your acceptance checks).
 
 ## Acceptance (machine)
+- check: python3 ui/server/crewboss-api.py --selftest-search
+- check: bash tests/825-search-api.test.sh
 
-- check: grep -q "_cached_charters" ui/server/crewboss-api.py
-- check: grep -q "by_n.setdefault" ui/server/crewboss-api.py
-- check: grep -qv "return _cached_issues" ui/server/crewboss-api.py
-- check: grep -q "ALLOW board-charter-visibility" reference/runtime/per-leaf-manifest
-- check: reference/tests/board-charter-visibility.test.sh
-- check: reference/tests/verify-merged.sh 2>&1 | grep -q "ALL-GREEN"
+Most recent gate feedback to address specifically: verify-merged confirmed engine RED — failing: smoke:api-state-timeout:crewboss-api.py
