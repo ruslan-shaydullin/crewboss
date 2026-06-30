@@ -312,9 +312,10 @@ def _search_item(it):
 
 def search_board(q):
     """Resolve a board search with EXACTLY ONE bounded `gh` call per query — never
-    a full-repo walk (charter #994 / issue #1060). The old implementation called
-    paginate_issues() (6+ page GETs, growing with the repo); under gh rate-limit
-    throttle each page GET stalled toward the 30s `sh` timeout, so the whole call
+    a full-repo walk (charter #994 / issue #1054). The old implementation walked
+    the FULL repo issue list (6+ page GETs, growing with the repo); under gh
+    rate-limit throttle each page GET stalled toward the 30s `sh` timeout, so the
+    whole call
     hung 40s+ → HTTP 000 and the cockpit search came back empty (lesson: merged +
     green on an instant mock ≠ live). This is O(1) gh calls regardless of repo
     size and returns well under a couple of seconds.
