@@ -517,6 +517,71 @@ has_comment 5 "engine-fail\\|verify-merged" \
   || ko "RED-g: no verify-failure comment on charter #5"
 
 # =============================================================================
+# RED-f: queue-prune — auto-merge removes charter from queue.json
+# (queue-prune leaf for charter #484; distinct from the admin-merge RED-f above)
+# =============================================================================
+echo "== RED-f: auto-merge prunes charter 300 from queue.json =="
+
+CBHOME_FQ="$ROOT/cbhome_fq"
+reset_sandbox "$CBHOME_FQ"
+
+# Push charter/300 branch to remote (setup_remote only creates charter/5)
+_tmpfq="$(mktemp -d)"
+git clone -q "$REMOTE" "$_tmpfq" 2>/dev/null
+git -C "$_tmpfq" config user.email t@t
+git -C "$_tmpfq" config user.name T
+git -C "$_tmpfq" checkout -q -b "charter/300" 2>/dev/null
+printf 'c300-work\n' > "$_tmpfq/c300.txt"
+git -C "$_tmpfq" add -A
+git -C "$_tmpfq" commit -qm "charter 300 leaf work" 2>/dev/null
+git -C "$_tmpfq" push -q origin "charter/300" 2>/dev/null
+rm -rf "$_tmpfq"
+
+# Board state: charter 300 finale-ready (OPEN, leaf 301 CLOSED)
+#              charter 999 blocked (open leaf 1000 — will not be auto-merged)
+RED_FQ_BOARD='[
+  {"number":300,"state":"OPEN",
+   "labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"charter 300","comments":[]},
+  {"number":301,"state":"CLOSED","labels":[{"name":"type:agent"}],
+   "body":"Charter: #300","comments":[]},
+  {"number":999,"state":"OPEN",
+   "labels":[{"name":"type:charter"},{"name":"status:approved"}],
+   "body":"charter 999","comments":[]},
+  {"number":1000,"state":"OPEN","labels":[{"name":"type:agent"}],
+   "body":"Charter: #999","comments":[]}
+]'
+printf '%s' "$RED_FQ_BOARD" > "$BOARD_STATE"
+
+# Pre-create PR 9300 for charter 300 (gh stub: pr list returns it, bypasses pr-create)
+printf '9300' > "$PRDIR/charter-pr-300"
+
+# CRITICAL: pre-seed ci_state=pending to force the FIRST-CALL path in _finale_check_ci
+mkdir -p "$CBHOME_FQ/run/state/finale-300"
+printf 'pending' > "$CBHOME_FQ/run/state/finale-300/ci_state"
+
+# Pre-seed queue.json: [300, 999]
+mkdir -p "$CBHOME_FQ/run"
+printf '{"order":[300,999]}' > "$CBHOME_FQ/run/queue.json"
+
+# Run the launcher with auto-merge enabled
+run_finale "$CBHOME_FQ" "CB_AUTO_MERGE=1"
+
+# Assert: charter 300 must be pruned from queue
+if jq -e '.order | index(300) == null' "$CBHOME_FQ/run/queue.json" > /dev/null 2>&1; then
+  ok "RED-f: charter 300 pruned from queue.json after auto-merge"
+else
+  ko "RED-f: charter 300 still in queue.json (launcher did not prune)"
+fi
+
+# Assert: charter 999 must remain (has open leaf — never auto-merged)
+if jq -e '.order | index(999) != null' "$CBHOME_FQ/run/queue.json" > /dev/null 2>&1; then
+  ok "RED-f: charter 999 retained in queue.json (not auto-merged)"
+else
+  ko "RED-f: charter 999 incorrectly removed from queue.json"
+fi
+
+# =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
