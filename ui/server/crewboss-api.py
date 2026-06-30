@@ -829,6 +829,13 @@ def do_command(body):
             return {"ok": False, "msg": f"merge succeeded but issue close failed: {r2.stderr.strip()}"}
         # Step 5C: Only unlink pr_num_path after confirmed close (preserves retry invariant)
         os.unlink(pr_num_path)
+        # Step 5D: Prune merged charter from queue (best-effort, non-blocking)
+        try:
+            _qdata = read_json(os.path.join(RUN, "queue.json"), {"order": []})
+            _qorder = [x for x in _qdata.get("order", []) if x != int(n)]
+            save_queue(_qorder)
+        except Exception:
+            pass  # best-effort — never block a successful merge
         return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
     return {"ok":False,"msg":f"unknown action: {a}"}
 
