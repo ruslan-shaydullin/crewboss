@@ -287,55 +287,92 @@ def paginate_issues():
         page = hi + 1
     return all_issues
 
+def _issue_to_item(it):
+    """Map ONE raw gh issue dict (from /repos/.../issues/{N} or /search/issues
+    .items[]) to the board-item shape {n, kind, state, title, labels}, using the
+    EXACT kind/state classification of build_state() (closed -> done; type:milestone
+    -> milestone, type:charter -> charter, else leaf; status-label -> state mapping;
+    case-insensitive state). Returns None if `it` is not a usable issue object."""
+    if not isinstance(it, dict) or "number" not in it:
+        return None
+    labels = [l["name"] for l in it.get("labels", []) if isinstance(l, dict) and "name" in l]
+    if   "type:milestone" in labels:           kind = "milestone"
+    elif "type:charter"   in labels:           kind = "charter"
+    else:                                       kind = "leaf"
+    # Case-insensitive: gh issue list -> CLOSED, gh api -> closed (charter #969).
+    if   str(it.get("state", "")).lower() == "closed":  st = "done"
+    elif "hold"               in labels:        st = "held"
+    elif "status:blocked"     in labels:        st = "blocked"
+    elif "status:review"      in labels:        st = "review"
+    elif "status:in-progress" in labels:        st = "in-progress"
+    elif "status:approved"    in labels:        st = "approved"
+    elif "status:plan-review" in labels:        st = "plan-review"
+    elif "status:needs-plan"  in labels:        st = "needs-plan"
+    else:                                       st = "open"
+    return {"n": it["number"], "kind": kind, "state": st,
+            "title": it.get("title", ""), "labels": labels}
+
 def search_board(q):
-    """Paginate through ALL GitHub issues and filter by query q.
+    """Resolve query q with EXACTLY ONE bounded `gh` call — never a repo walk.
 
     Returns {"results": [board-item, ...]} where each board-item has the same
-    shape as the items built in build_state(): n, kind, state, title, labels.
+    shape/classification as build_state(): {n, kind, state, title, labels}.
 
-    q filtering rules:
-      - empty q → return {"results": []}
-      - q starts with "#" or q.isdigit() → match by issue number (str(n) == q.lstrip("#"))
-      - otherwise → case-insensitive substring match on title OR any label name
+    Single-call-per-query contract (charter #994 / issue #1060 — the old
+    paginate_issues() full-repo walk hung the cockpit under gh rate-limit; this
+    replacement is O(1) gh calls regardless of repo size and cannot hang/spin):
+
+      * empty q -> {"results": []} (no gh call).
+      * number query (q is "#N" or all-digits): ONE direct
+            gh api -X GET /repos/OWNER/REPO/issues/{N}   -> a single issue OBJECT.
+        Not-found / non-object / error -> {"results": []} (NEVER raises). Not
+        subject to the search-API rate limit; instant and exact.
+      * text query: ONE call
+            gh api -X GET /search/issues -f q="repo:OWNER/REPO is:issue <terms>"
+        bounded by per_page=30. The response carries results in a `.items` ARRAY
+        (a DIFFERENT shape from /issues) — read from `.items`.
+
+    Scoping/sanitize: the effective query is ALWAYS hard-prefixed with
+    `repo:OWNER/REPO is:issue`; the user's q is treated as plain search TERMS only.
+    Any user token that looks like a qualifier (contains ':' — e.g. repo:other/x,
+    org:foo, is:pr) is stripped so it cannot widen scope to other repos / PRs.
+    (No shell-injection risk: sh() uses an arg list, not shell=True.)
     """
+    if not q or not REPO:
+        return {"results": []}
+
+    q = q.strip()
     if not q:
         return {"results": []}
 
-    all_issues = paginate_issues()
+    # ── Number path: q is "#N" or all-digits -> ONE direct issue GET ──────────
+    num = q.lstrip("#")
+    if (q.startswith("#") or q.isdigit()) and num.isdigit():
+        raw = sh(["gh", "api", "-X", "GET", f"/repos/{REPO}/issues/{num}"])
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return {"results": []}
+        item = _issue_to_item(obj)  # non-object / 404 error body -> None
+        return {"results": [item] if item else []}
 
+    # ── Text path: ONE /search/issues call, hard-scoped, qualifiers stripped ──
+    terms = " ".join(tok for tok in q.split() if ":" not in tok).strip()
+    if not terms:
+        return {"results": []}
+    scoped_q = f"repo:{REPO} is:issue {terms}"
+    raw = sh(["gh", "api", "-X", "GET", "/search/issues",
+              "-f", f"q={scoped_q}", "-f", "per_page=30"])
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {"results": []}
+    items = data.get("items", []) if isinstance(data, dict) else []
     results = []
-    for it in all_issues:
-        labels = [l["name"] for l in it.get("labels", [])]
-        # kind — same logic as build_state()
-        if   "type:milestone" in labels: kind = "milestone"
-        elif "type:charter"   in labels: kind = "charter"
-        else:                            kind = "leaf"
-        # state — same logic as build_state(). Case-insensitive: `gh issue list`
-        # returns state=CLOSED, `gh api` returns state=closed — both classify "done"
-        # (charter #969 case-mismatch fix).
-        if   str(it.get("state", "")).lower() == "closed":  st = "done"
-        elif "hold"               in labels:        st = "held"
-        elif "status:blocked"     in labels:        st = "blocked"
-        elif "status:review"      in labels:        st = "review"
-        elif "status:in-progress" in labels:        st = "in-progress"
-        elif "status:approved"    in labels:        st = "approved"
-        elif "status:plan-review" in labels:        st = "plan-review"
-        elif "status:needs-plan"  in labels:        st = "needs-plan"
-        else:                                       st = "open"
-
-        item = {"n": it["number"], "kind": kind, "state": st,
-                "title": it.get("title", ""), "labels": labels}
-
-        # Filter
-        q_stripped = q.lstrip("#")
-        if q.startswith("#") or q.isdigit():
-            if str(item["n"]) == q_stripped:
-                results.append(item)
-        else:
-            ql = q.lower()
-            if ql in item["title"].lower() or ql in " ".join(labels).lower():
-                results.append(item)
-
+    for it in items:
+        item = _issue_to_item(it)
+        if item:
+            results.append(item)
     return {"results": results}
 
 def build_state():
@@ -1123,102 +1160,168 @@ class H(BaseHTTPRequestHandler):
 
 if __name__=="__main__":
     if "--selftest-search" in sys.argv:
-        from unittest.mock import patch
+        # Inline proof for the NEW single-call search_board() (charter #994 / #1060):
+        # search_board no longer walks the repo (paginate_issues). It issues EXACTLY
+        # ONE bounded gh call per query — a direct /repos/.../issues/{N} OBJECT for
+        # number/digit queries, or one /search/issues returning a {"items":[...]}
+        # ARRAY for text queries — hard-scoped to repo:OWNER/REPO is:issue. We mock
+        # sh() to capture every invocation and assert: single-call-per-query, the
+        # number/digit/text paths, case-insensitivity, scoping (no qualifier
+        # injection), empty->[], and not-found->[].
         import json as _json
-        _failures = []
-
-        # --- Test 1: empty q returns {"results": []} with no gh calls ---
-        with patch("subprocess.run") as _mock_no_call:
-            _r1 = search_board("")
-            if _r1 != {"results": []}:
-                _failures.append(f"T1 FAIL empty q returned {_r1!r} expected {{'results': []}}")
-            if _mock_no_call.called:
-                _failures.append("T1 FAIL subprocess.run was called for empty q (should be no-op)")
-
-        # --- Test 2: number search by '#NNN' ---
-        _page1 = [
-            {"number": 42, "title": "Fix the thing", "state": "open", "labels": []},
-            {"number": 99, "title": "Another issue", "state": "open", "labels": [{"name": "type:charter"}]},
-        ]
-        _page2 = []  # signals end of pagination
-        _call_idx = [0]
-        def _fake_sh_num(args, timeout=30):
-            _call_idx[0] += 1
-            if _call_idx[0] == 1:
-                return _json.dumps(_page1)
-            return _json.dumps(_page2)
-        # Patch sh() directly in the module's global scope
         import sys as _sys
+        _failures = []
         _mod = _sys.modules[__name__]
-        _real_sh = _mod.sh
+        _real_sh, _real_repo = _mod.sh, _mod.REPO
+        _mod.REPO = "test/repo"
+
+        # Fixture issues keyed by number (mirrors gh REST object shape; #99 CLOSED
+        # uppercase to prove case-insensitive done).
+        _FIX = {
+            42:  {"number": 42, "title": "Deploy microservice alpha", "state": "open",
+                  "labels": [{"name": "type:leaf"}, {"name": "status:in-progress"}]},
+            100: {"number": 100, "title": "Charter: smoke platform", "state": "open",
+                  "labels": [{"name": "type:charter"}, {"name": "status:approved"}]},
+            99:  {"number": 99, "title": "Old closed smoke task", "state": "CLOSED",
+                  "labels": [{"name": "type:leaf"}]},
+            993: {"number": 993, "title": "Cockpit search smoke test", "state": "open",
+                  "labels": [{"name": "type:leaf"}, {"name": "status:in-progress"}]},
+        }
+        _calls = []  # one entry (the argv list) per sh() invocation
+
+        def _fake_sh(args, timeout=30):
+            _calls.append(args)
+            path = next((a for a in args if isinstance(a, str) and a.startswith("/")), "")
+            import re as _re
+            m = _re.match(r"^/repos/[^/]+/[^/]+/issues/(\d+)$", path)
+            if m:                                   # number path -> single OBJECT
+                obj = _FIX.get(int(m.group(1)))
+                if obj is None:                     # 404 -> error OBJECT, no "number"
+                    return _json.dumps({"message": "Not Found"})
+                return _json.dumps(obj)
+            if path == "/search/issues":            # text path -> {"items":[...]}
+                qv = ""
+                for a in args:
+                    if isinstance(a, str) and a.startswith("q="):
+                        qv = a[2:]
+                ql = qv.lower()
+                terms = [t for t in ql.split() if ":" not in t]
+                items = [_FIX[n] for n in sorted(_FIX)
+                         if terms and all(t in _FIX[n]["title"].lower() for t in terms)]
+                return _json.dumps({"total_count": len(items), "items": items})
+            return ""                               # unknown -> empty
+
+        def _flat(argv):
+            return " ".join(a for a in argv if isinstance(a, str))
+
         try:
-            _mod.sh = _fake_sh_num
-            _r2 = search_board("#42")
-            if len(_r2["results"]) != 1 or _r2["results"][0]["n"] != 42:
-                _failures.append(f"T2 FAIL '#42' search returned {_r2!r}")
-            # state=all must appear in the sh() call args
-            _call_idx[0] = 0
+            _mod.sh = _fake_sh
 
-            # --- Test 3: digit-only query '99' ---
-            def _fake_sh_digit(args, timeout=30):
-                _call_idx[0] += 1
-                if _call_idx[0] == 1:
-                    return _json.dumps(_page1)
-                return _json.dumps(_page2)
-            _call_idx[0] = 0
-            _mod.sh = _fake_sh_digit
-            _r3 = search_board("99")
-            if len(_r3["results"]) != 1 or _r3["results"][0]["n"] != 99:
-                _failures.append(f"T3 FAIL '99' search returned {_r3!r}")
+            # T1: empty / whitespace q -> {"results": []} with NO gh call.
+            _calls.clear()
+            if search_board("") != {"results": []}:
+                _failures.append("T1 FAIL empty q must return {'results': []}")
+            if search_board("   ") != {"results": []}:
+                _failures.append("T1 FAIL whitespace q must return {'results': []}")
+            if _calls:
+                _failures.append(f"T1 FAIL empty q made gh calls: {_calls!r}")
 
-            # --- Test 4: text search, case-insensitive ---
-            def _fake_sh_text(args, timeout=30):
-                _call_idx[0] += 1
-                if _call_idx[0] == 1:
-                    return _json.dumps(_page1)
-                return _json.dumps(_page2)
-            _call_idx[0] = 0
-            _mod.sh = _fake_sh_text
-            _r4 = search_board("FIX")
-            if len(_r4["results"]) != 1 or _r4["results"][0]["n"] != 42:
-                _failures.append(f"T4 FAIL text 'FIX' search returned {_r4!r}")
+            # T2: number query '#993' -> ONE direct /issues/993 OBJECT call.
+            _calls.clear()
+            _r = search_board("#993")
+            if len(_calls) != 1:
+                _failures.append(f"T2 FAIL '#993' must be exactly one gh call, got {len(_calls)}: {_calls!r}")
+            elif "/repos/test/repo/issues/993" not in _calls[0]:
+                _failures.append(f"T2 FAIL '#993' did not hit /repos/test/repo/issues/993: {_calls[0]!r}")
+            if "/search/issues" in _flat(_calls[0] if _calls else []):
+                _failures.append("T2 FAIL number query must not touch /search/issues")
+            if len(_r["results"]) != 1 or _r["results"][0]["n"] != 993:
+                _failures.append(f"T2 FAIL '#993' result wrong: {_r!r}")
 
-            # --- Test 5: label search ---
-            _page_labels = [
-                {"number": 7, "title": "Some task", "state": "open",
-                 "labels": [{"name": "status:in-progress"}, {"name": "type:charter"}]},
-            ]
-            def _fake_sh_label(args, timeout=30):
-                _call_idx[0] += 1
-                if _call_idx[0] == 1:
-                    return _json.dumps(_page_labels)
-                return _json.dumps([])
-            _call_idx[0] = 0
-            _mod.sh = _fake_sh_label
-            _r5 = search_board("in-progress")
-            if len(_r5["results"]) != 1 or _r5["results"][0]["n"] != 7:
-                _failures.append(f"T5 FAIL label 'in-progress' search returned {_r5!r}")
+            # T3: digit-only '993' -> same single /issues/{N} path.
+            _calls.clear()
+            _r = search_board("993")
+            if len(_calls) != 1 or "/repos/test/repo/issues/993" not in _calls[0]:
+                _failures.append(f"T3 FAIL digit '993' must take single /issues/{{N}} path: {_calls!r}")
+            if len(_r["results"]) != 1 or _r["results"][0]["n"] != 993:
+                _failures.append(f"T3 FAIL digit '993' result wrong: {_r!r}")
 
-            # --- Test 6: verify state=all is passed in the gh api call ---
-            _captured_args = []
-            def _fake_sh_args(args, timeout=30):
-                _captured_args.append(args)
-                return _json.dumps([])
-            _mod.sh = _fake_sh_args
-            search_board("something")
-            if not _captured_args:
-                _failures.append("T6 FAIL sh() was not called for non-empty q")
-            elif "state=all" not in _captured_args[0]:
-                _failures.append(f"T6 FAIL 'state=all' not found in gh api args: {_captured_args[0]!r}")
+            # T4: not-found number -> {"results": []}, never raises.
+            _calls.clear()
+            _r = search_board("88888")
+            if _r != {"results": []}:
+                _failures.append(f"T4 FAIL not-found number must return empty, got {_r!r}")
+            if len(_calls) != 1:
+                _failures.append(f"T4 FAIL not-found number must still be one call: {_calls!r}")
+
+            # T5: CLOSED issue #99 -> state 'done' (case-insensitive build_state parity).
+            _r = search_board("99")
+            if not _r["results"] or _r["results"][0]["state"] != "done":
+                _failures.append(f"T5 FAIL CLOSED #99 must map to state 'done': {_r!r}")
+            if _r["results"][0]["kind"] != "leaf":
+                _failures.append(f"T5 FAIL #99 kind must be 'leaf': {_r!r}")
+
+            # T6: text query -> ONE /search/issues call, items[] shape, results returned.
+            _calls.clear()
+            _r = search_board("smoke")
+            if len(_calls) != 1 or "/search/issues" not in _calls[0]:
+                _failures.append(f"T6 FAIL text 'smoke' must be one /search/issues call: {_calls!r}")
+            if any(isinstance(a, str) and a.startswith("page=") for a in (_calls[0] if _calls else [])):
+                _failures.append("T6 FAIL text query must not paginate (no page= param)")
+            if len(_r["results"]) < 1:
+                _failures.append(f"T6 FAIL text 'smoke' returned no results: {_r!r}")
+            for _it in _r["results"]:
+                if set(_it.keys()) != {"n", "kind", "state", "title", "labels"}:
+                    _failures.append(f"T6 FAIL result shape parity broken: {_it!r}")
+
+            # T7: case-insensitivity — 'smoke' and 'SMOKE' yield the same count.
+            _lo = search_board("smoke"); _up = search_board("SMOKE")
+            if len(_lo["results"]) != len(_up["results"]):
+                _failures.append(f"T7 FAIL case-insensitive mismatch: smoke={_lo} SMOKE={_up}")
+
+            # T8: scoping — q ALWAYS hard-pinned to 'repo:test/repo is:issue'; user
+            # qualifiers (repo:other/x, org:foo, is:pr) stripped, never widen scope.
+            _calls.clear()
+            search_board("repo:other/x org:foo is:pr smoke")
+            _qval = ""
+            for a in _calls[0]:
+                if isinstance(a, str) and a.startswith("q="):
+                    _qval = a[2:]
+            if "repo:test/repo is:issue" not in _qval:
+                _failures.append(f"T8 FAIL effective q not pinned to 'repo:test/repo is:issue': {_qval!r}")
+            if "other/x" in _qval or "org:foo" in _qval or "is:pr" in _qval:
+                _failures.append(f"T8 FAIL user qualifiers leaked into effective q (scope widened!): {_qval!r}")
+            if "smoke" not in _qval:
+                _failures.append(f"T8 FAIL plain term 'smoke' lost from effective q: {_qval!r}")
+
+            # T9: text query with only qualifiers (no plain terms) -> empty, no call.
+            _calls.clear()
+            _r = search_board("is:pr org:foo")
+            if _r != {"results": []}:
+                _failures.append(f"T9 FAIL qualifier-only query must return empty: {_r!r}")
+
+            # T10: never calls paginate_issues (would walk the repo / hang). Trip it.
+            _paginate_tripped = []
+            _real_paginate = _mod.paginate_issues
+            _mod.paginate_issues = lambda: _paginate_tripped.append(True) or []
+            try:
+                search_board("smoke"); search_board("#42"); search_board("123")
+            finally:
+                _mod.paginate_issues = _real_paginate
+            if _paginate_tripped:
+                _failures.append("T10 FAIL search_board still calls paginate_issues (full-repo walk)")
 
         finally:
             _mod.sh = _real_sh
+            _mod.REPO = _real_repo
 
         if _failures:
             for _f in _failures:
                 print(_f)
             sys.exit(1)
-        print("PASS selftest-search: empty-q no-op, number-search, digit-search, text-search, label-search, state=all")
+        print("PASS selftest-search: single-call-per-query, number/digit/text paths, "
+              "not-found->[], empty->[], case-insensitive, scoping (no qualifier "
+              "injection), shape parity, no paginate_issues")
         sys.exit(0)
 
     if "--selftest-synthetic-gate" in sys.argv:
