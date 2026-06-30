@@ -248,7 +248,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23 EXCLUDED=65) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23; EXCLUDED+actual DERIVED) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -270,13 +270,19 @@ else
     && ok "guard: ALLOW count=23" \
     || ko "guard: ALLOW count expected 23, got $_allow_count"
 
-  [ $_excl_count -eq 65 ] \
-    && ok "guard: EXCLUDED count=65" \
-    || ko "guard: EXCLUDED count expected 65, got $_excl_count"
+  # EXCLUDED and actual counts are DERIVED from the live merged tree — NOT a stale baked
+  #   baseline. The binding invariant is ALLOW + EXCLUDED == union == actual *.test.sh.
+  #   ALLOW stays a fixed literal (deliberate, documented promotions only); EXCLUDED/actual
+  #   track whatever tests are merged so a concurrent test-add (e.g. charter #1073) cannot
+  #   false-RED this guard at the merge gate. The proof is the union/disjoint structure
+  #   below, not a magic number. (#994 churned the old literal; #1073 stops baking it.)
+  [ "$(( _allow_count + _excl_count ))" -eq "$_union_count" ] \
+    && ok "guard: ALLOW + EXCLUDED == manifest union ($_union_count)" \
+    || ko "guard: ALLOW($_allow_count)+EXCLUDED($_excl_count) != union ($_union_count)"
 
-  [ $_actual_count -eq 88 ] \
-    && ok "guard: actual *.test.sh count=88" \
-    || ko "guard: actual *.test.sh count expected 88, got $_actual_count"
+  [ "$_actual_count" -eq "$_union_count" ] \
+    && ok "guard: actual *.test.sh count == manifest union ($_actual_count)" \
+    || ko "guard: actual *.test.sh ($_actual_count) != manifest union ($_union_count)"
 
   # Check disjoint: no name in both ALLOW and EXCLUDED
   _allow_names="$(grep '^ALLOW ' "$_MANIFEST" | awk '{print $2}' | sort)"

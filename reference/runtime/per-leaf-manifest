@@ -205,3 +205,15 @@ EXCLUDED bare-charter-auto-init
 #   processes (smoke-runner.sh), uses per-detector timeouts, and a real-gh/network PASS
 #   lane → process-spawn / real-gh / timing all violate ALLOW purity → EXCLUDED (fail-closed).
 EXCLUDED smoke-runner
+# charter #1073 (loop-singleton / over-spawn regression suite, qa-engineer leaf #1095):
+#   all five .sh tests drive the REAL launcher loop / background-spawn / flock / pid-file /
+#   keepalive-tick machinery with timing-sensitive concurrency. None is leaf-unit-safe
+#   (process spawns, flock races, multi-process polling) → EXCLUDED (fail-closed default).
+#   The sixth deliverable (1073-api-run-guard.test.py) is NOT a *.test.sh — it is run via
+#   the acceptance `- check: python3 ...` line and carries NO manifest entry by design
+#   (the *.test.sh glob never matches it, so it cannot trip the fail-closed union guard).
+EXCLUDED 1073-race-singleton
+EXCLUDED 1073-pid-lifecycle
+EXCLUDED 1073-fd-noinherit
+EXCLUDED 1073-recovery
+EXCLUDED 1073-keepalive-singletick
