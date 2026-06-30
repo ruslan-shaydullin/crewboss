@@ -678,6 +678,15 @@ _finale_check_ci(){
         if gh pr merge "$pr_num" -R "$CB_REPO" --merge --admin 2>/dev/null; then
           log "charter-finale: #$cid PR #$pr_num AUTO-merged (admin) → main"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
+              # Prune merged charter from queue.json (non-blocking, atomic)
+              { _qf="$RUN/queue.json"
+                [ -f "$_qf" ] && \
+                  _qt=$(mktemp -p "$RUN" q.XXXXXX.tmp 2>/dev/null) && \
+                  jq --argjson c "$cid" \
+                    'if .order then .order |= map(select(. != $c)) else . end' \
+                    "$_qf" > "$_qt" 2>/dev/null && \
+                  mv "$_qt" "$_qf" 2>/dev/null || \
+                  rm -f "$_qt" 2>/dev/null; } || true
           printf '%s' "merged" > "$_fin_dir/last_comment"
           return 0
         fi
