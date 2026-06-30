@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './searchAbort.mjs'
+
 export type Task = {
   n: number
   kind: 'charter' | 'leaf' | 'milestone'
@@ -188,11 +190,16 @@ export async function postQueue(order: number[]): Promise<void> {
   if (!r.ok) throw new Error('postQueue failed: ' + r.status)
 }
 
+// Defense-in-depth (charter #994): even a stalled/degraded backend must never
+// hang the cockpit search. fetchWithTimeout aborts after ~5s, so this resolves
+// to null (the existing contract — the UI clears its spinner) instead of
+// leaving searchLoading pending forever.
 export async function searchBoard(q: string): Promise<Task[] | null> {
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       config.url + '/api/search?q=' + encodeURIComponent(q),
-      { headers: { Authorization: 'Bearer ' + config.token } }
+      { headers: { Authorization: 'Bearer ' + config.token } },
+      5000
     )
     if (!r.ok) return null
     const data = (await r.json()) as { results: Task[] }
