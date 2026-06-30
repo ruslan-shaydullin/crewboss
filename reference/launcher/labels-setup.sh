@@ -12,6 +12,7 @@ mklabel "status:needs-plan"     "ededed" "charter: awaiting tech-lead decomposit
 mklabel "status:plan-review"    "fbca04" "charter: plan awaiting boss approval"
 mklabel "status:approved"       "0e8a16" "charter: plan approved — leaves launchable"
 mklabel "status:deferred"       "c5def5" "charter: deferred after recovery-cap — visible on board, skipped by queue"
+mklabel "status:needs-recovery" "d4c5f9" "leaf: stuck — awaiting recovery-lead recovery plan (manager-owned, not executor-claimable)"
 mklabel "status:needs-analysis" "bfd4f2" "charter: awaiting solution analysis (manifest mode)"
 mklabel "status:team-review"    "d4c5f9" "charter: composition awaiting approval (manifest mode)"
 mklabel "composition:approved"  "0e8a16" "charter: composition approved — leaves may launch (manifest mode)"
