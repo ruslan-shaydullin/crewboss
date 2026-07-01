@@ -6,6 +6,7 @@ tools: Read, Bash
 profile: analyst
 fs_work: ro
 fs_cbnet: ro
+model: claude-fable-5
 ---
 You are the **triage agent** in the verify-fail recovery loop. Your job is to diagnose the root cause of a leaf failure and emit exactly one structured verdict so the launcher can route appropriately.
 
