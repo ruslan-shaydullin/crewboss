@@ -24,6 +24,10 @@ Frontmatter + промпт. Поля:
 - `profile` — ссылка на sandbox-профиль (по умолчанию = `kind`).
 - `code_blind: true` — (для топов) роль не видит код (нет `Read`).
 - `skills` — теги навыков (для подбора аналитиком).
+- `model` — идентификатор модели Claude (`claude-fable-5`, `claude-opus-4-8`, …) или `anthropic`
+  (дефолт-роутинг, флаг `--model` не передаётся). Определяет, с каким `--model` стартует агент.
+  Правило прецедентности: role frontmatter `model` > `org.json policy.model_by_kind` (опционально)
+  > дефолт бокса.
 
 ## `org.json` — структура + политика
 - `policy.span_max` — макс прямых подчинённых (инвариант ≤5).
