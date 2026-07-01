@@ -1,30 +1,39 @@
-You are the executor for issue #919 in repo stratch1989/crewboss.
+You are the executor for issue #1161 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/919-1782896524, based on the charter integration branch 'charter/350' (NOT main). Sibling leaves of charter #350 may already be merged into 'charter/350'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/350 --title '<short>' --body 'Closes #919'. The PR base MUST be 'charter/350', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/1161-1782905562, based on the charter integration branch 'charter/506' (NOT main). Sibling leaves of charter #506 may already be merged into 'charter/506'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/506 --title '<short>' --body 'Closes #1161'. The PR base MUST be 'charter/506', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #919) ----
-Charter: #350
-Depends-on: #918
+---- TASK (issue #1161) ----
+Charter: #506
+Depends-on: #1160
 
-## Context
+## Review Findings — impl-lookahead (#1160) — APPROVED
 
-Charter #350 adds exponential backoff to the try-merge infra-error path in reference/runtime/crewboss-launcher-gh.sh and exports three new CB_INFRA_* variables from reference/runtime/run-env.sh. New state files live at $CB_HOME/run/state/<leaf-id>/infra_attempt and $CB_HOME/run/state/<leaf-id>/infra_next_retry_ts.
+All 5 criteria verified against commit 68522c9 (merged as PR #1164 into charter/506).
 
-This leaf validates that the implementation is operationally safe and correctly documented. Do NOT modify any source file.
+### 1. Both guards replaced — PASS
+- Loop 1 (plannable_scoped path, lines 1931-1933): replaced `[ -z "$_q_head" ] && break` + `[ "$cid" = "$_q_head" ] || continue` with `[ -n "$_q_loo_set" ] || break` + `case " $_q_loo_set " in *" $cid "*) : ;; *) continue ;; esac`
+- Loop 2 (needs-analysis boards path, lines 1969-1970): same membership-check pattern applied identically.
 
-## Task
+### 2. Skip-aware eligibility set — PASS
+Lines 1893-1901: iterates `$_q_order`, skipping `done|blocked|hold|deferred` (exact same case-pattern as the `_q_head` computation at lines 1859-1873), collects up to `$((_q_lookahead+1))` active entries. No positional slicing.
 
-Review the merged implementation and confirm each of the following. Post a comment on THIS issue with findings for (i), (ii), (iii) marking each PASS or FAIL with brief evidence.
+### 3. Write-stage guards unchanged — PASS
+- CTO/approval guard (lines 1994-1997): still `[ -z "$_q_head" ] && break` / `[ "$cid" = "$_q_head" ] || continue`
+- Tech-lead planning guard (lines 2221-2224): still head-only
+- Plan-review convergence guard (line 2247): still `_q_plan_head`
+- Conflict-resolution guard (lines 2201-2203): still head-only
+- Launchable leaf guard (lines 2422-2425): still `_q_head`
 
-(i) State directory safety: $CB_HOME/run/state/<id>/ is created safely (mkdir -p or equivalent) with correct permissions/ownership. Confirm no race-on-first-write risk -- i.e., the launcher tick model guarantees single-writer-per-leaf-id (only one launcher process acts on a given leaf id at a time).
+### 4. N=0 serial restore — PASS
+When `CB_QUEUE_LOOKAHEAD=0`: `_q_lookahead=0`. Loop collects first non-skip entry, `_q_loo_count` becomes 1, `[ 1 -ge 1 ]` triggers break → set = {head only}. Prior serial behavior restored identically.
 
-(ii) Config documentation: CB_INFRA_RETRY_CAP, CB_INFRA_BACKOFF_BASE, and CB_INFRA_BACKOFF_MULT are all present in reference/runtime/run-env.sh with export and default values, following the same pattern as CB_REWORK_CAP (lines 74-75). Confirm the comment header for each var describes its semantics.
+### 5. No bypass — PASS
+`git show 68522c9 | grep -i "eslint-disable\|no-verify"` returns empty. No lint or hook bypass introduced.
 
-(iii) Lock-contention analysis: Confirm that no two launcher processes can concurrently write to $STATE/<id>/infra_attempt. The single-launcher-process model (flock on launcher.lock, cmd_once path) is the write-serialization guarantee -- confirm it holds, OR document any edge case (e.g., concurrent re-dispatch vs tick) and state whether explicit per-file locking is needed.
+## Decision: APPROVED
 
 ## Acceptance (machine)
-- check: grep -qE "CB_INFRA_RETRY_CAP|CB_INFRA_BACKOFF_BASE|CB_INFRA_BACKOFF_MULT" reference/runtime/run-env.sh
-- check: grep -q infra_attempt reference/runtime/crewboss-launcher-gh.sh
-- check: grep -q infra_next_retry_ts reference/runtime/crewboss-launcher-gh.sh
+
+- check: gh pr list -R stratch1989/crewboss --state open --json number,reviews -q ".[].reviews" | grep -q "APPROVED"
