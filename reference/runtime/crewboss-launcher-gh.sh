@@ -633,6 +633,13 @@ _integrator_cycle(){
       *) log "integrator: #$rid PR #$pr_num base='$pr_base' not charter/* — skip"; continue ;;
     esac
 
+    # (c) Infra backoff: skip leaf until infra_next_retry_ts has elapsed (charter #350 / issue #918).
+    local _inrt; _inrt=$(sget "$rid" infra_next_retry_ts)
+    if [ -n "$_inrt" ] && [ "$(date +%s)" -lt "$_inrt" ]; then
+      log "integrator: #$rid PR #$pr_num infra backoff active — next retry at ${_inrt}, skipping tick"
+      continue
+    fi
+
     # ── try-merge dry-run ─────────────────────────────────────────────────────
     # Exit codes from crewboss-integrator.sh try-merge:
     #   0 = clean (safe to merge)
@@ -643,8 +650,31 @@ _integrator_cycle(){
                     --remote "$GIT_REMOTE" 2>/dev/null) || try_exit=$?
 
     if [ "$try_exit" -eq 2 ]; then
-      # Infra error: keep leaf in review and retry next tick (no needs-rework). [F6 #112]
-      log "integrator: #$rid PR #$pr_num try-merge infra error (exit 2) — keeping in review, retry next tick"
+      # Infra error: exponential backoff with file-backed persistent state (charter #350 / issue #918). [F6 #112]
+      # (a) Load infra_attempt from disk (default 0 if absent); increment by 1; write back.
+      local _ia; _ia=$(sget "$rid" infra_attempt); _ia=${_ia:-0}; _ia=$((_ia + 1))
+      sset "$rid" infra_attempt "$_ia"
+      # (b) Compute next_retry_ts = now + CB_INFRA_BACKOFF_BASE * CB_INFRA_BACKOFF_MULT^(attempt-1), cap exponent at 10.
+      local _ib_delay _ib_power _ib_i
+      _ib_delay="${CB_INFRA_BACKOFF_BASE:-60}"
+      _ib_power=$((_ia - 1)); [ "$_ib_power" -gt 10 ] && _ib_power=10
+      _ib_i=0
+      while [ "$_ib_i" -lt "$_ib_power" ]; do
+        _ib_delay=$((_ib_delay * ${CB_INFRA_BACKOFF_MULT:-2}))
+        _ib_i=$((_ib_i + 1))
+      done
+      sset "$rid" infra_next_retry_ts "$(( $(date +%s) + _ib_delay ))"
+      # (d) If infra_attempt >= CB_INFRA_RETRY_CAP: escalate to blocked.
+      if [ "$_ia" -ge "${CB_INFRA_RETRY_CAP:-5}" ]; then
+        log "integrator: #$rid PR #$pr_num try-merge infra error — cap (${_ia}/${CB_INFRA_RETRY_CAP:-5}) reached — escalating to blocked"
+        gh issue comment "$rid" -R "$CB_REPO" \
+          --body "try-merge infra retry cap reached (${_ia}/${CB_INFRA_RETRY_CAP:-5}) — escalated to blocked for human triage." \
+          2>/dev/null || true
+        gh issue edit "$rid" -R "$CB_REPO" \
+          --remove-label status:review --add-label status:blocked 2>/dev/null || true
+      else
+        log "integrator: #$rid PR #$pr_num try-merge infra error (exit 2) — attempt ${_ia}/${CB_INFRA_RETRY_CAP:-5}, backoff ${_ib_delay}s, retry after infra_next_retry_ts"
+      fi
     elif [ "$try_exit" -eq 0 ]; then
       # Clean merge: run verify-merged (engine suite on merged tree) before merging. [#176]
       local vm_exit=0
@@ -1264,7 +1294,7 @@ cmd_redispatch(){
   local id="${1:-}"
   [ -n "$id" ] || { echo "usage: $0 re-dispatch <leaf-id>" >&2; return 64; }
   local sd="$STATE/$id" wd="$RUN/work/$id" k
-  for k in pid term tries pr_head stale_ticks rework_n; do rm -f "$sd/$k" 2>/dev/null || true; done
+  for k in pid term tries pr_head stale_ticks rework_n infra_attempt infra_next_retry_ts; do rm -f "$sd/$k" 2>/dev/null || true; done
   rm -rf "$wd" 2>/dev/null || sudo rm -rf "$wd" 2>/dev/null || true
   gh issue edit "$id" -R "$CB_REPO" \
     --remove-label status:review --remove-label status:blocked --remove-label status:in-progress \
