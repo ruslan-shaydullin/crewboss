@@ -144,6 +144,8 @@ def build_agents(by_n, loop_running=False):
         agents.append(dict(task=None, role="launcher", phase="running",
                            title="launcher loop", started="", pid=None))
     for n, item in by_n.items():
+        # build_state() maps CLOSED→"done" as first-priority (L494) before any label
+        # check, so state=="review" here always means an OPEN issue with status:review.
         if item.get("state") == "review":
             if not any(a.get("task") == n for a in agents):
                 agents.append(dict(task=n, role="integrator",
@@ -1573,6 +1575,24 @@ if __name__=="__main__":
             if a.get("role") == "tech-lead" and a.get("pid") is None:
                 if a.get("phase") != "planning":
                     failures.append(f"FAIL tech-lead phase={a.get('phase')!r} when loop_running=True (expected 'planning')")
+
+        # --- Full-chain closed-leaf fixture: CLOSED+status:review → done → no phantom ---
+        _raw_closed = {"state": "CLOSED", "labels": [{"name": "status:review"}],
+                       "number": 99, "title": "Stale closed leaf", "kind": "leaf"}
+        _labels_c = {l["name"] for l in _raw_closed.get("labels", [])}
+        if   str(_raw_closed.get("state","")).lower() == "closed": _st_c = "done"
+        elif "status:review" in _labels_c:                         _st_c = "review"
+        else:                                                       _st_c = "open"
+        if _st_c != "done":
+            failures.append(f"FAIL closed-leaf classification: state={_st_c!r} expected 'done'")
+        _closed_item = {"state": _st_c, "kind": "leaf", "title": "Stale closed leaf", "number": 99}
+        _agents_closed = build_agents({99: _closed_item}, loop_running=False)
+        _phantom = [a for a in _agents_closed if a.get("role") == "integrator" and a.get("task") == 99]
+        if _phantom:
+            failures.append(f"FAIL closed-leaf phantom: got {len(_phantom)} integrator chip(s) for closed item #99")
+
+        # Running-agent counter (pid-based, not synthetic) already covered by
+        # synthetic-phases.test.sh Test 3 (charters #718/#738). Not re-tested here.
 
         if failures:
             for f in failures:
