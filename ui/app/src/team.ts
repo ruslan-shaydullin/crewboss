@@ -83,6 +83,7 @@ export type RoleFrontmatter = {
   profile?: string
   code_blind?: string   // "true" | "" (raw string from YAML-frontmatter)
   skills?: string
+  model?: string
 }
 
 export type RoleDetail = {
@@ -100,6 +101,7 @@ export type RoleSave = {
   profile: string
   code_blind: boolean
   skills: string
+  model: string
   prompt: string
 }
 
