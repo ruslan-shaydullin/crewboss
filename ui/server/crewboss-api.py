@@ -463,10 +463,13 @@ def build_state():
                     if line.lower().startswith("etag:"):
                         _etag_store["charters"] = line.split(":", 1)[1].strip()
                         break
-                _cached_charters = json.loads(body_c)
-                charters = _cached_charters
-                if not isinstance(charters, list):
+                _parsed_c = json.loads(body_c)
+                if isinstance(_parsed_c, list):
+                    _cached_charters = _parsed_c
+                    charters = _parsed_c
+                else:
                     charters = []
+                    # _cached_charters unchanged -- preserve last known good list
         except Exception:
             charters = []
         try:
