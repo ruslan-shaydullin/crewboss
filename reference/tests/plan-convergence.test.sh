@@ -19,6 +19,10 @@
 #   PLAN-ESCALATE: plan-reviewer always CRITIQUE → pround hits CB_PLAN_CONVERGE_CAP → human-decision;
 #                  plan-reviewer spawned EXACTLY cap times (cap stops the ping-pong) → idempotent.
 #   AGREED-SKIP:   plan:agreed already present → plan-reviewer NOT spawned → straight to status:approved.
+#   PLAN-ESCALATE-CAP6: CB_PLAN_CONVERGE_CAP and CB_CONVERGE_CAP both unset → launcher last-resort
+#                  fallback of 6 applies; human-decision fires at round 6, NOT at old default 4.
+#   PLAN-LABEL-OVERRIDE: converge-cap:3 label on the charter overrides CB_PLAN_CONVERGE_CAP=6 env;
+#                  human-decision fires at round 3 (label wins over env).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
@@ -441,6 +445,74 @@ run_loop "$CBHOME_Pc" "$LOG_Pc" "CB_PLAN_CONVERGE_CAP=5"
 [ "$(issue_state 5)" != "approved" ] \
   && ok "NO-PREMATURE-APPROVE(c): held charter (plan:agreed + composition:approved + hold) NOT approved" \
   || ko "NO-PREMATURE-APPROVE(c): held charter reached approved (hold label not respected)"
+
+# =============================================================================
+# PLAN-ESCALATE-CAP6: when CB_PLAN_CONVERGE_CAP and CB_CONVERGE_CAP are both unset,
+#   the launcher's new last-resort fallback of 6 applies.
+#   human-decision fires at round 6; it must NOT fire at the old default of 4.
+# =============================================================================
+echo "=== PLAN-ESCALATE-CAP6: no env cap → launcher fallback 6 → human-decision at round 6 ==="
+CBHOME_CAP6="$ROOT/cbhome_cap6"; LOG_CAP6="$ROOT/loop_cap6.log"
+reset_sandbox "$CBHOME_CAP6"
+printf '99' > "$PLAN_CRITIQUE_FLAG"   # never agree
+seed_needs_plan   # status:needs-plan, no converge-cap label
+
+# Run WITHOUT CB_PLAN_CONVERGE_CAP or CB_CONVERGE_CAP — rely on launcher's new fallback of 6
+run_loop "$CBHOME_CAP6" "$LOG_CAP6"
+# (no extra env args → neither CB_PLAN_CONVERGE_CAP nor CB_CONVERGE_CAP is set)
+
+_pr_cap6=$(grep -c '^5 solution-analyst' "$PLAN_REVIEW_LOG" 2>/dev/null)
+[ "$_pr_cap6" -eq 6 ] \
+  && ok "PLAN-ESCALATE-CAP6: plan-reviewer spawned exactly 6× (launcher fallback cap=6)" \
+  || ko "PLAN-ESCALATE-CAP6: plan-reviewer spawn count=$_pr_cap6 (expected 6 — launcher fallback cap should be 6)"
+
+[ "${_pr_cap6:-0}" -gt 4 ] \
+  && ok "PLAN-ESCALATE-CAP6: escalation did NOT fire at round 4 (new fallback 6 > old default 4)" \
+  || ko "PLAN-ESCALATE-CAP6: escalation fired at or before round 4 (old default 4 still in effect)"
+
+_hd_cap6=$(open_hd_for 5)
+[ "${_hd_cap6:-0}" -ge 1 ] \
+  && ok "PLAN-ESCALATE-CAP6: human-decision created at cap=6" \
+  || ko "PLAN-ESCALATE-CAP6: human-decision NOT created at cap=6"
+
+[ "$(issue_state 5)" != "approved" ] \
+  && ok "PLAN-ESCALATE-CAP6: charter NOT released to approved (cap=6 held the gate shut)" \
+  || ko "PLAN-ESCALATE-CAP6: charter reached approved despite non-convergence at cap=6"
+
+# =============================================================================
+# PLAN-LABEL-OVERRIDE: a converge-cap:3 label on the charter overrides the env cap.
+#   CB_PLAN_CONVERGE_CAP=6 in env (higher than label), label converge-cap:3 wins.
+#   human-decision fires at round 3; it must NOT fire at round 6 (env cap).
+# =============================================================================
+echo "=== PLAN-LABEL-OVERRIDE: converge-cap:3 label beats CB_PLAN_CONVERGE_CAP=6 → escalate at 3 ==="
+CBHOME_LBL="$ROOT/cbhome_lbl"; LOG_LBL="$ROOT/loop_lbl.log"
+reset_sandbox "$CBHOME_LBL"
+printf '99' > "$PLAN_CRITIQUE_FLAG"   # never agree
+# Seed charter with converge-cap:3 label in addition to standard needs-plan labels
+printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"},{"name":"converge-cap:3"}],"body":"charter goal","comments":[]}]\n' \
+  > "$BOARD_STATE"
+
+# CB_PLAN_CONVERGE_CAP=6 in env (higher than label's 3) — label must win
+run_loop "$CBHOME_LBL" "$LOG_LBL" "CB_PLAN_CONVERGE_CAP=6"
+
+_pr_lbl=$(grep -c '^5 solution-analyst' "$PLAN_REVIEW_LOG" 2>/dev/null)
+[ "$_pr_lbl" -eq 3 ] \
+  && ok "PLAN-LABEL-OVERRIDE: plan-reviewer spawned exactly 3× (label converge-cap:3 overrode env cap=6)" \
+  || ko "PLAN-LABEL-OVERRIDE: plan-reviewer spawn count=$_pr_lbl (expected 3 — label converge-cap:3 must win over CB_PLAN_CONVERGE_CAP=6)"
+
+[ "${_pr_lbl:-0}" -lt 6 ] \
+  && ok "PLAN-LABEL-OVERRIDE: escalation fired before env cap 6 (label cap wins)" \
+  || ko "PLAN-LABEL-OVERRIDE: spawn count=$_pr_lbl ≥ 6 (env cap was not overridden by converge-cap:3 label)"
+
+_hd_lbl=$(open_hd_for 5)
+[ "${_hd_lbl:-0}" -ge 1 ] \
+  && ok "PLAN-LABEL-OVERRIDE: human-decision created at label cap=3" \
+  || ko "PLAN-LABEL-OVERRIDE: human-decision NOT created at label cap=3"
+
+[ "$(issue_state 5)" != "approved" ] \
+  && ok "PLAN-LABEL-OVERRIDE: charter NOT released to approved (label cap=3 held the gate shut)" \
+  || ko "PLAN-LABEL-OVERRIDE: charter reached approved despite non-convergence at label cap=3"
+
 # =============================================================================
 echo
 printf 'passed=%d failed=%d\n' "$pass" "$fail"
