@@ -828,17 +828,18 @@ _finale_check_ci(){
   # fix-1: do NOT persist a cached "red" terminal state — that would create a permanent-stuck
   # regression identical to the GHA-CI bug this charter fixes.  verify-merged's internal cache
   # (CB_HOME/run/verify-cache) throttles repeat-call cost on retries.
-  case "$ci_state" in
-    green)   return 0 ;;
-    timeout) return 2 ;;
-  esac
-
   # AUTO merge (opt-in, #366/#401): perform the final charter→main merge automatically once
   # the verify-merged gate passes.  Opt-in via CB_AUTO_MERGE=1 (global) OR auto:merge label
   # on the charter issue (per-charter, #401).  Default off → PR waits for a human merge.
+  # Loaded BEFORE the early-exit so the green cache does not short-circuit an off→on transition.
   local _charter_auto_merge
   _charter_auto_merge=$(gh issue view "$cid" -R "$CB_REPO" --json labels 2>/dev/null \
     | jq -r '[.labels[].name] | index("auto:merge") != null' 2>/dev/null || echo false)
+
+  case "$ci_state" in
+    green)   [ "${CB_AUTO_MERGE:-0}" != "1" ] && [ "$_charter_auto_merge" != "true" ] && return 0 ;;
+    timeout) return 2 ;;
+  esac
 
   if [ "${CB_AUTO_MERGE:-0}" = "1" ] || [ "$_charter_auto_merge" = "true" ]; then
     # ── acceptance-convergence gate (#522): intercept auto-merge if acceptance_review_role set ──
@@ -875,12 +876,12 @@ _finale_check_ci(){
 
     case "$vm_exit" in
       0)
-        # verify-merged PASS: fix-2: write ci_state=green ONLY on PASS.
-        printf '%s' "green" > "$_fin_dir/ci_state"
+        # verify-merged PASS: fix-2: write ci_state=green ONLY after a successful admin-merge.
         log "charter-finale: #$cid PR #$pr_num verify-merged PASS → promoting + admin-merge"
         gh pr ready "$pr_num" -R "$CB_REPO" 2>/dev/null || true
         if gh pr merge "$pr_num" -R "$CB_REPO" --merge --admin 2>/dev/null; then
           log "charter-finale: #$cid PR #$pr_num AUTO-merged (admin) → main"
+          printf '%s' "green" > "$_fin_dir/ci_state"
           gh issue close "$cid" -R "$CB_REPO" --reason completed 2>/dev/null || true
               # Prune merged charter from queue.json (non-blocking, atomic)
               { _qf="$RUN/queue.json"
@@ -895,6 +896,7 @@ _finale_check_ci(){
           return 0
         fi
         log "charter-finale: #$cid PR #$pr_num admin-merge failed — left ready for human"
+        return 1
         ;;
       1)
         # Terminal RED: fix-1: do NOT persist a "red" cached state (avoids permanent-stuck regression).
