@@ -73,3 +73,9 @@ export CB_VERIFY_TIMEOUT="${CB_VERIFY_TIMEOUT:-600}"
 export CB_VERIFY_CONFIRM_N="${CB_VERIFY_CONFIRM_N:-2}"
 # CB_REWORK_CAP — max reworks before a confirmed-red leaf is routed to blocked (#196 L3).
 export CB_REWORK_CAP="${CB_REWORK_CAP:-2}"
+# CB_INFRA_RETRY_CAP -- max try-merge infra retries before leaf is escalated to blocked.
+export CB_INFRA_RETRY_CAP="${CB_INFRA_RETRY_CAP:-5}"
+# CB_INFRA_BACKOFF_BASE -- initial backoff delay in seconds (doubled each attempt).
+export CB_INFRA_BACKOFF_BASE="${CB_INFRA_BACKOFF_BASE:-60}"
+# CB_INFRA_BACKOFF_MULT -- backoff multiplier per attempt (default 2 = exponential doubling).
+export CB_INFRA_BACKOFF_MULT="${CB_INFRA_BACKOFF_MULT:-2}"

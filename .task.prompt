@@ -1,50 +1,30 @@
-You are the executor for issue #949 in repo stratch1989/crewboss.
+You are the executor for issue #919 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/949-1782667664, based on the charter integration branch 'charter/499' (NOT main). Sibling leaves of charter #499 may already be merged into 'charter/499'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/499 --title '<short>' --body 'Closes #949'. The PR base MUST be 'charter/499', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/919-1782896524, based on the charter integration branch 'charter/350' (NOT main). Sibling leaves of charter #350 may already be merged into 'charter/350'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/350 --title '<short>' --body 'Closes #919'. The PR base MUST be 'charter/350', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #949) ----
-Charter: #499
-Depends-on: #947, #948
+---- TASK (issue #919) ----
+Charter: #350
+Depends-on: #918
 
 ## Context
 
-Charter #499 fixes a cockpit visibility bug: old open charters (#305, #306) were evicted from the `/api/state` board by the `per_page=100` cap in `build_state()` when newer leaves filled the window.
+Charter #350 adds exponential backoff to the try-merge infra-error path in reference/runtime/crewboss-launcher-gh.sh and exports three new CB_INFRA_* variables from reference/runtime/run-env.sh. New state files live at $CB_HOME/run/state/<leaf-id>/infra_attempt and $CB_HOME/run/state/<leaf-id>/infra_next_retry_ts.
 
-The fix (leaf-A, issue #948) splits the single `gh api /repos/{REPO}/issues -F state=all -F per_page=100` call into two independent `gh api` calls, each with its own ETag key in `_etag_store`, and merges results so open charters are always present. The test (leaf-B, issue #947) writes `reference/tests/board-charter-visibility.test.sh` and registers it in `reference/runtime/per-leaf-manifest`.
+This leaf validates that the implementation is operationally safe and correctly documented. Do NOT modify any source file.
 
-Your job is to review both PRs for correctness and confirm all acceptance criteria are met before approving.
+## Task
 
-## Review Checklist
+Review the merged implementation and confirm each of the following. Post a comment on THIS issue with findings for (i), (ii), (iii) marking each PASS or FAIL with brief evidence.
 
-### leaf-A (fix in `ui/server/crewboss-api.py`)
+(i) State directory safety: $CB_HOME/run/state/<id>/ is created safely (mkdir -p or equivalent) with correct permissions/ownership. Confirm no race-on-first-write risk -- i.e., the launcher tick model guarantees single-writer-per-leaf-id (only one launcher process acts on a given leaf id at a time).
 
-- [ ] New `_cached_charters = None` module-level global is present alongside `_cached_issues`.
-- [ ] **Call 1** uses `_etag_store["charters"]` (or equivalent distinct key) and `_cached_charters` — two independent ETag keys, two independent cache variables.
-- [ ] **Call 2** (existing general-board call) uses its original `_etag_store` key and `_cached_issues` — key name and cache variable unchanged.
-- [ ] **Critical fix**: Call 2's 304 branch is `issues = _cached_issues` (assign + fall through), NOT `return _cached_issues` (early exit). The `return` statement at the old line 197 must be gone. Without this change, a 304 on the general call would discard all charter results from Call 1.
-- [ ] A 304 on either call does NOT suppress the other call — both calls always run.
-- [ ] **Merge step**: `by_n.setdefault(it["number"], it)` — charter-call results win on conflict with general-call results (not overwritten).
-- [ ] The existing `for it in issues:` board-building loop (labels/state parsing logic) is unchanged.
-- [ ] `python3 -c "import ast; ast.parse(open('ui/server/crewboss-api.py').read())"` passes (no syntax errors).
+(ii) Config documentation: CB_INFRA_RETRY_CAP, CB_INFRA_BACKOFF_BASE, and CB_INFRA_BACKOFF_MULT are all present in reference/runtime/run-env.sh with export and default values, following the same pattern as CB_REWORK_CAP (lines 74-75). Confirm the comment header for each var describes its semantics.
 
-### leaf-B (test `reference/tests/board-charter-visibility.test.sh`)
-
-- [ ] Stub intercepts `gh api` (matching `$1 == "api"` + route path), NOT `gh issue list`.
-- [ ] REST API JSON schema used throughout: lowercase `"state": "open"/"closed"`, labels as object arrays `[{"name":"..."}]`.
-- [ ] Low-numbered open charters (#5, #10, #15) are present in the charter-call stub response but **absent** from the general-call stub response — this correctly models the N>100 eviction scenario.
-- [ ] 304 short-circuit path exercised for both ETag keys independently.
-- [ ] `build_state()` is invoked directly via `python3 -c` — no background HTTP server started.
-- [ ] `ALLOW board-charter-visibility` is present in `reference/runtime/per-leaf-manifest` with the criterion justification comment.
-- [ ] Header count comment updated to `ALLOW=23` (was 22).
-- [ ] `reference/tests/verify-merged.sh` exits ALL-GREEN on Linux.
+(iii) Lock-contention analysis: Confirm that no two launcher processes can concurrently write to $STATE/<id>/infra_attempt. The single-launcher-process model (flock on launcher.lock, cmd_once path) is the write-serialization guarantee -- confirm it holds, OR document any edge case (e.g., concurrent re-dispatch vs tick) and state whether explicit per-file locking is needed.
 
 ## Acceptance (machine)
-
-- check: grep -q "_cached_charters" ui/server/crewboss-api.py
-- check: grep -q "by_n.setdefault" ui/server/crewboss-api.py
-- check: grep -qv "return _cached_issues" ui/server/crewboss-api.py
-- check: grep -q "ALLOW board-charter-visibility" reference/runtime/per-leaf-manifest
-- check: reference/tests/board-charter-visibility.test.sh
-- check: reference/tests/verify-merged.sh 2>&1 | grep -q "ALL-GREEN"
+- check: grep -qE "CB_INFRA_RETRY_CAP|CB_INFRA_BACKOFF_BASE|CB_INFRA_BACKOFF_MULT" reference/runtime/run-env.sh
+- check: grep -q infra_attempt reference/runtime/crewboss-launcher-gh.sh
+- check: grep -q infra_next_retry_ts reference/runtime/crewboss-launcher-gh.sh
