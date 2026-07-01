@@ -439,6 +439,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
     milestones.flatMap((m) => charters.filter((c) => c.milestone === m.n).map((c) => c.n))
   )
   const unmilestoned = charters.filter((c) => !milestonedCharterNs.has(c.n))
+  const killSwitch = state.flags.killed
   if (!state.board.length) return <section className="board"><div className="empty">no issues on the board yet</div></section>
   return (
     <section className="board">
@@ -460,6 +461,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
             queueOrder={queueOrder}
             onQueueChange={onQueueChange}
             loopRunning={loopRunning}
+            killSwitch={killSwitch}
             onPendingAdd={onPendingAdd}
             mergeBlockReason={mergeBlockReason}
           />
@@ -477,7 +479,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
           onAction={onAction} ask={ask} onOpen={onOpen}
           getExpanded={getExpanded} doToggle={doToggle}
           queueOrder={queueOrder} onQueueChange={onQueueChange}
-          loopRunning={loopRunning} onPendingAdd={onPendingAdd}
+          loopRunning={loopRunning} killSwitch={killSwitch} onPendingAdd={onPendingAdd}
           mergeBlockReason={mergeBlockReason}
         />
       ))}
@@ -493,6 +495,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
           queueOrder={queueOrder}
           onQueueChange={onQueueChange}
           loopRunning={loopRunning}
+          killSwitch={killSwitch}
           onPendingAdd={onPendingAdd}
           mergeBlockReason={mergeBlockReason}
         />
@@ -501,7 +504,7 @@ function Board({ state, conn, onAction, ask, onOpen, queueOrder, onQueueChange, 
   )
 }
 
-function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
+function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggle, onAction, ask, onOpen, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, killSwitch, onPendingAdd, mergeBlockReason }: {
   sectionKey: string; label: string; charters: Task[]; leaves: Task[]
   expanded: boolean; onToggle: () => void
   onAction: (a: string, n?: number, comment?: string) => void
@@ -510,7 +513,7 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
   getExpanded: (n: number, def: boolean) => boolean
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
-  loopRunning: boolean; onPendingAdd: (n: number) => void
+  loopRunning: boolean; killSwitch: boolean; onPendingAdd: (n: number) => void
   mergeBlockReason: string | undefined
 }) {
   if (charters.length === 0) return null
@@ -533,7 +536,7 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
             onAction={onAction} ask={ask} onOpen={onOpen}
             expanded={getExpanded(c.n, true)} onToggle={() => doToggle(c.n, true)}
             queueOrder={queueOrder} onQueueChange={onQueueChange}
-            loopRunning={loopRunning} onPendingAdd={onPendingAdd}
+            loopRunning={loopRunning} killSwitch={killSwitch} onPendingAdd={onPendingAdd}
             mergeBlockReason={mergeBlockReason} />
         ))}
       </div>
@@ -541,7 +544,7 @@ function CharterSection({ sectionKey, label, charters, leaves, expanded, onToggl
   )
 }
 
-function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
+function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, expanded, onToggle, getExpanded, doToggle, queueOrder, onQueueChange, loopRunning, killSwitch, onPendingAdd, mergeBlockReason }: {
   milestone: Task; charters: Task[]; leaves: Task[]
   onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
@@ -550,7 +553,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
   getExpanded: (n: number, def: boolean) => boolean
   doToggle: (n: number, def: boolean) => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
-  loopRunning: boolean; onPendingAdd: (n: number) => void
+  loopRunning: boolean; killSwitch: boolean; onPendingAdd: (n: number) => void
   mergeBlockReason: string | undefined
 }) {
   const bodyId = `milestone-body-${milestone.n}`
@@ -586,6 +589,7 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
             queueOrder={queueOrder}
             onQueueChange={onQueueChange}
             loopRunning={loopRunning}
+            killSwitch={killSwitch}
             onPendingAdd={onPendingAdd}
             mergeBlockReason={mergeBlockReason}
           />
@@ -712,12 +716,12 @@ function HumanTaskCard({ t, onOpen, onResolve, onAction, ask }: {
   )
 }
 
-function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange, loopRunning, onPendingAdd, mergeBlockReason }: {
+function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, queueOrder, onQueueChange, loopRunning, killSwitch, onPendingAdd, mergeBlockReason }: {
   c: Task | null; leaves: Task[]; onAction: (a: string, n?: number, comment?: string) => void
   ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void; onOpen: (n: number) => void
   expanded: boolean; onToggle: () => void
   queueOrder: number[]; onQueueChange: (order: number[]) => void
-  loopRunning: boolean; onPendingAdd: (n: number) => void
+  loopRunning: boolean; killSwitch: boolean; onPendingAdd: (n: number) => void
   mergeBlockReason: string | undefined
 }) {
   const done = leaves.filter((l) => l.state === 'done').length
@@ -730,6 +734,7 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
   const [merging, setMerging] = useState(false)
   const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
   const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
+  const [scopedPending, setScopedPending] = useState(false)
   return (
     <div className="charter">
       <div className="charter-head">
@@ -813,6 +818,18 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
             </button>
           )
         })()}
+        {c && c.state !== 'done' && (
+          <button
+            className="btn sm pri"
+            data-testid="run-scoped-btn"
+            disabled={loopRunning || killSwitch || scopedPending}
+            onClick={async () => {
+              setScopedPending(true)
+              await command('run-scoped', c.n)
+              setScopedPending(false)
+            }}
+          >{scopedPending ? '⏳ Running…' : '▶ Scoped'}</button>
+        )}
         {c && c.state === 'plan-review' && <>
           <button className="btn sm pri" onClick={() => ask('Approve plan #' + c.n,
             "Releases this charter's tasks to be launched (executors run, spending from the pool).",
