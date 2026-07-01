@@ -122,7 +122,7 @@ _cb_issue_fetch(){
   local _state="${1:-all}"
   local _raw _result
   _raw="$(gh api --paginate -X GET "/repos/$CB_REPO/issues" \
-      -f state="$_state" -f per_page=100 -f sort=updated -f direction=desc 2>/dev/null)"
+      -f state="$_state" -f per_page=100 -f sort=updated -f direction=desc)"
   if [ -n "$_raw" ]; then
     _result="$(printf '%s' "$_raw" \
       | jq -s 'add // [] | map(select(has("pull_request")|not)
@@ -131,8 +131,8 @@ _cb_issue_fetch(){
     # gh api --paginate returned nothing (test stub / no REST access): fall back
     # to gh issue list which the hermetic stubs handle.
     _result="$(gh issue list -R "$CB_REPO" --state "$_state" \
-        --json number,state,labels,body -L 1000 2>/dev/null \
-      | jq 'map({number, state:(.state|ascii_upcase), labels:[.labels[]|{name}], body})' 2>/dev/null)"
+        --json number,state,labels,body -L 1000 \
+      | jq 'map({number, state:(.state|ascii_upcase), labels:[.labels[]|{name}], body})')"
   fi
   printf '%s' "${_result:-[]}"
 }
@@ -164,11 +164,14 @@ _cb_tick_cache_refresh(){
   local _cmd=(gh api --include -X GET "/repos/$CB_REPO/issues"
               -f state=all -f per_page=100 -f sort=updated -f direction=desc)
   [ -n "$_CB_ISSUE_ETAG" ] && _cmd+=( -H "If-None-Match: $_CB_ISSUE_ETAG" )
-  _probe="$("${_cmd[@]}" 2>/dev/null)" || _probe=""
+  _probe="$("${_cmd[@]}")" || _probe=""
   # Header block = everything up to the first blank line (CRLF or LF).
   _hdrs="$(printf '%s' "$_probe" | sed -n '1,/^[[:space:]]*$/p')"
   _status="$(printf '%s' "$_hdrs" | head -1)"
-  if printf '%s' "$_status" | grep -q '304' && [ -n "$_CB_TICK_CACHE_OK" ]; then
+  if printf '%s' "$_status" | grep -q '304' \
+     && [ -n "$_CB_TICK_CACHE_OK" ] \
+     && [ -n "$_CB_TICK_CACHE_ALL" ] \
+     && [ "$_CB_TICK_CACHE_ALL" != "[]" ]; then
     # Unchanged list — keep the cached snapshot (no full re-fetch, no primary-RL spend).
     return 0
   fi
@@ -181,8 +184,18 @@ _cb_tick_cache_refresh(){
   done <<EOF
 $_hdrs
 EOF
-  _CB_TICK_CACHE_ALL="$(_cb_issue_fetch all)"
-  [ -n "$_CB_TICK_CACHE_ALL" ] || _CB_TICK_CACHE_ALL="[]"
+  local _fetched
+  _fetched="$(_cb_issue_fetch all)"
+  # Strip surrounding whitespace to normalise the value before validity check.
+  _fetched="$(printf '%s' "$_fetched" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [ -z "$_fetched" ] || [ "$_fetched" = "[]" ] || [ "$_fetched" = "null" ]; then
+    printf '%s\n' "tick-cache fetch empty/failed — forcing full refetch next tick"
+    # Do NOT assign _CB_TICK_CACHE_ALL, do NOT set _CB_TICK_CACHE_OK=1,
+    # do NOT update _CB_ISSUE_ETAG.  The missing/unchanged ETag ensures the
+    # next tick sends no If-None-Match header → GitHub returns 200 → full re-paginate.
+    return 0
+  fi
+  _CB_TICK_CACHE_ALL="$_fetched"
   _CB_TICK_CACHE_OK=1
   [ -n "$_new_etag" ] && _CB_ISSUE_ETAG="$_new_etag"
   return 0
