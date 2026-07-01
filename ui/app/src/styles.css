@@ -454,6 +454,7 @@ body {
 .queue-panel__label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:4px }
 .queue-panel__title { color:var(--mut2); font-size:12px; overflow:hidden; text-overflow:ellipsis }
 .queue-panel__controls { display:flex; gap:3px; flex-shrink:0 }
+.queue-panel__item--stuck { background: rgba(220, 38, 38, 0.15); border-left: 3px solid #dc2626 }
 
 /* per-card queue buttons */
 .queue-btn--add { border:1px solid var(--line2); background:transparent; color:var(--mut2);
