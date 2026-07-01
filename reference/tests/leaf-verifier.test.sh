@@ -248,7 +248,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23; EXCLUDED+actual DERIVED) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=25; EXCLUDED+actual DERIVED) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -266,8 +266,8 @@ else
   _manifest_union="$(grep -E '^(ALLOW|EXCLUDED)[[:space:]]+' "$_MANIFEST" \
     | awk '{print $2}' | sort -u)"
 
-  [ "$_allow_count" -eq 23 ] \
-    && ok "guard: ALLOW count=23" \
+  [ "$_allow_count" -eq 25 ] \
+    && ok "guard: ALLOW count=25" \
     || ko "guard: ALLOW count expected 23, got $_allow_count"
 
   # EXCLUDED and actual counts are DERIVED from the live merged tree — NOT a stale baked
