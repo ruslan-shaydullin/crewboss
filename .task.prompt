@@ -1,56 +1,55 @@
-You are the executor for issue #1169 in repo stratch1989/crewboss.
+You are the executor for issue #1185 in repo stratch1989/crewboss.
 Hard rules for THIS run:
-- You are ALREADY on branch leaf/1169-1782909637, based on the charter integration branch 'charter/696' (NOT main). Sibling leaves of charter #696 may already be merged into 'charter/696'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/696 --title '<short>' --body 'Closes #1169'. The PR base MUST be 'charter/696', NOT main. Then STOP — do not merge, do not touch other issues.
+- You are ALREADY on branch leaf/1185-1782916401, based on the charter integration branch 'charter/690' (NOT main). Sibling leaves of charter #690 may already be merged into 'charter/690'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
+- When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base charter/690 --title '<short>' --body 'Closes #1185'. The PR base MUST be 'charter/690', NOT main. Then STOP — do not merge, do not touch other issues.
 - This issue is self-contained; everything you need is below.
 
----- TASK (issue #1169) ----
-Charter: #696
-Depends-on: #1168
+---- TASK (issue #1185) ----
+Charter: #690
+Depends-on: #1183, #1184
 
-## Context
+## Task: Review plan-convergence approve gate (backend + UI + tests)
 
-`runtime-manifest.test.sh` Test 2 was flaky due to a SIGPIPE+pipefail race. PR #996 fixed this (no early awk exit). Leaf #1168 (qa-engineer) adds a 10× determinism regression harness (`runtime-manifest-determinism.test.sh`) and registers it as `EXCLUDED` in `reference/runtime/per-leaf-manifest`, updating counts from `ALLOW=23, EXCLUDED=75, union=98` to `ALLOW=23, EXCLUDED=76, union=99`.
+### Context
 
-This leaf confirms the authoritative ALLOW-subset gate (`verify-merged.sh`) remains sound after those changes, and that all count invariants are satisfied.
+Charter #690 fixes two defects in the cockpit Approve plan button:
+1. **Confusion** - button shown while plan_review_role convergence loop runs.
+2. **Gate bypass** - clicking before plan:agreed bypasses plan-convergence entirely.
 
-## Task
+Three sibling leaves implement the fix:
+- **#1182** (qa-engineer): tests in /work/tests/690-tests-plan-convergence-guard.test.sh and /work/ui/app/src/690-tests-plan-convergence.test.ts
+- **#1183** (executor): Python backend changes in /work/ui/server/crewboss-api.py
+- **#1184** (executor): TypeScript UI changes in /work/ui/app/src/api.ts and /work/ui/app/src/App.tsx
 
-After leaf #1168 has merged, verify the following:
+### Review checklist
 
-### 1. ALLOW designation retained
+**Backend guard (/work/ui/server/crewboss-api.py):**
+- [ ] Guard in do_command is bypass-proof: plan_review_role + plan:agreed absence evaluated FRESH from org.json and live GitHub issue on every call, NOT from cached state.
+- [ ] Guard returns ok: false with msg using the literal em dash character — (U+2014, one codepoint), NOT the three-byte sequence â^@^T. Verify: python3 -c "txt=open('/work/ui/server/crewboss-api.py').read(); assert '— approve blocked' in txt"
+- [ ] plan_convergence_active field in build_state() uses the same two-condition logic as the guard (policy.plan_review_role set AND plan:agreed absent).
+- [ ] plan_convergence_active is False for non-plan-review items.
+- [ ] No new imports needed (CB_TEAM and read_json already defined).
 
-Confirm that `runtime-manifest` still appears as `ALLOW` (not `EXCLUDED`) in `reference/runtime/per-leaf-manifest`. The no-early-exit awk fix in #996 strengthens the pure-function guarantee (no pipe subprocesses are abandoned mid-flight) — the ALLOW classification is correct and must not have been altered.
+**TypeScript UI (/work/ui/app/src/api.ts and /work/ui/app/src/App.tsx):**
+- [ ] plan_convergence_active?: boolean added to the Task type in /work/ui/app/src/api.ts after line 15, following established convention (rework_n #185, git_status #258, blast_radius #265, finale_pr #473).
+- [ ] Site 1 (~line 833): both Approve plan and Request changes hidden together when c.plan_convergence_active=true; plan-convergence in progress span shown instead.
+- [ ] Site 2 (~line 1294): BOTH Approve plan AND Request changes present in the !task.plan_convergence_active branch. Request changes button NOT dropped (behavioral regression check).
+- [ ] No round number displayed anywhere in the UI (no round-counter in API response).
+- [ ] TypeScript compiles without errors: cd /work/ui/app && npx tsc --noEmit
 
-### 2. Counts: comment correctness
+**Tests:**
+- [ ] Bash tests (scenarios 1-4) in /work/tests/690-tests-plan-convergence-guard.test.sh run successfully.
+- [ ] Vitest tests (scenarios 5-6) in /work/ui/app/src/690-tests-plan-convergence.test.ts pass.
+- [ ] Scenario 5 asserts BOTH action buttons absent during convergence (not just Approve).
+- [ ] Scenario 1 assertion uses the literal em dash — matching the Python guard msg exactly.
 
-Confirm the `Counts:` comment in `reference/runtime/per-leaf-manifest` reads exactly:
-```
-ALLOW=23, EXCLUDED=76, union=99
-```
+### Outcome
 
-### 3. leaf-verifier.test.sh Test 7 green
-
-Run `reference/tests/leaf-verifier.test.sh` and confirm Test 7 passes. Test 7 dynamically counts EXCLUDED entries and actual `.test.sh` files in the tree — only `ALLOW=23` is a hardcoded literal. After leaf #1168 adds `runtime-manifest-determinism.test.sh` + its EXCLUDED entry, the dynamic count will be 76 EXCLUDED / 99 actual, satisfying the ALLOW+EXCLUDED==union==actual invariant.
-
-### 4. verify-merged.sh + regen-manifest.sh sequencing
-
-Confirm that the `verify-merged.sh` invocation of `regen-manifest.sh` (synchronous, no `&`, change-gated) introduces no new hazard after the fix. The gate still completes before any test runs.
-
-### 5. Optional: wire determinism run into CI
-
-Optionally update the `engine` CI job configuration to run `runtime-manifest-determinism.test.sh` as an additional sanity step after the standard test suite. This is a nice-to-have, not required for charter closure.
-
-## Files expected (read-only verification, no code changes needed unless step 3/4 reveals an issue)
-
-- `reference/runtime/per-leaf-manifest` — verify ALLOW entry present, Counts: updated
-- `reference/tests/leaf-verifier.test.sh` — run Test 7, confirm green
-- `reference/tests/runtime-manifest-determinism.test.sh` — confirm file exists (created by #1168)
+If all checks pass: approve the PRs from leaves #1183 and #1184.
+If any check fails: request changes on the relevant PR with a specific фикс description.
 
 ## Acceptance (machine)
-
-- check: grep -q '^ALLOW runtime-manifest$' reference/runtime/per-leaf-manifest
-- check: grep -q 'EXCLUDED=76' reference/runtime/per-leaf-manifest
-- check: grep -q 'union=99' reference/runtime/per-leaf-manifest
-- test: reference/tests/leaf-verifier.test.sh
-- check: bash reference/tests/runtime-manifest-determinism.test.sh
+- check: bash /work/tests/690-tests-plan-convergence-guard.test.sh
+- check: cd /work/ui/app && npx tsc --noEmit
+- check: python3 -c "txt=open('/work/ui/server/crewboss-api.py').read(); assert '—' in txt; print('em-dash OK')"
+- check: python3 -c "txt=open('/work/ui/app/src/App.tsx').read(); assert txt.count('plan_convergence_active') >= 2; assert 'Request changes' in txt; print('UI OK')"
