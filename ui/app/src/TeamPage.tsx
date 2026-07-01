@@ -229,7 +229,7 @@ const TOOL_NAMES = ['Read', 'Edit', 'Write', 'Bash', 'Agent']
 
 type RoleFormState = {
   name: string; kind: string; domain: string; tools: string[]
-  profile: string; code_blind: boolean; skills: string; prompt: string
+  profile: string; code_blind: boolean; skills: string; model: string; prompt: string
 }
 
 function RoleModal({
@@ -237,7 +237,7 @@ function RoleModal({
 }: { mode: 'new' | 'edit'; roleName: string; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<RoleFormState>({
     name: roleName, kind: 'executor', domain: '', tools: ['Read', 'Bash'],
-    profile: 'executor', code_blind: false, skills: '', prompt: '',
+    profile: 'executor', code_blind: false, skills: '', model: '', prompt: '',
   })
   const [loading, setLoading]     = useState(mode === 'edit')
   const [submitting, setSubmitting] = useState(false)
@@ -256,6 +256,7 @@ function RoleModal({
           profile: fm.profile || '',
           code_blind: fm.code_blind === 'true',
           skills: fm.skills || '',
+          model: fm.model || '',
           prompt: data.prompt || '',
         })
       } else {
@@ -287,7 +288,7 @@ function RoleModal({
     const r = await saveRole({
       name: form.name, kind: form.kind, domain: form.domain,
       tools: form.tools.join(', '), profile: form.profile,
-      code_blind: form.code_blind, skills: form.skills, prompt: form.prompt,
+      code_blind: form.code_blind, skills: form.skills, model: form.model, prompt: form.prompt,
     })
     setSubmitting(false)
     if (r.ok) { onSaved() } else { setError(r.msg || 'Unknown error') }
@@ -353,6 +354,10 @@ function RoleModal({
               <label className="fld">
                 Skills <span className="muted" style={{ fontSize: 11 }}>(optional)</span>
                 <input value={form.skills} onChange={(e) => upd('skills', e.target.value)} placeholder="[go, http]" />
+              </label>
+              <label className="fld">
+                Model (claude-* id or 'anthropic')
+                <input value={form.model} onChange={(e) => upd('model', e.target.value)} placeholder="anthropic" />
               </label>
               <label className="fld">
                 System prompt
