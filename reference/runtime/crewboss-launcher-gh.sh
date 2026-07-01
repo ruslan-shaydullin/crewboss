@@ -1854,7 +1854,7 @@ cmd_run(){
         # plan-review charter with plan_review_role AND without plan:agreed is non-terminal (#382).
         # Empty/absent/unreadable → no queue mode → normal behaviour.
         _q_order=$(jq -r '.order[]' "$RUN/queue.json" 2>/dev/null) || _q_order=""
-        _q_head=""; _q_plan_head=""; _q_accept_head=""
+        _q_head=""; _q_plan_head=""; _q_accept_head=""; _q_loo_set=""
         if [ -n "$_q_order" ]; then
           for _qn in $_q_order; do
             _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
@@ -1885,8 +1885,23 @@ cmd_run(){
             case "$_qst" in done|blocked|hold|deferred) continue ;; esac
             _q_accept_head="$_qn"; break
           done
+          # Build skip-aware lookahead eligibility set for analysis-cycle (charter #506).
+          # Collects head + up to CB_QUEUE_LOOKAHEAD additional active entries
+          # (skipping done|blocked|hold|deferred, same logic as _q_head computation).
+          # Raw positional slicing of _q_order is explicitly prohibited — must be skip-aware.
+          # When CB_QUEUE_LOOKAHEAD=0, the set contains only the active head → serial behaviour.
+          _q_lookahead=${CB_QUEUE_LOOKAHEAD:-2}
+          _q_loo_set=""
+          _q_loo_count=0
+          for _qn in $_q_order; do
+            _qst=$(board get "$_qn" state 2>/dev/null || echo "unknown")
+            case "$_qst" in done|blocked|hold|deferred) continue ;; esac
+            _q_loo_set="${_q_loo_set:+$_q_loo_set }${_qn}"
+            _q_loo_count=$((_q_loo_count+1))
+            [ "$_q_loo_count" -ge "$((_q_lookahead+1))" ] && break
+          done
           _q_disp=$(printf '%s' "$_q_order" | tr '\n' ',' | sed 's/,$//')
-          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none} accept-head=#${_q_accept_head:-none}"
+          log "queue-mode: order=[$_q_disp] head=#${_q_head:-none} plan-head=#${_q_plan_head:-none} accept-head=#${_q_accept_head:-none} loo-set=[${_q_loo_set:-none}]"
         fi
         # bare-charter guard: if _q_head is a type:charter with no status:* label,
         # stamp status:needs-analysis so the analysis-cycle picks it up this tick.
@@ -1912,10 +1927,10 @@ cmd_run(){
         if [ -n "${CB_MANIFEST:-}" ]; then
           for cid in $(plannable_scoped); do
             [ "$running" -ge "$MAXP" ] && break
-            # queue-mode: only head charter is eligible for analysis
+            # queue-mode: lookahead-eligible charters (head + up to CB_QUEUE_LOOKAHEAD) may run analysis
             if [ -n "$_q_order" ]; then
-              [ -z "$_q_head" ] && break
-              [ "$cid" = "$_q_head" ] || continue
+              [ -n "$_q_loo_set" ] || break
+              case " $_q_loo_set " in *" $cid "*) : ;; *) continue ;; esac
             fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
@@ -1949,10 +1964,10 @@ cmd_run(){
           for cid in $_analysis_boards; do
             [ "$running" -ge "$MAXP" ] && break
             [ "${CHARTER_SCOPE:-0}" = "0" ] || [ "$cid" = "$CHARTER_SCOPE" ] || continue
-            # queue-mode: only head charter is eligible for analysis
+            # queue-mode: lookahead-eligible charters (head + up to CB_QUEUE_LOOKAHEAD) may run analysis
             if [ -n "$_q_order" ]; then
-              [ -z "$_q_head" ] && break
-              [ "$cid" = "$_q_head" ] || continue
+              [ -n "$_q_loo_set" ] || break
+              case " $_q_loo_set " in *" $cid "*) : ;; *) continue ;; esac
             fi
             [ -n "$(sget "$cid" pid)" ] && continue
             [ -n "$(sget "$cid" term)" ] && continue
