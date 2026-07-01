@@ -119,6 +119,7 @@ cmd_close_leaf() {
     exit "$close_exit"
   fi
   log "closed leaf #$id (merge-sha: ${merge_sha:-n/a})"
+  gh issue edit "$id" "${repo_flag[@]}" --remove-label "status:review" 2>/dev/null || true
 }
 
 # ── marker-grep ───────────────────────────────────────────────────────────────
