@@ -26,6 +26,11 @@ PORT   = int(sys.argv[sys.argv.index("--port")+1]) if "--port" in sys.argv else 
 BOARD  = os.path.join(CB_HOME, "board-gh.sh")
 CB_INTEGRATOR = os.environ.get('CB_INTEGRATOR') or os.path.join(CB_HOME, 'crewboss-integrator.sh')
 
+# HD-escalation command constants (charter #442 api-hd-actions)
+CMD_APPROVE_HD         = "approve-hd"
+CMD_REQUEST_CHANGES_HD = "request-changes-hd"
+CMD_CLOSE_HD           = "close-hd"
+
 _webhook_kick = threading.Event()
 _etag_store = {}  # keyed by resource path
 _cached_issues = None
@@ -99,6 +104,16 @@ def _charter_of(body):
 def _milestone_of(body):
     m = _MILESTONE_RE.search(body or "")
     return int(m.group(1)) if m else None
+def _hd_type(title):
+    """Return HD gate type keyword from issue title substring (charter #442).
+    Matches (case-insensitive): composition, analysis, approval, plan, acceptance."""
+    tl = (title or "").lower()
+    if "composition not converging"  in tl: return "composition"
+    if "analysis did not converge"   in tl: return "analysis"
+    if "approval required"           in tl: return "approval"
+    if "plan did not converge"       in tl: return "plan"
+    if "acceptance did not converge" in tl: return "acceptance"
+    return None
 
 def build_agents(by_n, loop_running=False):
     """Live agents = launcher run-state pids that are alive, joined with status.json + board."""
@@ -842,6 +857,63 @@ def do_command(body):
         except Exception:
             pass  # best-effort — never block a successful merge
         return {"ok": True, "verify_verdict": "green", "verify_output": result.stdout, "merged": True}
+    elif a in (CMD_APPROVE_HD, CMD_REQUEST_CHANGES_HD, CMD_CLOSE_HD) and n.isdigit():
+        # ── HD-gate dispatch (charter #442 api-hd-actions) ──────────────────────
+        # 1. Fetch the HD issue (labels + title + body)
+        _hd_raw = sh(["gh","issue","view",n,"-R",REPO,"--json","labels,title,body"])
+        try:
+            _hd_issue = json.loads(_hd_raw) if (_hd_raw or "").strip() else {}
+        except Exception:
+            _hd_issue = {}
+        _hd_lnames = [l["name"] for l in _hd_issue.get("labels", [])]
+        if "type:human-decision" not in _hd_lnames:
+            return {"ok": False, "msg": f"issue #{n} does not carry label type:human-decision"}
+        _hd_title = _hd_issue.get("title", "")
+        _hd_body  = _hd_issue.get("body",  "")
+        # 2. Extract charter number from HD body ("Charter: #N")
+        _cn = _charter_of(_hd_body)
+        if _cn is None:
+            return {"ok": False, "msg": f"could not parse Charter: #N from HD issue #{n}"}
+        # 3. Identify HD type from title
+        _ht = _hd_type(_hd_title)
+
+        if a == CMD_APPROVE_HD:
+            # Charter label mutations that unblock the matching launcher gate
+            _add, _rm = [], []
+            if   _ht == "composition": _add=["composition:approved","status:needs-plan"]; _rm=["status:team-review"]
+            elif _ht == "analysis":    _add=["review:agreed"]
+            elif _ht == "approval":    _add=["composition:approved","status:needs-plan"]; _rm=["status:team-review"]
+            elif _ht == "plan":        _add=["plan:agreed"]
+            elif _ht == "acceptance":  _add=["accept:agreed"]
+            else: return {"ok": False, "msg": f"unrecognized HD type for issue #{n}: {_hd_title!r}"}
+            _eargs = ["gh","issue","edit",str(_cn),"-R",REPO]
+            if _add: _eargs += ["--add-label",    ",".join(_add)]
+            if _rm:  _eargs += ["--remove-label", ",".join(_rm)]
+            sh(_eargs)
+            sh(["gh","issue","close",n,"-R",REPO,"--comment",
+                f"HD approved — charter #{_cn} labels updated."])
+            return {"ok": True, "msg": f"approve-hd #{n} (charter #{_cn})"}
+
+        elif a == CMD_REQUEST_CHANGES_HD:
+            _reason = str(body.get("reason","")).strip()
+            # 1. Comment on the CHARTER with rejection reason
+            _cc = f"❌ Human decision rejected: {_reason}" if _reason else "❌ Human decision rejected."
+            sh(["gh","issue","comment",str(_cn),"-R",REPO,"--body",_cc])
+            # 2. Exception: approval-required HD re-routes charter to analysis
+            if _ht == "approval":
+                sh(["gh","issue","edit",str(_cn),"-R",REPO,
+                    "--add-label","status:needs-analysis","--remove-label","status:team-review"])
+            # 3. Close HD with rejection comment
+            _hc = f"❌ Changes requested: {_reason}" if _reason else "❌ Changes requested."
+            sh(["gh","issue","close",n,"-R",REPO,"--comment",_hc])
+            return {"ok": True, "msg": f"request-changes-hd #{n} (charter #{_cn})"}
+
+        elif a == CMD_CLOSE_HD:
+            # Neutral close — NO charter label mutations whatsoever
+            sh(["gh","issue","close",n,"-R",REPO,"--comment",
+                "HD closed (neutral — no charter label changes)."])
+            return {"ok": True, "msg": f"close-hd #{n}"}
+
     return {"ok":False,"msg":f"unknown action: {a}"}
 
 def do_issue(body):
