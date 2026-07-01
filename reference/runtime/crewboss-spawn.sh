@@ -30,9 +30,13 @@ TASK="$1"; ROLE="$2"; PROMPTSRC="$3"; WORK="$4"; PR_REPO="${5:-}"
 #   locks down, never silently opens (default-deny).
 WORK_MOUNT="-R";  case "${CB_FS_WORK:-}"  in ""|rw) WORK_MOUNT="-B"  ;; esac
 CBNET_MOUNT="-R"; case "${CB_FS_CBNET:-}" in ""|rw) CBNET_MOUNT="-B" ;; esac
+[[ "${CB_MODEL:-}" == claude-* ]] && MODEL_FLAG="--model $CB_MODEL" || MODEL_FLAG=""
 # dry-run hook: print the provisioning decision and exit before any jail/proxy/budget
 # machinery, so the mount logic is unit-testable without nsjail (macOS/CI).
-[ -n "${CB_SPAWN_DRYRUN:-}" ] && { echo "WORK_MOUNT=$WORK_MOUNT CBNET_MOUNT=$CBNET_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-} fs_cbnet=${CB_FS_CBNET:-}"; exit 0; }
+if [[ "${CB_SPAWN_DRYRUN:-}" == "1" ]]; then
+  echo "WORK_MOUNT=$WORK_MOUNT CBNET_MOUNT=$CBNET_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-} fs_cbnet=${CB_FS_CBNET:-} model_flag=${MODEL_FLAG}"
+  exit 0
+fi
 TDIR="$RUN/work/$TASK"; mkdir -p "$TDIR"
 LOG="$TDIR/run.log"; ST="$TDIR/status.json"
 : > "$LOG"; chmod 600 "$LOG"
@@ -77,7 +81,9 @@ cat > "$TDIR/payload.sh" <<PJ
 python3 $BRIDGE_REL /cbnet/run/work/$TASK/proxy.sock 3128 &
 BR=\$!
 for i in \$(seq 1 50); do (echo >/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.1; done
-/home/ec2-user/.local/bin/claude --agent $ROLE -p "\$(cat /work/.task.prompt)" --output-format json
+/home/ec2-user/.local/bin/claude --agent $ROLE \
+  $MODEL_FLAG \
+  -p "\$(cat /work/.task.prompt)" --output-format json
 kill \$BR 2>/dev/null
 PJ
 cp "$TDIR/task.prompt" "$WORK/.task.prompt"

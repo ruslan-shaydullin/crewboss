@@ -465,7 +465,8 @@ if [ -n "${CB_MANIFEST:-}" ] && [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
     | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   CB_FS_CBNET=$(manifest_role_field "$CB_MANIFEST" "$ROLE" fs_cbnet 2>/dev/null \
     | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-  export CB_FS_WORK CB_FS_CBNET
+  CB_MODEL=$(manifest_role_field "$CB_MANIFEST" "$ROLE" model 2>/dev/null | tr -d '[:space:]')
+  export CB_FS_WORK CB_FS_CBNET CB_MODEL
 fi
 
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"

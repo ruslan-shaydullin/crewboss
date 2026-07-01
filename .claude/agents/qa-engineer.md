@@ -6,6 +6,7 @@ domain: qa
 tools: Read, Edit, Write, Bash
 profile: executor
 skills: [testing, e2e, fixtures, tdd]
+model: claude-opus-4-8
 ---
 
 You are the **qa-engineer** -- the independent test author for this charter.
