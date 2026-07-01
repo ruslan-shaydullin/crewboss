@@ -830,7 +830,7 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
             }}
           >{scopedPending ? '⏳ Running…' : '▶ Scoped'}</button>
         )}
-        {c && c.state === 'plan-review' && <>
+        {c && c.state === 'plan-review' && !c.plan_convergence_active && <>
           <button className="btn sm pri" onClick={() => ask('Approve plan #' + c.n,
             "Releases this charter's tasks to be launched (executors run, spending from the pool).",
             () => onAction('approve', c.n))}>Approve plan</button>
@@ -839,6 +839,9 @@ function CharterCard({ c, leaves, onAction, ask, onOpen, expanded, onToggle, que
             (reason) => onAction('request-changes', c.n, reason),
             true)}>Request changes</button>
         </>}
+        {c && c.state === 'plan-review' && c.plan_convergence_active && (
+          <span className="dim">plan-convergence in progress</span>
+        )}
         {c && c.state === 'approved' && c.finale_pr && (
           <>
             <button className="btn sm pri" disabled={merging || mergeBlockReason !== undefined} title={mergeBlockReason} onClick={async () => {
@@ -1291,13 +1294,18 @@ function TaskDrawer({ n, task, onClose, onAction, ask, mergeBlockReason }: {
 
         {task && task.state !== 'done' && (
           <div className="drawer-actions">
-            {task.state === 'plan-review' && <>
-              <button className="btn sm pri" onClick={() => ask('Approve plan #' + n, "Releases this charter's tasks to be launched.", () => onAction('approve', n))}>Approve plan</button>
-              <button className="btn sm ghost" onClick={() => ask('Request changes #' + n,
-                'Опишите, что нужно доработать в плане:',
-                (reason) => onAction('request-changes', n, reason),
-                true)}>Request changes</button>
-            </>}
+            {task.state === 'plan-review' && !task.plan_convergence_active && (
+              <>
+                <button className="btn sm pri" onClick={() => ask('Approve plan #' + n, "Releases this charter's tasks to be launched.", () => onAction('approve', n))}>Approve plan</button>
+                <button className="btn sm ghost" onClick={() => ask('Request changes #' + n,
+                  'Опишите, что нужно доработать в плане:',
+                  (reason) => onAction('request-changes', n, reason),
+                  true)}>Request changes</button>
+              </>
+            )}
+            {task.state === 'plan-review' && task.plan_convergence_active && (
+              <span className="dim">plan-convergence in progress</span>
+            )}
             {task.state === 'approved' && task.finale_pr && (
               <>
                 <button className="btn sm pri" disabled={merging || mergeBlockReason !== undefined} title={mergeBlockReason} onClick={async () => {
