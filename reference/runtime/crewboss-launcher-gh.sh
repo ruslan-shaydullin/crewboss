@@ -1970,12 +1970,29 @@ cmd_run(){
                   _all_hd=$(_cb_issue_list open 2>/dev/null || echo "[]")
                   _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
                   if [ "${_ex_hd:-0}" = "0" ]; then
+                    _last_verdict=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                      2>/dev/null | jq -r '[.comments[] | select(.body | test("^(PLAN-REVIEW:|REVIEW:)"))] | last | .body // ""' 2>/dev/null || true)
                     gh issue create -R "$CB_REPO" \
                       --title "Human decision: charter #$cid composition not converging" \
                       --body "## Composition not converging
+
 Charter #$cid composition stayed format-invalid through FORMAT_CAP=$_fcap rounds (analyst keeps producing an unparseable/invalid-role composition). Human call: fix the manifest/charter, give direction, or close.
 
-Charter: #$cid" \
+Charter: #$cid
+
+## Суть эскалации
+Композиция не сошлась за $_fcap раундов
+
+## Текущий план / состав
+${_comp_body:-не удалось получить}
+
+## Последний вердикт
+${_last_verdict:-не удалось получить}
+
+## Варианты действий
+- Одобрить: команда approve-hd — разблокирует гейт, применяет нужные лейблы на чартере.
+- На доработку: команда request-changes-hd — отклоняет без разблокировки, закрывает HD с причиной.
+- Закрыть: команда close-hd — закрывает HD без изменений на чартере." \
                       --label "type:human-decision" 2>/dev/null || true
                   fi
                   log "#$cid composition cap $_fcap reached (format-invalid) → human-decision"
@@ -2003,12 +2020,29 @@ Charter: #$cid" \
                     _all_hd=$(_cb_issue_list open 2>/dev/null || echo "[]")
                     _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
                     if [ "${_ex_hd:-0}" = "0" ]; then
+                      _last_verdict=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                        2>/dev/null | jq -r '[.comments[] | select(.body | test("^(PLAN-REVIEW:|REVIEW:)"))] | last | .body // ""' 2>/dev/null || true)
                       gh issue create -R "$CB_REPO" \
                         --title "Human decision: charter #$cid analysis did not converge" \
                         --body "## Convergence not reached
+
 Charter #$cid did not reach review agreement within CONVERGE_CAP=$_ccap rounds. Human call: approve the latest composition, give direction, or close.
 
-Charter: #$cid" \
+Charter: #$cid
+
+## Суть эскалации
+Анализ не сошёлся за $_ccap раундов
+
+## Текущий план / состав
+${_comp_body:-не удалось получить}
+
+## Последний вердикт
+${_last_verdict:-не удалось получить}
+
+## Варианты действий
+- Одобрить: команда approve-hd — разблокирует гейт, применяет нужные лейблы на чартере.
+- На доработку: команда request-changes-hd — отклоняет без разблокировки, закрывает HD с причиной.
+- Закрыть: команда close-hd — закрывает HD без изменений на чартере." \
                         --label "type:human-decision" 2>/dev/null || true
                       log "#$cid convergence: cap $_ccap reached → human-decision"
                     fi
@@ -2058,6 +2092,8 @@ Charter: #$cid" \
                   | length' 2>/dev/null || echo "0")
                 if [ "${_existing_hd:-0}" = "0" ]; then
                   _leaf_lines=$(printf '%s\n' "$_comp_tsv" | awk -F'\t' '$1=="leaf"{printf "- leaf: %s -> %s\n",$2,$3}' || true)
+                  _last_verdict=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                    2>/dev/null | jq -r '[.comments[] | select(.body | test("^(PLAN-REVIEW:|REVIEW:)"))] | last | .body // ""' 2>/dev/null || true)
                   _hd_body="## Human Approval Required
 
 Charter #$cid requires human approval before the composition can proceed.
@@ -2070,11 +2106,21 @@ $_leaf_lines
 - Threshold: \$$_approval_threshold
 - Decision: over-threshold or no run history (conservative escalation)
 
-## Action Required
-If you approve: add label \`composition:approved\` and \`status:needs-plan\`, remove \`status:team-review\`.
-If you reject: add a comment with reasons and set \`status:needs-analysis\`.
+Charter: #$cid
 
-Charter: #$cid"
+## Суть эскалации
+Требуется одобрение человека перед началом работ
+
+## Текущий план / состав
+${_comp_body:-не удалось получить}
+
+## Последний вердикт
+${_last_verdict:-не удалось получить}
+
+## Варианты действий
+- Одобрить: команда approve-hd — разблокирует гейт, применяет нужные лейблы на чартере.
+- На доработку: команда request-changes-hd — отклоняет без разблокировки, закрывает HD с причиной.
+- Закрыть: команда close-hd — закрывает HD без изменений на чартере."
                   gh issue create -R "$CB_REPO" \
                     --title "Human approval required: Charter #$cid" \
                     --body "$_hd_body" \
@@ -2174,12 +2220,31 @@ Charter: #$cid"
               _all_hd=$(_cb_issue_list open 2>/dev/null || echo "[]")
               _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
               if [ "${_ex_hd:-0}" = "0" ]; then
+                _fresh_comp=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                  2>/dev/null | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' 2>/dev/null || true)
+                _last_verdict=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                  2>/dev/null | jq -r '[.comments[] | select(.body | test("^(PLAN-REVIEW:|REVIEW:)"))] | last | .body // ""' 2>/dev/null || true)
                 gh issue create -R "$CB_REPO" \
                   --title "Human decision: charter #$cid plan did not converge" \
                   --body "## Plan convergence not reached
+
 Charter #$cid plan did not reach plan:agreed within CB_PLAN_CONVERGE_CAP=$_pcap rounds. Human call: approve the plan, give direction, or close.
 
-Charter: #$cid" \
+Charter: #$cid
+
+## Суть эскалации
+План не сошёлся за $_pcap раундов
+
+## Текущий план / состав
+${_fresh_comp:-не удалось получить}
+
+## Последний вердикт
+${_last_verdict:-не удалось получить}
+
+## Варианты действий
+- Одобрить: команда approve-hd — разблокирует гейт, применяет нужные лейблы на чартере.
+- На доработку: команда request-changes-hd — отклоняет без разблокировки, закрывает HD с причиной.
+- Закрыть: команда close-hd — закрывает HD без изменений на чартере." \
                   --label "type:human-decision" 2>/dev/null || true
                 log "#$cid plan-convergence: cap $_pcap reached → human-decision"
               fi
@@ -2264,12 +2329,31 @@ Charter: #$cid" \
               _all_hd=$(_cb_issue_list open 2>/dev/null || echo "[]")
               _ex_hd=$(printf '%s' "$_all_hd" | jq -r --argjson c "$cid" '[.[] | select([.labels[].name] | index("type:human-decision") != null) | select((.body//"") | test("Charter:\\s*#?" + ($c|tostring)))] | length' 2>/dev/null || echo "0")
               if [ "${_ex_hd:-0}" = "0" ]; then
+                _fresh_comp=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                  2>/dev/null | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' 2>/dev/null || true)
+                _last_verdict=$(gh issue view "$cid" -R "$CB_REPO" --json comments \
+                  2>/dev/null | jq -r '[.comments[] | select(.body | test("^(PLAN-REVIEW:|REVIEW:)"))] | last | .body // ""' 2>/dev/null || true)
                 gh issue create -R "$CB_REPO" \
                   --title "Human decision: charter #$cid acceptance did not converge" \
                   --body "## Acceptance convergence not reached
+
 Charter #$cid did not reach accept:agreed within CB_ACCEPT_CONVERGE_CAP=$_acap rounds. Human call: approve acceptance, give direction, or close.
 
-Charter: #$cid" \
+Charter: #$cid
+
+## Суть эскалации
+Приёмка не сошлась за $_acap раундов
+
+## Текущий план / состав
+${_fresh_comp:-не удалось получить}
+
+## Последний вердикт
+${_last_verdict:-не удалось получить}
+
+## Варианты действий
+- Одобрить: команда approve-hd — разблокирует гейт, применяет нужные лейблы на чартере.
+- На доработку: команда request-changes-hd — отклоняет без разблокировки, закрывает HD с причиной.
+- Закрыть: команда close-hd — закрывает HD без изменений на чартере." \
                   --label "type:human-decision" 2>/dev/null || true
                 log "#$cid acceptance-convergence: cap $_acap reached → human-decision"
               fi
