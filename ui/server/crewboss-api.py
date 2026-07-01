@@ -392,6 +392,54 @@ def search_board(q):
                if isinstance(it, dict) and "number" in it]
     return {"results": results}
 
+def _compute_stuck(n, labels, issues, plan_convergence_active, finale_pr):
+    """Return {is_stuck, reason} for charter issue #n. First match wins."""
+    label_names = [l.get("name", "") for l in labels]
+
+    # 1. Open type:human-decision issue referencing this charter
+    for it in issues:
+        if (any(l.get("name") == "type:human-decision" for l in it.get("labels", []))
+                and it.get("state", "").lower() != "closed"
+                and f"#{n}" in (it.get("body") or "")):
+            return {"is_stuck": True, "reason": "human decision pending"}
+
+    # 2. status:blocked label on the charter itself
+    for lname in label_names:
+        if lname.startswith("status:blocked"):
+            suffix = lname[len("status:blocked"):].strip(": ")
+            reason = f"blocked: {suffix}" if suffix else "blocked"
+            return {"is_stuck": True, "reason": reason}
+
+    # 3. No leaf children (derived from raw labels — NOT from kind field)
+    leaf_children = [
+        it for it in issues
+        if (f"#{n}" in (it.get("body") or ""))
+        and not any(
+            l.get("name") in ("type:charter", "type:milestone")
+            for l in it.get("labels", [])
+        )
+    ]
+    if not leaf_children:
+        return {"is_stuck": True, "reason": "no leaves"}
+
+    # 4. Finale PR in draft or not yet merged
+    if finale_pr:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(finale_pr), "-R", REPO, "--json", "isDraft,state"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            pr_data = json.loads(result.stdout)
+            if pr_data.get("isDraft") or pr_data.get("state") != "MERGED":
+                return {"is_stuck": True, "reason": "finale PR awaiting merge"}
+
+    # 5. Plan convergence cap active
+    if plan_convergence_active:
+        return {"is_stuck": True, "reason": "plan cap: awaiting review"}
+
+    return {"is_stuck": False, "reason": None}
+
+
 def build_state():
     global _cached_issues, _cached_charters
     issues = []
@@ -490,6 +538,10 @@ def build_state():
             plan_convergence_active = "plan:agreed" not in labels
         else:
             plan_convergence_active = False
+        if kind == "charter":
+            stuck = _compute_stuck(n, it.get("labels", []), issues, plan_convergence_active, finale_pr)
+        else:
+            stuck = None
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
@@ -497,7 +549,8 @@ def build_state():
                           milestone=(_milestone_of(body) if kind=="charter" else None),
                           git_status=git_status, blast_radius=blast_radius,
                           finale_pr=finale_pr,
-                          plan_convergence_active=plan_convergence_active))
+                          plan_convergence_active=plan_convergence_active,
+                          stuck=stuck))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
