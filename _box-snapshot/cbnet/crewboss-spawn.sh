@@ -61,12 +61,15 @@ RO="-R /usr -R /bin -R /lib -R /lib64 -R /sbin -R /etc -R /home/ec2-user/.local"
 PE="--env HTTPS_PROXY=http://127.0.0.1:3128 --env https_proxy=http://127.0.0.1:3128 --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1"
 GHENV=""; [ -n "$PR_REPO" ] && GHENV="--env GH_TOKEN --env GH_REPO=$PR_REPO"
 
+[[ "${CB_MODEL:-}" == claude-* ]] && MODEL_FLAG="--model $CB_MODEL" || MODEL_FLAG=""
 # in-jail wrapper: bridge up, then claude reads the prompt from file
 cat > "$TDIR/payload.sh" <<PJ
 python3 $BRIDGE_REL /cbnet/run/work/$TASK/proxy.sock 3128 &
 BR=\$!
 for i in \$(seq 1 50); do (echo >/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.1; done
-/home/ec2-user/.local/bin/claude --agent $ROLE -p "\$(cat /work/.task.prompt)" --output-format json
+/home/ec2-user/.local/bin/claude --agent $ROLE \
+  $MODEL_FLAG \
+  -p "\$(cat /work/.task.prompt)" --output-format json
 kill \$BR 2>/dev/null
 PJ
 cp "$TDIR/task.prompt" "$WORK/.task.prompt"
