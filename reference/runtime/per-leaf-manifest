@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=23, EXCLUDED=65, union=88  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=75, union=98  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -225,3 +225,14 @@ EXCLUDED 1073-keepalive-singletick
 #   per-leaf verify-merged gate before the impl leaf lands.
 EXCLUDED 1109-verify-merged-rich-reason
 EXCLUDED 1109-verify-merged-rich-reason-live
+# charter #1049 / issue #1123 recovery-escalation tests (qa-engineer leaf #1123):
+#   1049-recovery-parse drives the REAL crewboss-launcher-gh.sh via a stub-board harness;
+#   1049-recovery-cross-tick-live drives >= 2 REAL launcher ticks against a REAL bare git
+#   remote (live integration tier). Both are heavy/launcher-context. EXCLUDED (fail-closed).
+EXCLUDED 1049-recovery-parse
+EXCLUDED 1049-recovery-cross-tick-live
+# charter #421 scoped-run (qa-engineer leaf #836): starts crewboss-api.py as background
+#   process + stub launcher to test run-scoped action / CREWBOSS_CHARTER env delivery /
+#   scoped_charter lockfile / queue-block contract. Background process + timing-sensitive.
+#   EXCLUDED (fail-closed).
+EXCLUDED scoped-run
