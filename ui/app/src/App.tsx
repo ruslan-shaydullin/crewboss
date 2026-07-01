@@ -1037,7 +1037,7 @@ function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChang
           {queueOrder.map((n, idx) => {
             const charter = charterMap.get(n)
             return (
-              <li key={n} className="queue-panel__item" data-testid="queue-item" data-n={n} onClick={() => onOpen(n)}>
+              <li key={n} className={`queue-panel__item${charter?.stuck?.is_stuck ? " queue-panel__item--stuck" : ""}`} title={charter?.stuck?.is_stuck ? (charter.stuck?.reason ?? undefined) : undefined} data-testid="queue-item" data-n={n} onClick={() => onOpen(n)}>
                 <span className="queue-panel__pos">{idx + 1}.</span>
                 <span className="queue-panel__label">
                   <span className="num">#{n}</span>

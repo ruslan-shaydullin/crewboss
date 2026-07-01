@@ -14,6 +14,7 @@ export type Task = {
   blast_radius?: string | null  // #265 — 'high' | 'low'; charter only
   finale_pr?: string            // #473 — PR number for charter finale merge
   plan_convergence_active?: boolean  // #690 - charter only
+  stuck?: { is_stuck: boolean; reason: string | null } | null  // #485 - stuck charter highlight
 }
 export type Agent = {
   task: number | null
