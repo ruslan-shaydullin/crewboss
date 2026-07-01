@@ -268,7 +268,7 @@ export default function App() {
           )}
         </>
       ) : view === 'human' ? (
-        <HumanDecisionsPage state={state} onOpen={setOpen} onResolve={resolveAsk} />
+        <HumanDecisionsPage state={state} onOpen={setOpen} onResolve={resolveAsk} onAction={run} ask={ask} />
       ) : <TeamPage />}
 
       <div className="toasts">
@@ -595,8 +595,10 @@ function MilestoneGroup({ milestone, charters, leaves, onAction, ask, onOpen, ex
   )
 }
 
-function HumanDecisionsPage({ state, onOpen, onResolve }: {
+function HumanDecisionsPage({ state, onOpen, onResolve, onAction, ask }: {
   state: State | null; onOpen: (n: number) => void; onResolve: (n: number) => void
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
 }) {
   if (!state) return (
     <section className="board" data-testid="human-page">
@@ -628,17 +630,21 @@ function HumanDecisionsPage({ state, onOpen, onResolve }: {
           tasks={tasks.filter((t) => t.charter === c.n)}
           onOpen={onOpen}
           onResolve={onResolve}
+          onAction={onAction}
+          ask={ask}
         />
       ))}
       {orphans.length > 0 && (
-        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} onResolve={onResolve} />
+        <HumanCharterGroup charter={null} tasks={orphans} onOpen={onOpen} onResolve={onResolve} onAction={onAction} ask={ask} />
       )}
     </section>
   )
 }
 
-function HumanCharterGroup({ charter, tasks, onOpen, onResolve }: {
+function HumanCharterGroup({ charter, tasks, onOpen, onResolve, onAction, ask }: {
   charter: Task | null; tasks: Task[]; onOpen: (n: number) => void; onResolve: (n: number) => void
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
 }) {
   return (
     <div className="charter" data-testid="human-charter-group" data-charter={charter?.n ?? 'none'}>
@@ -653,13 +659,18 @@ function HumanCharterGroup({ charter, tasks, onOpen, onResolve }: {
         <span className="muted" style={{ fontSize: 12 }}>{tasks.length} задач{tasks.length === 1 ? 'а' : tasks.length < 5 ? 'и' : ''}</span>
       </div>
       <div className="task-grid">
-        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} onResolve={onResolve} />)}
+        {tasks.map((t) => <HumanTaskCard key={t.n} t={t} onOpen={onOpen} onResolve={onResolve} onAction={onAction} ask={ask} />)}
       </div>
     </div>
   )
 }
 
-function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) => void; onResolve: (n: number) => void }) {
+function HumanTaskCard({ t, onOpen, onResolve, onAction, ask }: {
+  t: Task; onOpen: (n: number) => void; onResolve: (n: number) => void
+  onAction: (a: string, n?: number, comment?: string) => void
+  ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
+}) {
+  const isHD = t.labels.includes('type:human-decision')
   return (
     <div
       className="task"
@@ -683,6 +694,20 @@ function HumanTaskCard({ t, onOpen, onResolve }: { t: Task; onOpen: (n: number) 
           onClick={(e) => { e.stopPropagation(); onResolve(t.n) }}
         >Решить</button>
       </div>
+      {isHD && (
+        <div className="task-foot" onClick={(e) => e.stopPropagation()}>
+          <button className="btn sm pri" onClick={() => ask('Одобрить #' + t.n,
+            'Подтвердите одобрение этой задачи.',
+            () => onAction('approve-hd', t.n))}>Одобрить</button>
+          <button className="btn sm ghost" onClick={() => ask('На доработку #' + t.n,
+            'Опишите, что нужно доработать:',
+            (reason) => { if (reason != null) onAction('request-changes-hd', t.n, reason) },
+            true)}>На доработку</button>
+          <button className="btn sm ghost" onClick={() => ask('Закрыть #' + t.n,
+            'Подтвердите закрытие этой задачи.',
+            () => onAction('close-hd', t.n))}>Закрыть</button>
+        </div>
+      )}
     </div>
   )
 }
