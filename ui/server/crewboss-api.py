@@ -483,13 +483,21 @@ def build_state():
                     finale_pr = fp_val
             except Exception:
                 pass
+        # plan_convergence_active: True when a plan-review charter has not yet
+        # received plan:agreed (convergence still in progress); False for all
+        # non-plan-review items.
+        if st == "plan-review":
+            plan_convergence_active = "plan:agreed" not in labels
+        else:
+            plan_convergence_active = False
         board.append(dict(n=n, kind=kind, state=st, title=it.get("title",""),
                           labels=labels, cost=sj.get("cost_usd"), pr=sj.get("pr") or "",
                           phase=sj.get("phase"),
                           charter=(_charter_of(body) if kind=="leaf" else None),
                           milestone=(_milestone_of(body) if kind=="charter" else None),
                           git_status=git_status, blast_radius=blast_radius,
-                          finale_pr=finale_pr))
+                          finale_pr=finale_pr,
+                          plan_convergence_active=plan_convergence_active))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
     # Add rework_n counter for charter items
@@ -717,6 +725,18 @@ def do_command(body):
         open(os.path.join(RUN, "launcher.pid"), "w").write(str(p.pid))
         return {"ok": True, "msg": f"scoped launcher started for charter {n_val}"}
     elif a=="approve" and n.isdigit():
+        # Guard: block approve while plan-convergence is in progress (plan:agreed not yet set).
+        # Reads policy.plan_review_role fresh from org.json and fetches the live issue on
+        # every call — NOT from cached state.
+        _org = read_json(os.path.join(CB_TEAM, "org.json"), {})
+        _plan_review_role = (_org.get("policy") or {}).get("plan_review_role", "")
+        _live_raw = sh(["gh", "issue", "view", n, "-R", REPO, "--json", "labels"])
+        try:
+            _live_labels = [l["name"] for l in json.loads(_live_raw).get("labels", [])]
+        except Exception:
+            _live_labels = []
+        if "status:plan-review" in _live_labels and "plan:agreed" not in _live_labels:
+            return {"ok": False, "msg": f"plan-convergence in progress — {_plan_review_role} must agree before approve"}
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:approved","--remove-label","status:plan-review"]); return {"ok":True,"msg":f"approved #{n}"}
     elif a=="hold" and n.isdigit():
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","hold"]); return {"ok":True,"msg":f"hold #{n}"}
