@@ -624,6 +624,9 @@ def do_command(body):
         ks = os.path.join(RUN, "kill_switch")
         if os.path.exists(ks):
             return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
+        # scoped_charter guard: if a scoped launcher is active, block queue run (#421).
+        if os.path.exists(os.path.join(RUN, "scoped_charter")):
+            return {"ok": False, "msg": "queue blocked: scoped run active"}
         # Singleton guard (root D): consult run/launcher.pid before spawning. If a live
         # loop already holds it, do NOT add another launcher process — keepalive and
         # operators both hit action=run, so an unguarded Popen over-spawns launchers.
@@ -670,6 +673,49 @@ def do_command(body):
                          stdout=open(os.path.join(RUN,"launcher.out"),"a"),
                          stderr=subprocess.STDOUT)
         return {"ok":True,"msg":"launcher started"}
+    elif a=="run-scoped":
+        ks = os.path.join(RUN, "kill_switch")
+        if os.path.exists(ks):
+            return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
+        n_val = body.get("number")
+        if not isinstance(n_val, int):
+            return {"ok": False, "msg": "number must be an integer"}
+        scoped_lock = os.path.join(RUN, "scoped_charter")
+        if os.path.exists(scoped_lock):
+            return {"ok": False, "msg": "scoped run already active"}
+        os.makedirs(RUN, exist_ok=True)
+        open(scoped_lock, "w").write(str(n_val))
+        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        seed_env = {
+            "HOME": home,
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+        }
+        try:
+            env_raw = subprocess.run(
+                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
+                capture_output=True, text=True, env=seed_env, timeout=15
+            ).stdout
+            launch_env = {}
+            for line in env_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k and k.isidentifier():
+                        launch_env[k] = v
+            if not launch_env:
+                launch_env = dict(seed_env)
+        except Exception:
+            launch_env = dict(seed_env)
+        launch_env["CREWBOSS_CHARTER"] = str(n_val)
+        launcher_sh = os.path.join(CB_HOME, "crewboss-launcher-gh.sh")
+        p = subprocess.Popen(
+            ["bash", "-c", f"bash {launcher_sh} run; rm -f {scoped_lock}"],
+            env=launch_env,
+            stdout=open(os.path.join(RUN, "launcher.out"), "a"),
+            stderr=subprocess.STDOUT
+        )
+        open(os.path.join(RUN, "launcher.pid"), "w").write(str(p.pid))
+        return {"ok": True, "msg": f"scoped launcher started for charter {n_val}"}
     elif a=="approve" and n.isdigit():
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:approved","--remove-label","status:plan-review"]); return {"ok":True,"msg":f"approved #{n}"}
     elif a=="hold" and n.isdigit():
