@@ -1,0 +1,20 @@
+# crewboss-loop-keepalive.timer — charter #1144 (reconstructed from box-only state).
+#
+# Fires crewboss-loop-keepalive.service every 5 min (one single-tick per fire). Each tick
+# restarts the launcher loop only if it has genuinely died (see keepalive.sh).
+#
+# Install once on the box (passwordless sudo) — or via reference/runtime/deploy-units.sh:
+#   sudo cp reference/runtime/crewboss-loop-keepalive.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crewboss-loop-keepalive.timer
+
+[Unit]
+Description=crewboss launcher-loop keepalive timer (every 5 min)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=crewboss-loop-keepalive.service
+
+[Install]
+WantedBy=timers.target
