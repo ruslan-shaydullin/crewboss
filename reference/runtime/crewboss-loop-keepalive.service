@@ -1,0 +1,32 @@
+# crewboss-loop-keepalive.service — charter #1144 (reconstructed from box-only state).
+#
+# LOOP-ONLY keepalive: runs crewboss-loop-keepalive.sh for exactly ONE single-tick then
+# exits (Type=oneshot). Driven every 5 min by crewboss-loop-keepalive.timer. Restarts the
+# launcher loop iff it has GENUINELY died (launcher.pid + kill -0; see keepalive.sh header).
+#
+# With charter #1144 the launcher runs as its own crewboss-launcher.service, so this tick
+# reduces to `systemctl start crewboss-launcher` (via the CREWBOSS_LAUNCHER_UNIT seam) — no
+# nohup fork inheriting keepalive.lock. The KillMode=process drop-in
+# (crewboss-loop-keepalive-killmode.conf) remains as belt-and-braces for boxes still on the
+# legacy nohup fallback path.
+#
+# Install once on the box (passwordless sudo) — or via reference/runtime/deploy-units.sh:
+#   sudo cp reference/runtime/crewboss-loop-keepalive.service /etc/systemd/system/
+#   sudo cp reference/runtime/crewboss-loop-keepalive.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crewboss-loop-keepalive.timer
+
+[Unit]
+Description=crewboss launcher-loop keepalive (single-tick)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/cbnet
+Environment=HOME=/home/ec2-user
+Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CB_REPO=stratch1989/crewboss
+Environment=CB_HOME=/home/ec2-user/cbnet
+ExecStart=/bin/bash /home/ec2-user/cbnet/crewboss-loop-keepalive.sh --once

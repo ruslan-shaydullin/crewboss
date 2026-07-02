@@ -1,0 +1,42 @@
+# crewboss-launcher.service — systemd unit for the crewboss launcher loop.
+#
+# charter #1144: root-cause fix for the 2026-06-30→07-01 launcher outage. The launcher
+# loop had been spawned by crewboss-loop-keepalive.service (Type=oneshot) via `nohup … &`.
+# Without KillMode=process, systemd tore down the oneshot service cgroup on ExecStart exit
+# and killed the just-spawned launcher — an infinite restart-kill every 5 min. Side effect:
+# the spawned launcher inherited keepalive.lock's fd, so keepalive never re-evaluated
+# liveness. Running the launcher as its OWN Restart=always service (its own cgroup, no
+# inherited lock fd) removes both problems at the design level.
+#
+# Model: crewboss-api.service. Sources run-env.sh so the loop rebuilds the FULL env
+# contract (CB_HOME=$HOME/cbnet incl. ~/.crewboss.env tokens) — the same env the operator
+# `run` builds — closing the root-A lock-path divergence.
+#
+# Install once on the box (passwordless sudo) — or via reference/runtime/deploy-units.sh:
+#   sudo cp reference/runtime/crewboss-launcher.service /etc/systemd/system/crewboss-launcher.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crewboss-launcher
+# Keepalive's start_loop() then routes to `systemctl start crewboss-launcher` when the unit
+# is present (CREWBOSS_LAUNCHER_UNIT seam).
+
+[Unit]
+Description=crewboss launcher loop (leaf-spawning launcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/cbnet
+Environment=HOME=/home/ec2-user
+Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CB_REPO=stratch1989/crewboss
+Environment=CB_HOME=/home/ec2-user/cbnet
+# Source the shared env contract (run-env.sh re-exports CB_HOME=$HOME/cbnet and the
+# ~/.crewboss.env tokens) then exec the launcher loop under that env.
+ExecStart=/bin/bash -c 'set -a; . /home/ec2-user/cbnet/run-env.sh; set +a; exec bash /home/ec2-user/cbnet/crewboss-launcher-gh.sh run'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
