@@ -253,3 +253,11 @@ EXCLUDED 1181-tick-cache-latch
 # phantom-closed-leaf: self-contained python3+bash; no network access, no real GitHub repo; no background process, no timing/poll; verdict = pure function of merged content
 ALLOW phantom-closed-leaf
 EXCLUDED api-state-304-regression
+# charter #1144 deploy-contract (qa-engineer leaf #1267): 1144-launcher-service pins the
+#   crewboss-launcher.service refactor (dedicated systemd unit + keepalive -> `systemctl
+#   start crewboss-launcher`). CONTRACT-2a sources crewboss-loop-keepalive.sh and invokes
+#   start_loop() in a child process (subprocess-spawn pattern) — NOT a pure function of
+#   merged content, same class as 1073-keepalive-singletick. EXCLUDED (fail-closed default).
+#   Also transitional: UNIT-1..4 / CONTRACT-1 / CONTRACT-2a are RED until the infra leaf
+#   lands the unit files + keepalive seam into charter/1144 (tests-first ordering).
+EXCLUDED 1144-launcher-service
