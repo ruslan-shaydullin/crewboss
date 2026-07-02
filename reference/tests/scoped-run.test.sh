@@ -49,7 +49,7 @@ cat > "$FAKE_HOME/.crewboss.env" <<'ENVEOF'
 GH_TOKEN=FAKETOKEN
 CB_API_TOKEN=FAKEAPITOKEN
 CLAUDE_CODE_OAUTH_TOKEN=FAKEOAUTH
-CB_REPO=stratch1989/crewboss
+CB_REPO=ruslan-shaydullin/crewboss
 ENVEOF
 
 # ── Stub gh (auth token) ──────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ env -i \
   PATH="$BIN:/usr/bin:/bin:/usr/local/bin" \
   CB_API_TOKEN=FAKEAPITOKEN \
   CB_HOME="$CBNET" \
-  CB_REPO=stratch1989/crewboss \
+  CB_REPO=ruslan-shaydullin/crewboss \
   python3 "$API_PY" --port "$API_PORT" \
   > "$API_OUT" 2>&1 &
 API_PID=$!

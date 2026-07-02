@@ -11,7 +11,7 @@
 [ -f "$HOME/.crewboss.env" ] && . "$HOME/.crewboss.env"
 
 # ── Core ──────────────────────────────────────────────────────────────────────
-export CB_REPO="${CB_REPO:-stratch1989/crewboss}"
+export CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
 # CB_HOME явный $HOME/cbnet (закрывает рассинхрон с дефолтом лаунчера /tmp/cbnet)
 export CB_HOME="$HOME/cbnet"
 # CB_MAX_TICKS не меньше 1800 (T6 тик-бюджет: лист ~8-10 мин, 120 тиков = один батч)

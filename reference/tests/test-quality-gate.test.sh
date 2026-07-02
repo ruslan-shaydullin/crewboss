@@ -120,7 +120,7 @@ _write_test "$RD1/reference/tests/buggy-bin.test.sh" \
   $'#!/usr/bin/env bash\nBIN="/tmp/stub-bin-s1"\nPATH="$BIN:$PATH"\necho "test output"\nexit 0\n'
 
 run_gate --charter 597 --qa-leaf 100 --impl-leaf 200 \
-  --repo stratch1989/crewboss --repo-dir "$RD1" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD1" >/dev/null 2>&1
 _s1_rc=$?
 
 [ "$_s1_rc" -eq 1 ] \
@@ -151,7 +151,7 @@ _write_test "$RD2/reference/tests/buggy-grepc.test.sh" \
   $'#!/usr/bin/env bash\ncount=$(grep -c "pattern" somefile.txt || echo 0)\n[ "$count" -ge 1 ] && echo found || echo "not found"\nexit 0\n'
 
 run_gate --charter 597 --qa-leaf 100 --impl-leaf 200 \
-  --repo stratch1989/crewboss --repo-dir "$RD2" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD2" >/dev/null 2>&1
 _s2_rc=$?
 
 [ "$_s2_rc" -eq 1 ] \
@@ -181,7 +181,7 @@ _write_test "$RD3/reference/tests/flaky.test.sh" \
   $'#!/usr/bin/env bash\nif [ ! -f "$_flaky_flag" ]; then touch "$_flaky_flag"; exit 1; fi\nexit 0\n'
 
 run_gate --charter 597 --qa-leaf 100 --impl-leaf 200 \
-  --repo stratch1989/crewboss --repo-dir "$RD3" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD3" >/dev/null 2>&1
 _s3_rc=$?
 
 if ghlog_has 'edit #100 +status:test-broken'; then
@@ -205,7 +205,7 @@ _write_test "$RD4/reference/tests/clean.test.sh" \
   $'#!/usr/bin/env bash\nexport BIN="/tmp/clean-stub"\nexport PATH="$BIN:$PATH"\n_count=$(grep -c "hi" /dev/null 2>/dev/null); _count=${_count:-0}\necho "clean test: pass"\nexit 0\n'
 
 run_gate --charter 597 --qa-leaf 100 --impl-leaf 200 \
-  --repo stratch1989/crewboss --repo-dir "$RD4" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD4" >/dev/null 2>&1
 _s4_rc=$?
 
 [ "$_s4_rc" -eq 0 ] \
@@ -230,7 +230,7 @@ _write_test "$RD5/reference/tests/impl-test.test.sh" \
   $'#!/usr/bin/env bash\nexport BIN="/tmp/impl-stub"\nexport PATH="$BIN:$PATH"\n_cnt=$(grep -c "marker" /dev/null 2>/dev/null); _cnt=${_cnt:-0}\necho "impl returned wrong value" >&2\nexit 1\n'
 
 run_gate --charter 597 --qa-leaf 100 --impl-leaf 200 \
-  --repo stratch1989/crewboss --repo-dir "$RD5" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD5" >/dev/null 2>&1
 _s5_rc=$?
 
 [ "$_s5_rc" -eq 1 ] \
@@ -264,7 +264,7 @@ make_repo "$RD6a"
 _write_test "$RD6a/reference/tests/s6-buggy.test.sh" \
   $'#!/usr/bin/env bash\nBIN="/tmp/s6-stub"\nPATH="$BIN:$PATH"\nexit 0\n'
 run_gate --charter 597 --qa-leaf 101 --impl-leaf 201 \
-  --repo stratch1989/crewboss --repo-dir "$RD6a" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD6a" >/dev/null 2>&1
 
 ghlog_has 'edit #101 +status:test-broken' \
   && ok "S6a: exact label 'status:test-broken' applied to qa-leaf #101" \
@@ -280,7 +280,7 @@ make_repo "$RD6b" "s6-sound"
 _write_test "$RD6b/reference/tests/s6-sound.test.sh" \
   $'#!/usr/bin/env bash\nexport BIN="/tmp/s6b-stub"\nexport PATH="$BIN:$PATH"\nexit 1\n'
 run_gate --charter 597 --qa-leaf 101 --impl-leaf 201 \
-  --repo stratch1989/crewboss --repo-dir "$RD6b" >/dev/null 2>&1
+  --repo ruslan-shaydullin/crewboss --repo-dir "$RD6b" >/dev/null 2>&1
 
 ghlog_has 'edit #201 +status:impl-broken' \
   && ok "S6b: exact label 'status:impl-broken' applied to impl-leaf #201" \

@@ -2,7 +2,7 @@
 # Free agents-rail demo: approved charter + 3 open leaves, launcher with a SLOW stub so 3
 # agents are visibly "running" (pulse + elapsed) in the UI rail for ~45s, then -> review.
 set -u
-export CB_REPO=stratch1989/crewboss-proto CB_HOME=/tmp/cbnet
+export CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=/tmp/cbnet
 export CB_SPAWN=/tmp/cbnet/stub-spawn-bg.sh CB_RETRY_CAP=2 CB_MAX_PARALLEL=3 CB_POLL=2 CB_LAUNCHER_ID=uidemo
 export STUB_SLEEP=45 CB_MAX_TICKS=60 CB_IDLE_CONFIRM=2
 L=/tmp/cbnet/crewboss-launcher-gh.sh; RUN=$CB_HOME/run

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validate the demon-API (phase 0): health, auth, state, command flag-toggles, SSE.
 set -u
-export CB_REPO=stratch1989/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=testsecret CB_API_PORT=8788
+export CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=testsecret CB_API_PORT=8788
 RUN=$CB_HOME/run; mkdir -p "$RUN"
 B="http://127.0.0.1:8788"; H="Authorization: Bearer testsecret"
 pass=0; fail=0; ok(){ echo "  PASS $1"; pass=$((pass+1)); }; no(){ echo "  FAIL $1"; fail=$((fail+1)); }

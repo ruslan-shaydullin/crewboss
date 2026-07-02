@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validate query-token auth (the path the browser EventSource uses).
 set -u
-export CB_REPO=stratch1989/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=testsecret CB_API_PORT=8789
+export CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=testsecret CB_API_PORT=8789
 B="http://127.0.0.1:8789"
 pass=0; fail=0; ok(){ echo "  PASS $1"; pass=$((pass+1)); }; no(){ echo "  FAIL $1"; fail=$((fail+1)); }
 pkill -f 'crewboss-api.py' 2>/dev/null; sleep 0.3

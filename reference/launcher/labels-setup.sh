@@ -2,7 +2,7 @@
 # labels-setup.sh — create the crewboss board-orchestration labels in THIS repo.
 # Idempotent (create, else edit). `depends-on` is a BODY convention (`Depends-on: #X`),
 # not a label. See ../board-orchestration.md.
-CB_REPO="${CB_REPO:-stratch1989/crewboss}"
+CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
 mklabel() { gh label create "$1" -R "$CB_REPO" --color "$2" --description "$3" 2>/dev/null \
   || gh label edit "$1" -R "$CB_REPO" --color "$2" --description "$3" 2>/dev/null || true; }
 

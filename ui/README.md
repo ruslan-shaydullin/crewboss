@@ -35,7 +35,7 @@ Open `http://localhost:5500` → ⚙ Settings → API URL `http://127.0.0.1:8787
 ## Run the single-file v0
 On the box (start the API):
 ```
-CB_REPO=stratch1989/crewboss-proto CB_HOME=~/cbnet CB_API_TOKEN=<pick-a-secret> \
+CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=~/cbnet CB_API_TOKEN=<pick-a-secret> \
   nohup python3 ~/cbnet/crewboss-api.py >~/cbnet/run/api.out 2>&1 &
 ```
 From your laptop (tunnel the API port, then serve the page):

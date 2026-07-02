@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source ~/.crewboss.env
-export CB_REPO=stratch1989/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=secret123
+export CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=secret123
 export CB_WEBHOOK_SECRET="${CB_WEBHOOK_SECRET:-changeme}"
 export CB_API_HOST="${CB_API_HOST:-127.0.0.1}"
 export CB_SPAWN=/tmp/cbnet/crewboss-prep-spawn-gh.sh CB_GOVERNED=1

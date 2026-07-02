@@ -7,7 +7,7 @@
 set -uo pipefail
 source /home/ec2-user/.crewboss.env; export CLAUDE_CODE_OAUTH_TOKEN
 GH_TOKEN=$(gh auth token); export GH_TOKEN
-OWNER=stratch1989; REPO=crewboss-proto
+OWNER=ruslan-shaydullin; REPO=crewboss-proto
 PR="${1:?usage: run-gov-gatefire.sh <PR#>}"
 B=/tmp/cbnet/gov-gatefire; rm -rf "$B"; mkdir -p "$B/work/.claude"
 cp -r /tmp/cbnet/gov/.claude/* "$B/work/.claude/"

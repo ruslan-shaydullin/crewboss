@@ -142,7 +142,7 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo "== RED-b: CB_REPO used for -R flag and clone URL in both scripts =="
-# Before fix: -R and clone URL are hardcoded to stratch1989/crewboss.
+# Before fix: -R and clone URL are hardcoded to ruslan-shaydullin/crewboss.
 
 # rework-prep.sh with CB_REPO=acme/widget
 reset_sandbox

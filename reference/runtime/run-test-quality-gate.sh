@@ -24,7 +24,7 @@
 # --charter  CID       GitHub issue number of the charter
 # --qa-leaf  QID       GitHub issue number of the qa-engineer leaf
 # --impl-leaf IID      GitHub issue number of the executor/impl leaf
-# --repo     OWNER/REPO  defaults to CB_REPO env (stratch1989/crewboss)
+# --repo     OWNER/REPO  defaults to CB_REPO env (ruslan-shaydullin/crewboss)
 # --repo-dir DIR       local path to charter branch tree (for lint + harness);
 #                      omit to skip Stage 1 lint and Stage 3 harness execution
 #
@@ -35,7 +35,7 @@
 
 set -uo pipefail
 
-REPO="${CB_REPO:-stratch1989/crewboss}"
+REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
 CHARTER_ID=""
 QA_LEAF=""
 IMPL_LEAF=""

@@ -5,7 +5,7 @@
 #   CB_OLD_BRANCH empty -> fresh-fix mode (implement the issue on charter/C)
 set -uo pipefail
 CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
-CB_REPO="${CB_REPO:-stratch1989/crewboss}"
+CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
 ID="$1"; OLD="${CB_OLD_BRANCH:-}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
 URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"

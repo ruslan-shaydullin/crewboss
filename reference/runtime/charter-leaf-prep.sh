@@ -7,7 +7,7 @@
 # Usage (matches launcher contract): charter-leaf-prep.sh <id> <role>
 set -uo pipefail
 CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
-CB_REPO="${CB_REPO:-stratch1989/crewboss}"
+CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
 ID="$1"; ROLE="${2:-executor}"
 GH_TOKEN="$(gh auth token)"; export GH_TOKEN
 # Token-free URL: CB_GIT_REMOTE from run-env.sh if set; else build from CB_REPO.

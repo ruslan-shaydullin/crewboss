@@ -28,7 +28,7 @@ mkdir -p "$FAKE_HOME/cbnet/run" "$BIN"
 
 # ── Fake ~/.crewboss.env ──────────────────────────────────────────────────────
 cat > "$FAKE_HOME/.crewboss.env" <<'ENVEOF'
-CB_REPO=stratch1989/crewboss
+CB_REPO=ruslan-shaydullin/crewboss
 ENVEOF
 
 # ── Stub gh: auth token → FAKETOKEN ──────────────────────────────────────────
@@ -79,8 +79,8 @@ assert_contract(){
 
   local v
   v="$(dump_val CB_GIT_REMOTE)"
-  if printf '%s' "$v" | grep -q "github.com/stratch1989/crewboss"; then
-    ok "$label: CB_GIT_REMOTE contains github.com/stratch1989/crewboss"
+  if printf '%s' "$v" | grep -q "github.com/ruslan-shaydullin/crewboss"; then
+    ok "$label: CB_GIT_REMOTE contains github.com/ruslan-shaydullin/crewboss"
   else
     no "$label: CB_GIT_REMOTE missing or wrong (got: '$v')"
   fi

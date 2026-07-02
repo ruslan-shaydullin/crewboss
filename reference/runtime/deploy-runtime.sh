@@ -100,7 +100,7 @@ if [ "${CB_BUILD_UI:-1}" != "0" ]; then
     [ -f \"\$H/run-env.sh\" ] && . \"\$H/run-env.sh\" || true
     UB=\$HOME/cbnet-uibuild
     if [ -d \"\$UB/.git\" ]; then git -C \"\$UB\" fetch -q origin main && git -C \"\$UB\" reset -q --hard origin/main
-    else git clone -q \"https://github.com/\${CB_REPO:-stratch1989/crewboss}.git\" \"\$UB\"; fi
+    else git clone -q \"https://github.com/\${CB_REPO:-ruslan-shaydullin/crewboss}.git\" \"\$UB\"; fi
     cd \"\$UB/ui/app\"; npm install --no-audit --no-fund >/tmp/ui-deploy.log 2>&1; npm run build >>/tmp/ui-deploy.log 2>&1
     rm -rf \"\$H/www\"; cp -r dist \"\$H/www\"; echo '  UI built + deployed to '\"\$H\"'/www'
   " || printf '  WARN: UI build step failed (see /tmp/ui-deploy.log on box)\n'
@@ -131,7 +131,7 @@ ssh $CB_SSH_OPTS "$CB_HOST" "
     # Fallback: no unit installed — detached start (fragile, dies on abrupt ssh teardown).
     H=\$(eval echo $CB_REMOTE_HOME); cd \"\$H\"
     if [ -f run-env.sh ]; then . run-env.sh; elif [ -f \$HOME/.crewboss.env ]; then . \$HOME/.crewboss.env; fi
-    export CB_REPO=\${CB_REPO:-stratch1989/crewboss} CB_HOME=\"\$H\"
+    export CB_REPO=\${CB_REPO:-ruslan-shaydullin/crewboss} CB_HOME=\"\$H\"
     for _p in \$(fuser 8787/tcp 2>/dev/null); do kill -9 \"\$_p\" 2>/dev/null || true; done; sleep 1
     nohup setsid python3 crewboss-api.py --port 8787 > run/api.out 2>&1 < /dev/null & disown 2>/dev/null || true
     echo \"\$!\" > run/api.pid; sleep 2

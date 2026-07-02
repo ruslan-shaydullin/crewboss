@@ -27,6 +27,6 @@ User=ec2-user
 WorkingDirectory=/home/ec2-user/cbnet
 Environment=HOME=/home/ec2-user
 Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=CB_REPO=stratch1989/crewboss
+Environment=CB_REPO=ruslan-shaydullin/crewboss
 Environment=CB_HOME=/home/ec2-user/cbnet
 ExecStart=/bin/bash /home/ec2-user/cbnet/crewboss-loop-keepalive.sh --once

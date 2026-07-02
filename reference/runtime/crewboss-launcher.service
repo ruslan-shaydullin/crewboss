@@ -30,7 +30,7 @@ User=ec2-user
 WorkingDirectory=/home/ec2-user/cbnet
 Environment=HOME=/home/ec2-user
 Environment=PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=CB_REPO=stratch1989/crewboss
+Environment=CB_REPO=ruslan-shaydullin/crewboss
 Environment=CB_HOME=/home/ec2-user/cbnet
 # Source the shared env contract (run-env.sh re-exports CB_HOME=$HOME/cbnet and the
 # ~/.crewboss.env tokens) then exec the launcher loop under that env.
