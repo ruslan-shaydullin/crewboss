@@ -517,6 +517,134 @@ has_comment 5 "engine-fail\\|verify-merged" \
   || ko "RED-g: no verify-failure comment on charter #5"
 
 # =============================================================================
+# RED-h: off→on CB_AUTO_MERGE transition (Bug 1)
+#   A charter parked "ready for human" with a cached ci_state=green under
+#   CB_AUTO_MERGE=0 must STILL auto-merge once the flag is later flipped to 1.
+#   Reproduces the launcher-gh.sh green early-exit (line ~832) that returns 0
+#   BEFORE the CB_AUTO_MERGE branch, stranding the charter ready-but-unmerged.
+#   Uses the REAL launcher (not the stub) — the bug lives in _finale_check_ci's
+#   ci_state cache, which the stub launcher does not model.
+# =============================================================================
+echo "== RED-h: off→on CB_AUTO_MERGE — stale cached green must NOT block auto-merge =="
+
+CBHOME_H="$ROOT/cbhome_h"
+reset_sandbox "$CBHOME_H"
+printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
+
+# Pre-create the charter/5 PR so the finale takes the existing-PR path straight
+# into _finale_check_ci (bypasses gate-charter/regen-persist), mirroring the
+# queue-prune RED-f setup below.
+printf '5005' > "$PRDIR/charter-pr-5"
+
+# Seed ci_state=pending so the FIRST call falls through to the real branches.
+mkdir -p "$CBHOME_H/run/state/finale-5"
+printf 'pending' > "$CBHOME_H/run/state/finale-5/ci_state"
+
+# Stub verify-merged -> exit 0 (PASS); forward other subcommands to real integrator.
+INTEGRATOR_WRAP_H="$ROOT/integrator-wrap-h.sh"
+cat > "$INTEGRATOR_WRAP_H" << IWEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "verify-merged" ]; then exit 0; fi
+exec bash "$INTEGRATOR" "\$@"
+IWEOF
+chmod +x "$INTEGRATOR_WRAP_H"
+
+# Run 1: CB_AUTO_MERGE=0 → charter parked "ready for human", ci_state=green cached.
+run_finale "$CBHOME_H" "CB_INTEGRATOR=\"$INTEGRATOR_WRAP_H\" CB_AUTO_MERGE=0"
+
+# Sanity: the off-run must NOT have merged (proves we start from the stuck state).
+charter_pr_merged_admin \
+  && ko "RED-h: admin merge happened under CB_AUTO_MERGE=0 (should only park ready)" \
+  || ok "RED-h: CB_AUTO_MERGE=0 run parked ready (no admin merge yet)"
+
+[ "$(cat "$CBHOME_H/run/state/finale-5/ci_state" 2>/dev/null)" = "green" ] \
+  && ok "RED-h: ci_state=green cached after CB_AUTO_MERGE=0 run (ready for human)" \
+  || ko "RED-h: ci_state was NOT cached green after CB_AUTO_MERGE=0 run"
+
+# Run 2: SAME state dir, CB_AUTO_MERGE=1 → stale green must not short-circuit merge.
+run_finale "$CBHOME_H" "CB_INTEGRATOR=\"$INTEGRATOR_WRAP_H\" CB_AUTO_MERGE=1"
+
+charter_pr_merged_admin \
+  && ok "RED-h: off→on transition auto-merged (cached green did NOT block merge)" \
+  || ko "RED-h: cached green blocked auto-merge after CB_AUTO_MERGE flipped on (pr-merge-admin missing)"
+
+[ "$(issue_state 5)" = "CLOSED" ] \
+  && ok "RED-h: charter #5 CLOSED after off→on auto-merge" \
+  || ko "RED-h: charter #5 NOT CLOSED after off→on auto-merge (state=$(issue_state 5))"
+
+# =============================================================================
+# RED-i: failed admin-merge retry (Bug 2)
+#   A verify-merged PASS that writes ci_state=green BEFORE a failing admin-merge
+#   must NOT leave green cached with no retry.  The finale should return 1 on the
+#   failed merge and retry on a later tick/run, not stay stuck on a cached green.
+#   gh stub fails the FIRST 'pr merge --admin' and succeeds on the SECOND.
+# =============================================================================
+echo "== RED-i: failed admin-merge must retry (not stick on cached green) =="
+
+CBHOME_I="$ROOT/cbhome_i"
+reset_sandbox "$CBHOME_I"
+printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
+
+# Pre-create the charter/5 PR (existing-PR path → _finale_check_ci).
+printf '5005' > "$PRDIR/charter-pr-5"
+
+# Seed ci_state=pending so the first call reaches the auto-merge branch.
+mkdir -p "$CBHOME_I/run/state/finale-5"
+printf 'pending' > "$CBHOME_I/run/state/finale-5/ci_state"
+
+# Stub verify-merged -> exit 0 (PASS); forward other subcommands to real integrator.
+INTEGRATOR_WRAP_I="$ROOT/integrator-wrap-i.sh"
+cat > "$INTEGRATOR_WRAP_I" << IWEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "verify-merged" ]; then exit 0; fi
+exec bash "$INTEGRATOR" "\$@"
+IWEOF
+chmod +x "$INTEGRATOR_WRAP_I"
+
+# Install a gh wrapper that fails the FIRST 'pr merge --admin' (counter file in
+# the stub's temp dir) and succeeds on the SECOND, delegating everything else to
+# the real gh stub.  Back up + restore so later tests keep the original stub.
+cp "$BIN/gh" "$ROOT/gh.orig.i"
+RED_I_STUBDIR="$ROOT/red_i_stub"; mkdir -p "$RED_I_STUBDIR"; rm -f "$RED_I_STUBDIR/merge_count"
+cat > "$BIN/gh" <<GHEOF
+#!/usr/bin/env bash
+# RED-i: fail the 1st admin-merge, succeed on the 2nd (counter in temp dir).
+if [ "\${1:-} \${2:-}" = "pr merge" ]; then
+  _adm=false
+  for _a in "\$@"; do [ "\$_a" = "--admin" ] && _adm=true; done
+  if \$_adm; then
+    _ctr="$RED_I_STUBDIR/merge_count"
+    _n=0; [ -f "\$_ctr" ] && _n="\$(cat "\$_ctr" 2>/dev/null || echo 0)"
+    _n=\$((_n+1)); printf '%s' "\$_n" > "\$_ctr"
+    if [ "\$_n" -eq 1 ]; then
+      echo "admin-merge-FAIL attempt=\$_n" >> "\$GH_LOG"
+      exit 1
+    fi
+  fi
+fi
+exec "$ROOT/gh.orig.i" "\$@"
+GHEOF
+chmod +x "$BIN/gh"
+
+# Run 1: verify PASS → admin-merge FAILS (stub exits 1) → must NOT permanently
+# cache green; the finale should return 1 for retry.
+run_finale "$CBHOME_I" "CB_INTEGRATOR=\"$INTEGRATOR_WRAP_I\" CB_AUTO_MERGE=1"
+
+# Run 2: verify PASS → admin-merge SUCCEEDS (stub exits 0 on 2nd call).
+run_finale "$CBHOME_I" "CB_INTEGRATOR=\"$INTEGRATOR_WRAP_I\" CB_AUTO_MERGE=1"
+
+# Restore the original gh stub for subsequent tests.
+cp "$ROOT/gh.orig.i" "$BIN/gh"
+
+charter_pr_merged_admin \
+  && ok "RED-i: admin merge retried and succeeded after an initial failure" \
+  || ko "RED-i: admin merge never retried (stuck on cached green after failed merge)"
+
+[ "$(issue_state 5)" = "CLOSED" ] \
+  && ok "RED-i: charter #5 CLOSED after admin-merge retry" \
+  || ko "RED-i: charter #5 NOT CLOSED after admin-merge retry (state=$(issue_state 5))"
+
+# =============================================================================
 # RED-f: queue-prune — auto-merge removes charter from queue.json
 # (queue-prune leaf for charter #484; distinct from the admin-merge RED-f above)
 # =============================================================================
