@@ -145,6 +145,18 @@ cmd_status(){
 cmd_approve(){
   local n="${1:-}"; [ -n "$n" ] || die "usage: crewboss approve <charter-issue-number>"
   gh_ok || die "need gh auth"
+
+  # Plan-convergence guard (three-site canon — mirrors ui/server/crewboss-api.py approve-guard
+  # and the launcher). Read the role fresh from org.json's nested policy key and fetch the live
+  # labels on every call — NOT from cached state. Reject iff a review role is configured and the
+  # issue has not yet earned plan:agreed; a role-empty (human-park) charter approves as before.
+  local org="${CB_TEAM:-${CB_HOME:-$HOME/cbnet}/team}/org.json"
+  local role=""; [ -f "$org" ] && role="$(jq -r '(.policy.plan_review_role) // ""' "$org" 2>/dev/null)"
+  local labels; labels="$(gh issue view "$n" --json labels 2>/dev/null | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null)"
+  if [ -n "$role" ] && ! printf '%s' "$labels" | grep -q 'plan:agreed'; then
+    die "plan-convergence in progress — $role must agree before approve"
+  fi
+
   gh issue edit "$n" --add-label status:approved --remove-label status:plan-review >/dev/null \
     && printf '%s\n' "$(c_grn "✓ charter #$n approved")" "  its open, dep-clear leaves are now launchable — crewboss run" \
     || die "could not edit #$n (is it a charter in plan-review?)"
