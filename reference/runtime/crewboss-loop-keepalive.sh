@@ -68,6 +68,13 @@ fi
 RUN="$CB_HOME/run"
 PIDF="$RUN/launcher.pid"
 LAUNCHER="$CB_HOME/crewboss-launcher-gh.sh"
+# ── launcher-unit seam (charter #1144) ───────────────────────────────────────
+# When crewboss-launcher.service is installed the loop is owned by systemd (its own
+# Restart=always cgroup), so start the launcher via `systemctl start` — NOT via the
+# nohup fork that inherits keepalive.lock and dies with the oneshot service cgroup.
+# CREWBOSS_LAUNCHER_UNIT is an env-override seam so tests can simulate unit-present
+# (a touched file) without sudo/systemd.
+LAUNCHER_UNIT="${CREWBOSS_LAUNCHER_UNIT:-/etc/systemd/system/crewboss-launcher.service}"
 KEEPALIVE_LOCK="$RUN/keepalive.lock"   # DEDICATED keepalive lock (NOT launcher.lock)
 LOG="${CB_KEEPALIVE_LOG:-$RUN/keepalive.out}"
 
@@ -94,12 +101,25 @@ loop_alive() {
 # returns; the launcher writes launcher.pid under its own flock.
 start_loop() {
   if [ "$DRY_RUN" = "1" ]; then
-    log "DRY-RUN: would start loop -> $LAUNCHER run (CB_HOME=$CB_HOME)"
-    printf 'DRY-RUN would-start CB_HOME=%s\n' "$CB_HOME"
+    if [ -f "$LAUNCHER_UNIT" ]; then
+      log "DRY-RUN: would start loop -> systemctl start crewboss-launcher (unit=$LAUNCHER_UNIT)"
+      printf 'DRY-RUN would-start CB_HOME=%s\n' "$CB_HOME"
+    else
+      log "DRY-RUN: would start loop -> $LAUNCHER run (CB_HOME=$CB_HOME)"
+      printf 'DRY-RUN would-start CB_HOME=%s\n' "$CB_HOME"
+    fi
     return 0
   fi
-  nohup bash "$LAUNCHER" run >> "$RUN/launcher.out" 2>&1 &
-  log "loop DOWN -> direct launch pid $! (CB_HOME=$CB_HOME)"
+  # Root-cause fix (#1144): if the launcher unit is installed, hand the loop to systemd so
+  # it runs in its own Restart=always cgroup — no inherited keepalive.lock fd, no cgroup
+  # teardown when this oneshot tick exits. Fall back to nohup on boxes without the unit.
+  if [ -f "$LAUNCHER_UNIT" ]; then
+    systemctl start crewboss-launcher >> "$RUN/launcher.out" 2>&1
+    log "loop DOWN -> systemctl start crewboss-launcher (unit=$LAUNCHER_UNIT, CB_HOME=$CB_HOME)"
+  else
+    nohup bash "$LAUNCHER" run >> "$RUN/launcher.out" 2>&1 &
+    log "loop DOWN -> direct launch pid $! (CB_HOME=$CB_HOME)"
+  fi
 }
 
 # ── 4) Serialize the restart decision under the dedicated keepalive lock ──────
