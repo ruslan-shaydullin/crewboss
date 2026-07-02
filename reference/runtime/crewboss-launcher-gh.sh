@@ -1329,6 +1329,35 @@ _tqg_cycle(){
   fi
 }
 
+# ── finale fetch-cache (charter #1291, P2) ───────────────────────────────────
+# ONE persistent cache clone under $STATE, refreshed per tick, replaces the
+# per-candidate-per-tick `git clone --bare` PAIR that burned the clone/GraphQL
+# budget (zombie #306/#291 retried a full clone-pair EVERY tick for hours). Cost
+# is O(1) per tick regardless of candidate count; ancestry is read from the
+# cache's `origin/*` remote-tracking refs.
+#
+#   * Fast path — `git fetch --prune`: incremental, cheap, and prunes refs for
+#     operator-deleted/recycled branches (stale-ref hygiene). This is the steady
+#     state against the real (network) remote in production.
+#   * Rebuild path — a NON-bare `git clone` (NOT `git clone --bare`, which P2.1
+#     forbids and which is the primitive the zombie storm abused): used for the
+#     first build and whenever an incremental fetch cannot complete (fetch-pack
+#     failure / cache corruption). A fresh clone also carries no stale refs, so
+#     recycled branches are handled with no hard error.
+# Returns 0 when the cache holds a usable mirror of origin's heads.
+_finale_cache_refresh(){
+  local cache="$1"
+  if [ -d "$cache/.git" ]; then
+    if git -C "$cache" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null; then
+      return 0
+    fi
+    # incremental fetch failed → discard and rebuild from a fresh clone
+  fi
+  rm -rf "$cache"
+  git clone -q "$GIT_REMOTE" "$cache" 2>/dev/null || { rm -rf "$cache"; return 1; }
+  return 0
+}
+
 # ── charter finale cycle ──────────────────────────────────────────────────────
 # Called every tick of cmd_run after _integrator_cycle.
 # For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
@@ -1343,6 +1372,16 @@ _tqg_cycle(){
 _charter_finale_cycle(){
   [ -n "$GIT_REMOTE" ] || return 0   # silence: already logged by _integrator_cycle
   [ -x "$INTEGRATOR_SCRIPT" ] || { log "charter-finale: integrator not found: $INTEGRATOR_SCRIPT"; return 0; }
+
+  # Consecutive-conflict cap before a charter is parked (env name is NORMATIVE:
+  # the merged finale-hygiene contract suite feature-detects on it).
+  local cap="${CB_FINALE_CONFLICT_CAP:-3}"
+
+  # Refresh the persistent finale fetch-cache ONCE per tick (O(1) regardless of
+  # candidate count — replaces the old per-candidate bare-clone pair).
+  local _finale_cache="$STATE/finale-cache.git"
+  _finale_cache_refresh "$_finale_cache" \
+    || { log "charter-finale: fetch-cache refresh failed — retry next tick"; return 0; }
 
   # Snapshot the board (single gh call)
   local all_issues
@@ -1367,6 +1406,39 @@ _charter_finale_cycle(){
       ] | length' 2>/dev/null) || open_leaf_count=1
     [ "$open_leaf_count" = "0" ] || continue
 
+    # ── Candidate selection: respect the board (charter #1291, P1) ────────────
+    # Skip finale candidates carrying bare `hold` (the launcher's live operator
+    # veto — six other background cycles already filter on index("hold")),
+    # status:hold, or status:needs-conflict-resolution (parked, awaiting a human
+    # to resolve conflicts and remove the label). Root cause of the #306/#291
+    # zombie storm: these labels were SET but never consumed here, so finale
+    # retried a full merge every tick for hours. Log ONCE per state change.
+    local _clabels _skip_reason=""
+    _clabels=$(printf '%s' "$all_issues" | jq -r --argjson c "$cid" '
+      .[] | select(.number == $c) | .labels[]?.name' 2>/dev/null) || _clabels=""
+    if   printf '%s\n' "$_clabels" | grep -qx "hold";                             then _skip_reason="hold"
+    elif printf '%s\n' "$_clabels" | grep -qx "status:hold";                      then _skip_reason="status:hold"
+    elif printf '%s\n' "$_clabels" | grep -qx "status:needs-conflict-resolution"; then _skip_reason="status:needs-conflict-resolution"
+    fi
+    if [ -n "$_skip_reason" ]; then
+      if [ "$(sget "finale-$cid" skip_reason)" != "$_skip_reason" ]; then
+        log "charter-finale: #$cid skipped — board label '$_skip_reason' (no finale until cleared)"
+        sset "finale-$cid" skip_reason "$_skip_reason"
+      fi
+      continue
+    fi
+    # Not vetoed/parked now: clear any prior skip state (log the resume once).
+    if [ -n "$(sget "finale-$cid" skip_reason)" ]; then
+      log "charter-finale: #$cid board veto/park cleared — finale resumes"
+      sset "finale-$cid" skip_reason ""
+    fi
+    # If we had previously parked at the conflict cap (label since removed by an
+    # operator/resolver — else we'd have skipped above), reset the counter.
+    local _cc_prev; _cc_prev=$(sget "finale-$cid" conflict_count); _cc_prev=${_cc_prev:-0}
+    if [ "$_cc_prev" -ge "$cap" ]; then
+      sset "finale-$cid" conflict_count 0
+    fi
+
     # Condition: charter/C branch exists on the remote and is strictly ahead of main
     # (main must be an ancestor of charter/C — stale/diverged branches are rejected)
     local branch="charter/$cid"
@@ -1375,43 +1447,51 @@ _charter_finale_cycle(){
     b_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/$branch" 2>/dev/null | awk '{print $1}' | head -1)
     m_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/main"    2>/dev/null | awk '{print $1}' | head -1)
     [ -n "$b_sha" ] && [ "$b_sha" != "$m_sha" ] || continue
-    # Ancestor check via temporary bare clone: main must be an ancestor of charter/C.
-    # A charter behind or diverged from main fails this check and is skipped.
-    local _anc_tmp _anc_rc
-    _anc_tmp=$(mktemp -d)
-    git clone -q --bare "$GIT_REMOTE" "$_anc_tmp/repo" 2>/dev/null \
-      || { rm -rf "$_anc_tmp"; continue; }
-    _anc_rc=0
-    git -C "$_anc_tmp/repo" merge-base --is-ancestor \
-      "main" "$branch" 2>/dev/null || _anc_rc=$?
-    rm -rf "$_anc_tmp"
+    # Ancestor check via the persistent finale fetch-cache (charter #1291, P2 —
+    # replaces the per-tick temporary `git clone --bare`): main must be an
+    # ancestor of charter/C. A charter behind or diverged from main fails this
+    # check and triggers auto-rebase.
+    local _anc_rc=0
+    git -C "$_finale_cache" merge-base --is-ancestor \
+      "origin/main" "origin/$branch" 2>/dev/null || _anc_rc=$?
     if [ "$_anc_rc" != "0" ]; then
       # main is NOT an ancestor of charter/C — attempt auto-rebase (#255)
       local _ar_rc=0
       _charter_autorebase "$cid" "$branch" || _ar_rc=$?
       if [ "$_ar_rc" = "0" ]; then
         log "charter-finale: #$cid auto-rebased onto main"
-        # Re-verify ancestor after successful rebase
-        local _arc2_tmp _arc2_rc
-        _arc2_tmp=$(mktemp -d)
-        git clone -q --bare "$GIT_REMOTE" "$_arc2_tmp/repo" 2>/dev/null \
-          || { rm -rf "$_arc2_tmp"; continue; }
-        _arc2_rc=0
-        git -C "$_arc2_tmp/repo" merge-base --is-ancestor \
-          "main" "$branch" 2>/dev/null || _arc2_rc=$?
-        rm -rf "$_arc2_tmp"
+        # Re-verify ancestor after successful rebase: refresh the cache (fetch,
+        # or clone fallback) then re-check — no bare clone.
+        _finale_cache_refresh "$_finale_cache" || true
+        local _arc2_rc=0
+        git -C "$_finale_cache" merge-base --is-ancestor \
+          "origin/main" "origin/$branch" 2>/dev/null || _arc2_rc=$?
         [ "$_arc2_rc" = "0" ] || { log "charter-finale: #$cid still not ancestor after rebase — skip"; continue; }
         # Fall through to normal finale processing
       elif [ "$_ar_rc" = "2" ]; then
-        log "charter-finale: #$cid real conflicts with main — needs conflict-resolution"
-        gh issue edit "$cid" -R "$CB_REPO" \
-          --add-label status:needs-conflict-resolution 2>/dev/null || true
+        # Real conflicts (charter #1291, P2): increment the consecutive-conflict
+        # counter and park only after CB_FINALE_CONFLICT_CAP attempts, instead of
+        # retrying a full merge every tick forever (the #306/#291 zombie storm).
+        local _cc; _cc=$(sget "finale-$cid" conflict_count); _cc=${_cc:-0}
+        _cc=$((_cc + 1)); sset "finale-$cid" conflict_count "$_cc"
+        if [ "$_cc" -ge "$cap" ]; then
+          log "charter-finale: #$cid real conflicts with main ($_cc >= CB_FINALE_CONFLICT_CAP=$cap) — parking (status:needs-conflict-resolution)"
+          gh issue edit "$cid" -R "$CB_REPO" \
+            --add-label status:needs-conflict-resolution 2>/dev/null || true
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: charter/$cid has real merge conflicts with main after $_cc consecutive auto-rebase attempt(s) (CB_FINALE_CONFLICT_CAP=$cap). Parking finale — no further retries until the conflicts are resolved and the \`status:needs-conflict-resolution\` label is removed." \
+            2>/dev/null || true
+        else
+          log "charter-finale: #$cid real conflicts with main ($_cc/$cap) — will retry next tick"
+        fi
         continue
       else
         log "charter-finale: #$cid autorebase infra error (rc=$_ar_rc) — will retry next tick"
         continue
       fi
     fi
+    # Successful ancestry (already ahead, or clean rebase) → reset conflict counter.
+    sset "finale-$cid" conflict_count 0
 
     # Idempotent: check for an existing open PR charter/C → main
     local existing_pr
