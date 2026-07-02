@@ -92,6 +92,24 @@ fi
 
 log() { printf '[integrator] %s\n' "$*"; }
 
+# ── env-fail classifier (charter #1290 P1) ────────────────────────────────────
+# Scan captured engine-suite output (build_state / board-gh probes shell out to
+# gh, so an RL-storm surfaces its signature on the failing test's stdout/stderr)
+# for environment-failure signatures. Echoes a short signature token when one is
+# recognised, nothing otherwise. The classifier trusts the REAL gh call output
+# already captured in the reason file — it NEVER issues a /rate_limit preflight
+# (#1274: that reports the wrong bucket; truth is only in the real call).
+# Recognised: gh 403, "API rate limit exceeded" / "rate limit", network
+# unreachable / could-not-resolve-host / connection-refused / name-resolution.
+_classify_infra_reason() {
+  local f="$1"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  if grep -qiE 'API rate limit exceeded|rate limit' "$f" 2>/dev/null; then printf 'rate-limit'; return 0; fi
+  if grep -qiE 'HTTP 403|403 Forbidden|: 403|status 403' "$f" 2>/dev/null; then printf 'gh-403'; return 0; fi
+  if grep -qiE 'could not resolve host|temporary failure in name resolution|network is unreachable|network unreachable|connection refused|connection timed out|no route to host' "$f" 2>/dev/null; then printf 'network'; return 0; fi
+  return 0
+}
+
 # ── subcommand: close-leaf ────────────────────────────────────────────────────
 cmd_close_leaf() {
   local id="${1:-}"; shift || true
@@ -553,7 +571,7 @@ cmd_verify_merged() {
         visual_infra_error_ticks="$(cat "$_visual_infra_file" 2>/dev/null || echo 0)"
       visual_infra_error_ticks=$((visual_infra_error_ticks + 1))
       [ -n "$_visual_infra_file" ] && printf '%s' "$visual_infra_error_ticks" > "$_visual_infra_file"
-      local _leaf_issue_id; _leaf_issue_id=$(printf '%s' "$branch" | grep -oE 'leaf/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
+      local _leaf_issue_id; _leaf_issue_id=$(printf '%s' "$branch" | grep -oE '(leaf|rework)/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
       if [ "$visual_infra_error_ticks" -ge "$VISUAL_INFRA_MAX_TICKS" ]; then
         local _blocked_msg="Visual gate infra unavailable for ${visual_infra_error_ticks} ticks (container/image error rc=${visual_rc}). Manual intervention required. Set run/visual_gate_soft sentinel to unblock temporarily."
         log "verify-merged: $_blocked_msg"
@@ -592,16 +610,24 @@ cmd_verify_merged() {
       smoke_infra_error_ticks="$(cat "$_smoke_infra_file" 2>/dev/null || echo 0)"
     smoke_infra_error_ticks=$((smoke_infra_error_ticks + 1))
     [ -n "$_smoke_infra_file" ] && printf '%s' "$smoke_infra_error_ticks" > "$_smoke_infra_file"
-    local _smoke_leaf_id; _smoke_leaf_id=$(printf '%s' "$branch" | grep -oE 'leaf/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
+    local _smoke_leaf_id; _smoke_leaf_id=$(printf '%s' "$branch" | grep -oE '(leaf|rework)/([0-9]+)' | grep -oE '[0-9]+' | head -1 || echo "")
     if [ "$smoke_infra_error_ticks" -ge "$SMOKE_INFRA_MAX_TICKS" ]; then
-      local _smoke_blocked_msg="Smoke gate infra unavailable for ${smoke_infra_error_ticks} ticks (smoke_rc=${smoke_rc}). Manual intervention required."
-      log "verify-merged: $_smoke_blocked_msg"
+      # charter #1290 P2: cap exhaustion is INFRA, NOT a confirmed code red. An
+      # RL-storm that outlasts the tick cap must NEVER become status:blocked / exit 1
+      # / vm_exit=1 / confirmed-RED / rework_n++. Mirror the launcher flake-cap defer
+      # (crewboss-launcher-gh.sh flake_n path) and the recovery terminal sink: swap
+      # status:review -> status:deferred, post ONE defer comment, verdict=infra, exit 2.
+      # With status:review removed, `board review-leaves` (selects any(. == "status:review"))
+      # never re-selects this leaf, so this branch fires exactly once — the comment
+      # appears exactly once and cannot re-fire at any subsequent tick count.
+      local _smoke_defer_msg="Smoke gate infra (RL-storm/gh-403/network) unavailable for ${smoke_infra_error_ticks} ticks (smoke_rc=${smoke_rc}) — deferred (infra, not a code red). Retryable once the storm clears; no rework consumed."
+      log "verify-merged: $_smoke_defer_msg"
       if [ -n "$_smoke_leaf_id" ] && [ -n "${repo:-}" ]; then
-        gh issue comment "$_smoke_leaf_id" -R "$repo" --body "$_smoke_blocked_msg" 2>/dev/null || true
-        gh issue edit "$_smoke_leaf_id" -R "$repo" --add-label "status:blocked" 2>/dev/null || true
+        gh issue edit "$_smoke_leaf_id" -R "$repo" --remove-label "status:review" --add-label "status:deferred" 2>/dev/null || true
+        gh issue comment "$_smoke_leaf_id" -R "$repo" --body "$_smoke_defer_msg" 2>/dev/null || true
       fi
       [ -n "$verdict_file" ] && printf 'infra' > "$verdict_file"
-      exit 1
+      exit 2
     else
       log "verify-merged: smoke gate infra error (smoke_rc=$smoke_rc), tick $smoke_infra_error_ticks/$SMOKE_INFRA_MAX_TICKS — retrying"
       [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
@@ -622,9 +648,30 @@ cmd_verify_merged() {
     [ -n "$verdict_file" ] && printf 'pass' > "$verdict_file"
     [ -n "$_cache_file" ] && printf 'pass' > "$_cache_file"
     [ -n "$_redcount_file" ] && rm -f "$_redcount_file"
+    # charter #1290 P4: a GREEN verify clears the infra tick counters (mirror of the
+    # _redcount_file rm above) so repeated SHORT storms cannot accumulate ticks toward
+    # the defer cap across an intervening green. Also clears the launcher's flake_n
+    # sidecar keyed to this leaf/base sha.
+    [ -n "$_cache_file" ] && rm -f "${_cache_file}.smoke_infra_ticks" "${_cache_file}.flake_n"
     log "verify-merged: PASS (engine green on merged tree)"
     exit 0
   elif [ "$suite_rc" -eq 1 ]; then
+    # charter #1290 P1: env-fail ≠ code red. Before treating an engine RED as a
+    # code failure, scan the captured output for an infra signature (gh-403 /
+    # RL-storm / network-unreachable). If found → RETRYABLE infra red: exit 3 with
+    # RED_REASON: infra:<sig>, red-counter NOT bumped, RED NEVER confirmed. The
+    # launcher routes this exit 3 through its CB_VERIFY_FLAKE_CAP path (#195/#208:
+    # 3=retryable, RED only on a genuine code failure). A genuine code red carries
+    # no infra signature and confirms exactly as before.
+    local _infra_sig=""
+    _infra_sig="$(_classify_infra_reason "$_reason_file")"
+    if [ -n "$_infra_sig" ]; then
+      [ -n "$verdict_file" ] && printf 'retry' > "$verdict_file"
+      rm -f "$_reason_file" 2>/dev/null
+      printf 'RED_REASON: infra:%s\n' "$_infra_sig"
+      log "verify-merged: INFRA env-fail (retryable, red-counter untouched; sig: infra:$_infra_sig)"
+      exit 3
+    fi
     [ -n "$_redcount_file" ] && [ -f "$_redcount_file" ] && _rn="$(cat "$_redcount_file" 2>/dev/null || echo 0)"
     _rn=$((_rn + 1))
     [ -n "$_redcount_file" ] && printf '%s' "$_rn" > "$_redcount_file"
