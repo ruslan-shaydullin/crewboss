@@ -91,12 +91,22 @@ cp "$TDIR/task.prompt" "$WORK/.task.prompt"
 writestatus "starting" "" "0" ""
 RESJSON="$TDIR/result.json"
 set +e
+# gh-shim wiring (charter #1274, leaf #1301):
+#   --env CB_RL_STATE_FILE=/cbnet/run/rl_state — the in-jail path of the shared rate-limit
+#     state file. Injected as an explicit --env AFTER -e so it OVERRIDES any HOST CB_RL_STATE_FILE
+#     that keep_env (-e) would otherwise forward (same override-over-`-e` pattern as --env HOME);
+#     the host path (e.g. $CB_HOME/run/rl_state) must NOT leak into the jail namespace.
+#   -B "$CB_HOME/run:/cbnet/run" — a dedicated read-WRITE bind of run/ layered over the /cbnet
+#     mount, so gh-shim.sh can atomically write rl_state even when the role runs CB_FS_CBNET=ro
+#     (CBNET_MOUNT=-R makes /cbnet read-only, which would EROFS the state write without this).
+# seccomp: the shim runs the real gh via execve, already in the claude.kafel allowlist.
 /usr/local/bin/nsjail -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
   --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
   --seccomp_policy "$PROFILE" --seccomp_log \
   $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev $CBNET_MOUNT "$CB_HOME:/cbnet" \
+  -B "$CB_HOME/run:/cbnet/run" \
   $WORK_MOUNT "$WORK:/work" \
-  -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --cwd /work \
+  -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --env CB_RL_STATE_FILE=/cbnet/run/rl_state --cwd /work \
   --env CLAUDE_CODE_OAUTH_TOKEN $GHENV $PE \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --really_quiet \
   -- /bin/bash "/cbnet/run/work/$TASK/payload.sh" 2>&1 | perl "$REDACT" | tee -a "$LOG" > "$RESJSON.raw"
