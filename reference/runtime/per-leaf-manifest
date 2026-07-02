@@ -261,3 +261,15 @@ EXCLUDED api-state-304-regression
 #   Also transitional: UNIT-1..4 / CONTRACT-1 / CONTRACT-2a are RED until the infra leaf
 #   lands the unit files + keepalive seam into charter/1144 (tests-first ordering).
 EXCLUDED 1144-launcher-service
+# charter #1290 / issue #1302 env-fail-storm resilience suite (qa-engineer test-writer
+#   leaf #1302; impl leaves carry Depends-on #1302). All four drive REAL runtime
+#   artifacts (cmd_verify_merged against bare-remote fixtures / recursive verify-merged,
+#   the launcher completion handler, smoke-runner.sh process spawns, cb-pr-create.sh
+#   sourced with a stubbed gh) — none is a pure function of merged content, so all are
+#   EXCLUDED (fail-closed), same precedent as 1109 / smoke-runner / triage. EXCLUDED also
+#   keeps the tests-first new-behaviour assertions (which SKIP until the P1/P2/P3 impl
+#   leaves land) from being run in the qa leaf's own per-leaf verify-merged gate.
+EXCLUDED 1290-envfail-classify
+EXCLUDED 1290-triage-storm-retry
+EXCLUDED 1290-rework-pr-hygiene
+EXCLUDED 1290-longstorm-rework-head
