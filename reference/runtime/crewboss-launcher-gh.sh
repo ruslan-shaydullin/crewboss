@@ -65,6 +65,23 @@ RECOVERY_SPAWN="${CB_RECOVERY_SPAWN:-$PLAN_SPAWN}"
 CB_RECOVERY_LEAD_CAP="${CB_RECOVERY_LEAD_CAP:-1}"
 # CB_RECOVERY_PARSE: parser for the manager's `## Recovery (machine)` plan block.
 CB_RECOVERY_PARSE="${CB_RECOVERY_PARSE:-$HERE_LAUNCHER/recovery-parse.sh}"
+# ── Rate-limit guard v2 shared config (charter #1274) ────────────────────────
+# GitHub meters TWO independent pools per identity and the launcher's board ops split
+# across BOTH: REST *core* (gh api, list/view REST paths) and *GraphQL* (gh issue
+# view/edit/comment, gh pr list/view/merge — the `gh` CLI routes these via GraphQL).
+# RL v1 (#1004) guarded core only; the 2026-07-02 incident drained GraphQL unseen.
+#   CB_RL_FLOOR_GQL  — independent floor for the GraphQL pool (default 800), distinct
+#                      from CB_RL_FLOOR (core, 1000). Backoff fires when EITHER pool
+#                      drops below its own floor.
+#   CB_RL_STATE_FILE — shared state file the jail `gh` shim (leaf 1274-p3) writes
+#                      session-token bucket readings into, so the cross-identity guard
+#                      can fold session spend into the launcher's own-token poll. Schema:
+#                      four integer key=value lines — rl_core_remaining=N, rl_core_reset=T,
+#                      rl_gql_remaining=N, rl_gql_reset=T. Host default $CB_HOME/run/rl_state;
+#                      inside the jail the deploy leaf injects /cbnet/run/rl_state.
+CB_RL_FLOOR_GQL="${CB_RL_FLOOR_GQL:-800}"
+CB_RL_STATE_FILE="${CB_RL_STATE_FILE:-$CB_HOME/run/rl_state}"
+export CB_RL_FLOOR_GQL CB_RL_STATE_FILE
 mkdir -p "$STATE"
 now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
@@ -201,29 +218,189 @@ EOF
   return 0
 }
 
-# ── Rate-limit backoff guard (charter #1004) ─────────────────────────────────
-# Query gh api /rate_limit `remaining`; below CB_RL_FLOOR, defer the gh-heavy tick by
-# sleeping toward the hourly reset so the loop never drives the primary limit to 0
-# (the #996 paralysis). Never fully stalls without real RL pressure: an unreadable or
-# healthy `remaining` returns immediately. The wait is capped (CB_RL_BACKOFF_MAX) so a
-# skewed reset clock cannot wedge the loop. No tokens are ever logged.
+# ── GraphQL diet — cache-served views + edit batching (charter #1274 P2) ──────
+# The `gh` CLI routes gh issue view/edit/comment through the GraphQL pool. RL v1 shrank
+# the REST *core* burn (per-tick list cache); P2 shrinks the GraphQL burn WITHOUT moving
+# it into core — reads route through the already-fetched per-tick snapshot (NOT a REST
+# equivalent), and sequential same-issue writes coalesce into one call.
+#
+# THE COMMENT RULE (not a count): any view fetching the comments field (--json <c>omments)
+# STAYS LIVE. Comment history is not in the REST list that populates _CB_TICK_CACHE_ALL, so
+# it can never be cache-served. The 12 non-cacheable comment-view sites (≈ lines 1757, 1807,
+# 1854, 1882, 2103, 2119, 2169, 2241, 2369, 2371, 2478, 2480) remain untouched live reads.
+#
+# Cache-replaceable vs point-fresh (write-then-read staleness): a `gh issue view --json
+# labels/state/body` is cache-replaceable ONLY when it is a scan-time read with no same-tick
+# write to that issue between the snapshot prime and the read. Point-of-mutation guards
+# (claim/route races, and any read that immediately follows an edit to the SAME issue) MUST
+# stay point-fresh with a live `gh issue view` — staleness there beats economy (see the
+# tick-cache note at the top of this file). _cb_issue_labels_cached() serves the safe class;
+# the flush-before-read discipline in the edit batcher preserves freshness for the rest.
+
+# _cb_issue_labels_cached <num> — serve an issue's label-name array from the per-tick
+# snapshot (GraphQL-free). Emits a JSON array of names (e.g. ["review:agreed"]) so callers
+# keep their existing jq `index("...")` semantics. Falls back to "[]" + rc1 when the tick
+# cache is unprimed or the issue is absent (caller can then choose a live read). NEVER used
+# for comment-field views (not in the snapshot) or point-of-mutation guards.
+_cb_issue_labels_cached(){
+  local _num="$1" _out
+  [ -n "$_CB_TICK_CACHE_OK" ] || { printf '[]'; return 1; }
+  _out="$(printf '%s' "$_CB_TICK_CACHE_ALL" \
+      | jq -c --argjson n "$_num" 'first(.[] | select(.number==$n)) | ([.labels[].name] // [])' 2>/dev/null)"
+  case "$_out" in
+    ''|null) printf '[]'; return 1 ;;
+    *)       printf '%s' "$_out" ;;
+  esac
+}
+
+# ── gh issue edit batcher ─────────────────────────────────────────────────────
+# Accumulate --add-label/--remove-label flags per issue within a tick and emit ONE
+# `gh issue edit` per distinct issue, flushed at tick-end (_cb_edit_flush_all) or before a
+# read of that same issue (_cb_edit_flush_one — write-then-read freshness). Label flags are
+# space-safe (label names may contain ':'/'-' but not spaces in this board's taxonomy);
+# --body edits carry arbitrary text and are NOT batched — they flush immediately by the
+# caller so no naive word-split can corrupt a body.
+declare -A _CB_EDIT_BUF=()
+_cb_edit_enqueue(){ local _id="$1"; shift; _CB_EDIT_BUF[$_id]="${_CB_EDIT_BUF[$_id]:-} $*"; }
+_cb_edit_flush_one(){
+  local _id="$1" _args="${_CB_EDIT_BUF[$_id]:-}"
+  [ -n "$_args" ] || return 0
+  unset "_CB_EDIT_BUF[$_id]"
+  # Intentional word-split of accumulated label flags.
+  # shellcheck disable=SC2086
+  gh issue edit "$_id" -R "$CB_REPO" $_args >/dev/null 2>&1 || true
+}
+_cb_edit_flush_all(){ local _id; for _id in "${!_CB_EDIT_BUF[@]}"; do _cb_edit_flush_one "$_id"; done; }
+
+# ── Rate-limit backoff guard v2 — dual-source, cross-identity (charter #1274) ──
+# RL v1 (#1004) armed the REST *core* pool ONLY: it read `.resources.core.remaining`
+# against CB_RL_FLOOR. But GitHub meters TWO independent 5000/h pools per identity and
+# the launcher's board ops split across BOTH:
+#   * REST core pool  : gh api, gh issue list, REST view paths.
+#   * GraphQL pool     : gh issue view/edit/comment, gh pr list/view/merge — the `gh`
+#     CLI routes these through GraphQL. The 2026-07-02 01:25 UTC incident
+#     (`GraphQL: API rate limit already exceeded`, 403 core + 2073 RL lines) drained
+#     THIS pool while the core-only guard saw a healthy core and never backed off.
+#
+# Identity / bucket inventory (why the incident was cross-identity, not a broken endpoint):
+#   * Launcher token — the gho_ CLI OAuth token in `gh auth`'s hosts.yml on the host.
+#     Every launcher-side board call bills THIS token's core+graphql buckets. The guard
+#     polls `gh api rate_limit` with this same token — free (rate_limit is never itself
+#     billed) and accurate per-token, so (a) below is always trustworthy for the launcher.
+#   * Jail session token — GH_TOKEN injected into each nsjail session. Session `gh` calls
+#     bill the SESSION token's buckets, invisible to the launcher's own poll. The jail
+#     `gh` shim (leaf 1274-p3) records session consumption into CB_RL_STATE_FILE (b) so
+#     the guard can fold it in. When launcher and session share one machine account the
+#     two buckets are the SAME physical pool seen from two vantage points — taking the
+#     MIN is always safe (never over-optimistic).
+#
+# Dual-source rule, per pool: effective_remaining = MIN( (a) own-token poll,
+#                                                        (b) CB_RL_STATE_FILE session read ).
+#   * State file present with the key → min(poll, file); the depleted source carries its
+#     own reset epoch through.
+#   * State file ABSENT / key missing → core follows the own-token poll; graphql degrades
+#     to CB_RL_FLOOR_GQL (near-floor, NEVER full-pool) until the shim's first write, so a
+#     stale/absent file cannot mask a session that already drained graphql.
+#
+# _cb_rl_backoff fires when EITHER effective pool sits below its own floor (CB_RL_FLOOR
+# for core, CB_RL_FLOOR_GQL for graphql); the sleep targets the reset of the pool CLOSEST
+# to its floor (the more-depleted one). Backoff, not hot-retry — an unreadable/healthy
+# poll returns immediately so the loop never stalls without real RL pressure (the #996
+# paralysis), and RL retry loops must not create their own storm. The wait is capped
+# (CB_RL_BACKOFF_MAX) so a skewed reset clock cannot wedge the loop. No tokens are logged.
 CB_RL_FLOOR="${CB_RL_FLOOR:-1000}"
-_cb_rl_remaining(){ gh api /rate_limit -q '.resources.core.remaining' 2>/dev/null || echo ""; }
-_cb_rl_backoff(){
-  local _rl_remaining _reset _now _wait
-  _rl_remaining="$(_cb_rl_remaining)"
-  # Unreadable (no creds/network) → do not stall artificially (charter constraint).
-  [ -n "$_rl_remaining" ] || return 0
-  if [ "$_rl_remaining" -lt "$CB_RL_FLOOR" ] 2>/dev/null; then
-    _reset="$(gh api /rate_limit -q '.resources.core.reset' 2>/dev/null || echo 0)"
-    _now="$(date -u +%s)"
-    _wait=$(( _reset - _now )); [ "$_wait" -lt 0 ] 2>/dev/null && _wait=0
-    [ "$_wait" -gt "${CB_RL_BACKOFF_MAX:-60}" ] 2>/dev/null && _wait="${CB_RL_BACKOFF_MAX:-60}"
-    log "rate-limit pressure: remaining=$_rl_remaining < floor=$CB_RL_FLOOR — deferring gh-heavy ops ${_wait}s"
-    sleep "$_wait" 2>/dev/null || true
-    return 1
+
+# _cb_rl_state_get <key> — read an integer from CB_RL_STATE_FILE (source (b)). Keys:
+# rl_core_remaining / rl_core_reset / rl_gql_remaining / rl_gql_reset. Empty + rc1 when
+# the file or key is absent (caller then applies the file-absent fallback).
+_cb_rl_state_get(){
+  local _key="$1" _f="${CB_RL_STATE_FILE:-}" _line
+  [ -n "$_f" ] && [ -f "$_f" ] || return 1
+  _line="$(grep -E "^${_key}=" "$_f" 2>/dev/null | head -1)" || true
+  [ -n "$_line" ] || return 1
+  printf '%s' "${_line#*=}"
+}
+
+# _cb_rl_poll <core|graphql> — own-token `gh api rate_limit` snapshot for one pool
+# (source (a)), echoed as "remaining reset". Empty remaining (no creds/network) → the
+# caller declines to stall. rate_limit itself is not billed against either pool.
+_cb_rl_poll(){
+  local _which="$1" _rem _reset
+  _rem="$(gh api /rate_limit -q ".resources.${_which}.remaining" 2>/dev/null || echo "")"
+  _reset="$(gh api /rate_limit -q ".resources.${_which}.reset" 2>/dev/null || echo 0)"
+  printf '%s %s' "$_rem" "${_reset:-0}"
+}
+
+# _cb_rl_remaining [core|graphql] — dual-source effective remaining for one pool
+# (default core, back-compat with the v1 signature), echoed as "remaining reset".
+# MIN(own-token poll, session state file); file-absent graphql degrades to CB_RL_FLOOR_GQL,
+# file-absent core follows the poll. An unreadable poll is surfaced as empty remaining so
+# _cb_rl_backoff will not stall artificially.
+_cb_rl_remaining(){
+  local _which="${1:-core}"
+  local _poll _poll_rem _poll_reset _file_rem _file_reset _key_rem _key_reset
+  _poll="$(_cb_rl_poll "$_which")"
+  _poll_rem="${_poll%% *}"; _poll_reset="${_poll##* }"
+  # Unreadable poll → surface empty remaining (do not stall artificially).
+  if [ -z "$_poll_rem" ]; then printf ' %s' "$_poll_reset"; return 0; fi
+
+  case "$_which" in
+    graphql) _key_rem=rl_gql_remaining;  _key_reset=rl_gql_reset ;;
+    *)       _key_rem=rl_core_remaining; _key_reset=rl_core_reset ;;
+  esac
+
+  if [ -n "${CB_RL_STATE_FILE:-}" ] && [ -f "${CB_RL_STATE_FILE:-}" ]; then
+    _file_rem="$(_cb_rl_state_get "$_key_rem" || true)"
+    _file_reset="$(_cb_rl_state_get "$_key_reset" || echo "$_poll_reset")"
+    if [ -z "$_file_rem" ]; then _file_rem="$_poll_rem"; _file_reset="$_poll_reset"; fi
+  else
+    # No shared state yet: core trusts the poll; graphql is treated as near-floor so a
+    # session that already drained graphql is never masked by an absent file.
+    if [ "$_which" = "graphql" ]; then
+      _file_rem="${CB_RL_FLOOR_GQL:-800}"; _file_reset="$_poll_reset"
+    else
+      _file_rem="$_poll_rem"; _file_reset="$_poll_reset"
+    fi
   fi
-  return 0
+
+  if [ "$_file_rem" -lt "$_poll_rem" ] 2>/dev/null; then
+    printf '%s %s' "$_file_rem" "$_file_reset"
+  else
+    printf '%s %s' "$_poll_rem" "$_poll_reset"
+  fi
+}
+
+_cb_rl_backoff(){
+  local _c _c_rem _c_reset _g _g_rem _g_reset
+  local _floor_core="${CB_RL_FLOOR:-1000}" _floor_gql="${CB_RL_FLOOR_GQL:-800}"
+  _c="$(_cb_rl_remaining core)";    _c_rem="${_c%% *}";  _c_reset="${_c##* }"
+  _g="$(_cb_rl_remaining graphql)"; _g_rem="${_g%% *}";  _g_reset="${_g##* }"
+  # Both pools unreadable (no creds/network) → do not stall artificially.
+  [ -n "$_c_rem" ] || [ -n "$_g_rem" ] || return 0
+
+  local _trigger=0 _pool=none _reset=0
+  if [ -n "$_c_rem" ] && [ "$_c_rem" -lt "$_floor_core" ] 2>/dev/null; then
+    _trigger=1; _pool=core; _reset="$_c_reset"
+  fi
+  if [ -n "$_g_rem" ] && [ "$_g_rem" -lt "$_floor_gql" ] 2>/dev/null; then
+    if [ "$_trigger" -eq 1 ]; then
+      _pool=both
+      # Both depleted: the pool closer to its floor owns the reset epoch.
+      local _c_gap=$(( _c_rem - _floor_core )) _g_gap=$(( _g_rem - _floor_gql ))
+      [ "$_g_gap" -lt "$_c_gap" ] 2>/dev/null && _reset="$_g_reset"
+    else
+      _trigger=1; _pool=graphql; _reset="$_g_reset"
+    fi
+  fi
+  [ "$_trigger" -eq 1 ] || return 0
+
+  local _now _wait
+  _now="$(date -u +%s)"
+  _wait=$(( _reset - _now )); [ "$_wait" -lt 0 ] 2>/dev/null && _wait=0
+  [ "$_wait" -gt "${CB_RL_BACKOFF_MAX:-60}" ] 2>/dev/null && _wait="${CB_RL_BACKOFF_MAX:-60}"
+  log "rate-limit pressure ($_pool): core=${_c_rem:-?}/$_floor_core graphql=${_g_rem:-?}/$_floor_gql — deferring gh-heavy ops ${_wait}s"
+  sleep "$_wait" 2>/dev/null || true
+  return 1
 }
 # ── CB_MANIFEST: optional team manifest directory ────────────────────────────
 # When CB_MANIFEST is set:
