@@ -953,6 +953,10 @@ _integrator_cycle(){
            --repo "$CB_REPO" 2>/dev/null || close_rc=$?
       if [ "$close_rc" -eq 0 ]; then
         sset "$rid" int_done "merged"
+        # charter #1290 P4: green-merge clears the retryable-red flake counter so
+        # repeated short RL-storms across separate leaves never accumulate toward
+        # the flake cap (CB_VERIFY_FLAKE_CAP) once this leaf has cleanly merged.
+        sset "$rid" flake_n 0
         log "integrator: #$rid closed (sha: ${merge_sha:-n/a})"
         # Close any other open PRs for this leaf superseded by the rework we just merged [F7 #115]
         local _sp_num

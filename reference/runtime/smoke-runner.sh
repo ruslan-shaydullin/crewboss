@@ -66,6 +66,34 @@ fail()  { printf 'SMOKE_REASON: %s\n' "$1"; exit 1; }
 infra() { printf 'SMOKE_REASON: infra:%s\n' "$1"; exit "${2:-2}"; }
 mktmp() { local f; f="$(mktemp)"; _TMP+=("$f"); printf '%s' "$f"; }
 
+# ── board-empty disambiguation probe (charter #1290 P5) ──────────────────────────
+# A board-empty /api/state can be a GENUINE code defect OR a symptom of an RL-storm:
+# the api's build_state got a gh-403 during a rate-limit storm and returned an empty
+# board (the 2026-07-02 incident, leaf #1281). Fire ONE POST-HOC real gh call and
+# inspect its exit code / HTTP status line / X-Ratelimit headers to decide which.
+# We NEVER issue a /rate_limit preflight (#1274: /rate_limit reports the wrong bucket;
+# the truth about throttling is only in a REAL call's response headers).
+# Echoes exactly one of: 403 | ok | indeterminate.
+# CB_SMOKE_GH_PROBE_OVERRIDE (403|ok) forces the result deterministically (offline test seam).
+_gh_board_probe() {
+  if [ -n "${CB_SMOKE_GH_PROBE_OVERRIDE:-}" ]; then
+    printf '%s' "$CB_SMOKE_GH_PROBE_OVERRIDE"; return 0
+  fi
+  command -v gh >/dev/null 2>&1 || { printf 'indeterminate'; return 0; }
+  local _repo="${CB_REPO:-crewboss/crewboss}" _out _prc _rl
+  # -i: include response headers so we can read the HTTP status line + X-Ratelimit-*.
+  _out="$(timeout "$SMOKE_TIMEOUT" gh api "repos/$_repo/issues?per_page=1" -i 2>&1)"; _prc=$?
+  if printf '%s' "$_out" | grep -qiE 'API rate limit exceeded|rate limit|HTTP/[0-9.]+ 403|^status: 403|HTTP 403'; then
+    printf '403'; return 0
+  fi
+  # X-Ratelimit-Remaining: 0 in the REAL call's headers == throttled (403 imminent).
+  _rl="$(printf '%s\n' "$_out" | grep -iE '^x-ratelimit-remaining:' | head -1 | tr -dc '0-9')"
+  if [ -n "$_rl" ] && [ "$_rl" = "0" ]; then printf '403'; return 0; fi
+  # Non-zero gh exit with no proven-throttle signal: cannot confirm health.
+  [ "$_prc" -ne 0 ] && { printf 'indeterminate'; return 0; }
+  printf 'ok'
+}
+
 # ── Argument / merged-tree resolution ────────────────────────────────────────────
 MERGED_DIR="${1:-}"
 [ -n "$MERGED_DIR" ] || infra "usage:smoke-runner.sh <merged_dir>" 3
@@ -199,17 +227,24 @@ detect_api() {
     _api_kill; infra "api-no-start:$(basename "$api")" 2
   fi
 
-  # Health (no auth).
+  # Health (no auth). Bound by curl's OWN -m (max-time): the hang budget lives in
+  # curl itself (exit 28 / http_code 000 on timeout, handled in the verdict below).
+  # We deliberately do NOT wrap curl in an external `timeout` here — that adds a
+  # fragile dependency on the host's coreutils `timeout` binary (seccomp/sandbox
+  # hosts can SIGSYS it), which would turn a healthy artifact into a false
+  # api-health-non-200 CODE red. curl -m already provides the per-detector budget
+  # (charter #1290: a runner-env fragility must never masquerade as a code red).
   local hbody hcode hrc
   hbody="$(mktmp)"
-  hcode="$(timeout "$SMOKE_TIMEOUT" curl -s -m "$SMOKE_TIMEOUT" \
+  hcode="$(curl -s -m "$SMOKE_TIMEOUT" \
             -o "$hbody" -w '%{http_code}' \
             "http://127.0.0.1:$port/api/health" 2>/dev/null)"; hrc=$?
 
-  # State (real bearer) — wrapped so a hang fails BY timeout, never wedges us.
+  # State (real bearer) — curl -m makes a hang fail BY timeout (exit 28 / code 000),
+  # never wedges us; same runner-env-fragility rationale as the health call above.
   local sbody scode src
   sbody="$(mktmp)"
-  scode="$(timeout "$SMOKE_TIMEOUT" curl -s -m "$SMOKE_TIMEOUT" \
+  scode="$(curl -s -m "$SMOKE_TIMEOUT" \
             -o "$sbody" -w '%{http_code}' \
             -H "Authorization: Bearer $tok" \
             "http://127.0.0.1:$port/api/state" 2>/dev/null)"; src=$?
@@ -237,7 +272,15 @@ b = d.get("board")
 assert b is not None and len(b) > 0, "board-empty"
 PY
   then
-    fail "api-state-invalid:$(basename "$api")"
+    # board-empty / invalid state: disambiguate a genuine code defect from an
+    # RL-storm symptom via ONE post-hoc REAL gh probe (#1290 P5 / #1274). A 403 /
+    # rate-limit probe => infra gh-403-board (retryable exit 3, never a code red);
+    # a healthy probe => the board really is empty => genuine api-state-invalid.
+    local _probe; _probe="$(_gh_board_probe)"
+    case "$_probe" in
+      403) infra "gh-403-board" 3 ;;
+      *)   fail "api-state-invalid:$(basename "$api")" ;;
+    esac
   fi
   # All api assertions green.
 }
