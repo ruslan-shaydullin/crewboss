@@ -489,6 +489,10 @@ def build_state():
             if isinstance(it, dict) and "number" in it:
                 by_n.setdefault(it["number"], it)  # charter wins if not in general call
         issues = list(by_n.values())
+    # plan_review_role: read fresh from org.json policy (same source as the approve-guard,
+    # crewboss-api.py ~789). "" for manual-mode / human-park charters.
+    _org = read_json(os.path.join(CB_TEAM, "org.json"), {})
+    plan_review_role = (_org.get("policy") or {}).get("plan_review_role", "")
     board = []
     for it in issues:
         labels = [l["name"] for l in it.get("labels",[])]
@@ -535,11 +539,14 @@ def build_state():
                     finale_pr = fp_val
             except Exception:
                 pass
-        # plan_convergence_active: True when a plan-review charter has not yet
-        # received plan:agreed (convergence still in progress); False for all
-        # non-plan-review items.
+        # plan_convergence_active: True when a plan-review charter under a real
+        # reviewer (plan_review_role != "") has not yet received plan:agreed
+        # (convergence still in progress); False for all non-plan-review items AND
+        # for role-empty human-park charters (three-site canon, same as launcher —
+        # role-empty charters must be approvable and must NOT show "convergence in
+        # progress", else the cockpit deadlocks). See charter #1220 / issue #1281.
         if st == "plan-review":
-            plan_convergence_active = "plan:agreed" not in labels
+            plan_convergence_active = plan_review_role != "" and "plan:agreed" not in labels
         else:
             plan_convergence_active = False
         if kind == "charter":
@@ -554,6 +561,7 @@ def build_state():
                           git_status=git_status, blast_radius=blast_radius,
                           finale_pr=finale_pr,
                           plan_convergence_active=plan_convergence_active,
+                          plan_review_role=plan_review_role,
                           stuck=stuck))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
@@ -792,7 +800,7 @@ def do_command(body):
             _live_labels = [l["name"] for l in json.loads(_live_raw).get("labels", [])]
         except Exception:
             _live_labels = []
-        if "status:plan-review" in _live_labels and "plan:agreed" not in _live_labels:
+        if "status:plan-review" in _live_labels and _plan_review_role != "" and "plan:agreed" not in _live_labels:
             return {"ok": False, "msg": f"plan-convergence in progress — {_plan_review_role} must agree before approve"}
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:approved","--remove-label","status:plan-review"]); return {"ok":True,"msg":f"approved #{n}"}
     elif a=="hold" and n.isdigit():
