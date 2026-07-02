@@ -79,3 +79,16 @@ export CB_INFRA_RETRY_CAP="${CB_INFRA_RETRY_CAP:-5}"
 export CB_INFRA_BACKOFF_BASE="${CB_INFRA_BACKOFF_BASE:-60}"
 # CB_INFRA_BACKOFF_MULT -- backoff multiplier per attempt (default 2 = exponential doubling).
 export CB_INFRA_BACKOFF_MULT="${CB_INFRA_BACKOFF_MULT:-2}"
+
+# ── Forward-progress dead-man's-switch (charter #1142) ────────────────────────
+# The launcher proves liveness (heartbeat/pid) but not forward progress: on
+# 2026-06-30→07-01 the loop stayed alive yet merged nothing for ~8h (jammed
+# queue head) with no alert. `_stall_check()` (crewboss-launcher-gh.sh) closes
+# the gap — it alerts when NO charter/* PR merges within CB_PROGRESS_STALL_HOURS
+# WHILE launchable/plannable work exists (idle is NOT a stall).
+# CB_PROGRESS_STALL_HOURS — hours without a merged charter/* PR (work pending)
+#                           before the watchdog opens an ops:alert issue. Default 2.
+export CB_PROGRESS_STALL_HOURS="${CB_PROGRESS_STALL_HOURS:-2}"
+# CB_STALL_NTFY_URL — optional ntfy/webhook URL for a push stall alert. Unset/empty
+#                     → no curl is attempted (graceful degradation).
+export CB_STALL_NTFY_URL="${CB_STALL_NTFY_URL:-}"

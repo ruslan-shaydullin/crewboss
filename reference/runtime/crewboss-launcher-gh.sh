@@ -1317,6 +1317,89 @@ cmd_redispatch(){
   log "re-dispatch #$id: run-state cleared, work tree removed, routed status:needs-rework (re-launchable)"
 }
 
+# ── forward-progress dead-man's-switch (charter #1142) ────────────────────────
+# _stall_check: embedded per-tick watchdog. The launcher proves *liveness*
+# (heartbeat + launcher.pid) but not *forward progress*: on 2026-06-30→07-01 the
+# loop stayed alive yet merged NOTHING for ~8h (jammed queue head) with no alert.
+# This closes the gap — it opens ONE deduped ops:alert issue (and an optional
+# ntfy push) when NO charter/* PR has merged within CB_PROGRESS_STALL_HOURS WHILE
+# launchable/plannable work exists. Idle (no work) is NOT a stall. Cost budget:
+# exactly ONE extra gh CLI call per tick (the merged-PR query) — no systemd timer.
+# All state lives under $RUN so cold start and stall-clear are file-driven.
+_stall_check(){
+  local _stall_hours _last_pr_f _last_merge_f _alert_f
+  _stall_hours="${CB_PROGRESS_STALL_HOURS:-2}"
+  _last_pr_f="$RUN/last-stall-pr"
+  _last_merge_f="$RUN/last-merge-ts"
+  _alert_f="$RUN/stall-alert-issue"
+
+  # 1. Merge detection (the one approved gh call): newest merged charter/* PR.
+  #    Fires on BOTH human-merge and CB_AUTO_MERGE paths — same merged-PR query.
+  local _merged_json _newest_pr _stored_pr
+  _merged_json=$(gh pr list --state merged --base main \
+      --json number,headRefName -R "$CB_REPO" 2>/dev/null || printf '[]')
+  _newest_pr=$(printf '%s' "$_merged_json" | jq -r '
+      [ .[] | select((.headRefName // "") | startswith("charter/")) | .number ]
+      | max // empty' 2>/dev/null || true)
+  _stored_pr=$(cat "$_last_pr_f" 2>/dev/null || echo "")
+  if [ -n "$_newest_pr" ] \
+     && { [ -z "$_stored_pr" ] || [ "$_newest_pr" -gt "$_stored_pr" ] 2>/dev/null; }; then
+    # New forward progress: refresh baseline, remember the PR, clear any latched
+    # stall alert (re-arms future alerting).
+    date +%s > "$_last_merge_f"
+    printf '%s' "$_newest_pr" > "$_last_pr_f"
+    rm -f "$_alert_f"
+  fi
+
+  # 2. Elapsed check. Baseline = last merge, else current epoch (NO start-ts file
+  #    exists in the runtime; an empty read would read as 0 → instant cold-start
+  #    false alert). Fallback to now means the stall window starts from this call.
+  local _baseline _now _elapsed _threshold
+  _baseline=$(cat "$_last_merge_f" 2>/dev/null || date +%s)
+  _now=$(date +%s)
+  _threshold=$(( _stall_hours * 3600 ))
+  _elapsed=$(( _now - _baseline ))
+  [ "$_elapsed" -lt "$_threshold" ] && return 0   # not stalled
+
+  # 3. Launchable-work predicate (mirrors _loop_is_alive; excludes done/blocked/
+  #    deferred). Both empty → idle, NOT stalled → no alert regardless of elapsed.
+  local _launchable _plannable
+  _launchable=$(board launchable 2>/dev/null || true)
+  _plannable=$(plannable_scoped 2>/dev/null || true)
+  [ -z "$_launchable" ] && [ -z "$_plannable" ] && return 0   # idle
+
+  # 4. Dedup: one alert per stall window (no per-tick spam).
+  [ -s "$_alert_f" ] && return 0
+
+  # 5. Label guard: idempotently ensure ops:alert exists (it does NOT by default).
+  if ! gh label list -R "$CB_REPO" 2>/dev/null | grep -q '^ops:alert'; then
+    gh label create ops:alert -R "$CB_REPO" \
+      --color E11D48 --description "Watchdog stall alert" >/dev/null 2>&1 || true
+  fi
+
+  # 6. Alert: open the ops:alert issue; record its number for dedup.
+  local _elapsed_hours _launch_depth _issue_out _issue_num
+  _elapsed_hours=$(( _elapsed / 3600 ))
+  _launch_depth=$(printf '%s' "$_launchable" | grep -c '[^[:space:]]' 2>/dev/null)
+  _launch_depth=${_launch_depth:-0}
+  _issue_out=$(gh issue create -R "$CB_REPO" \
+    --label ops:alert \
+    --title "crewboss: progress stall detected (${_elapsed_hours}h)" \
+    --body "$(printf 'Forward-progress dead-man'\''s-switch fired (charter #1142).\n\nNo charter/* PR has merged in %sh (threshold CB_PROGRESS_STALL_HOURS=%sh) while launchable work is pending.\n\nLaunchable depth: %s\nLaunchable ids:\n%s\n' \
+        "$_elapsed_hours" "$_stall_hours" "$_launch_depth" "$_launchable")" \
+    2>/dev/null || true)
+  _issue_num=$(printf '%s' "$_issue_out" | grep -oE '[0-9]+' | tail -1)
+  [ -n "$_issue_num" ] && printf '%s' "$_issue_num" > "$_alert_f"
+  log "stall-check: progress stall ${_elapsed_hours}h (no charter/* merge, launchable=${_launch_depth}) -> ops:alert issue #${_issue_num:-?}"
+
+  # 7. Push notification: degrade gracefully when the URL is unset/empty.
+  [ -n "${CB_STALL_NTFY_URL:-}" ] \
+    && curl -s -d "crewboss: progress stall ${_elapsed_hours}h — no charter/* merge, launchable=${_launch_depth}" "$CB_STALL_NTFY_URL" \
+    || true
+
+  return 0
+}
+
 cmd_once(){
   ( exec {lockfd}>"$LOCK"
     # Root B (#1096): hold the flock on an auto-assigned high fd ({lockfd}, >=10) instead of
@@ -1844,6 +1927,9 @@ cmd_run(){
         esac
         sset "$id" pid ""
       done
+      # forward-progress dead-man's-switch (charter #1142): alert if the loop is
+      # alive but merging nothing while work is pending. One gh call/tick; non-fatal.
+      _stall_check || log "stall-check: error (continuing)"
       # integrator step: merge review-state leaves into charter/C (every tick, non-fatal)
       _integrator_cycle || log "integrator-cycle: error (continuing)"
       # test-quality gate step: after all leaves merged, check test quality before finale
