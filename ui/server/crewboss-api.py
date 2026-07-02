@@ -489,6 +489,12 @@ def build_state():
             if isinstance(it, dict) and "number" in it:
                 by_n.setdefault(it["number"], it)  # charter wins if not in general call
         issues = list(by_n.values())
+    # plan_review_role: repo-global policy (org.json), read once. Same source the
+    # approve-guard uses: (_org.get("policy") or {}).get("plan_review_role", "").
+    # A role-empty policy means human-park charters converge without an analyst,
+    # so they must NOT be flagged as "convergence in progress" (#1281).
+    _org = read_json(os.path.join(CB_TEAM, "org.json"), {})
+    plan_review_role = (_org.get("policy") or {}).get("plan_review_role", "") or ""
     board = []
     for it in issues:
         labels = [l["name"] for l in it.get("labels",[])]
@@ -535,13 +541,34 @@ def build_state():
                     finale_pr = fp_val
             except Exception:
                 pass
-        # plan_convergence_active: True when a plan-review charter has not yet
-        # received plan:agreed (convergence still in progress); False for all
-        # non-plan-review items.
+        # plan_convergence_active: True when a plan-review charter with a NON-EMPTY
+        # plan_review_role has not yet received plan:agreed (convergence still in
+        # progress); False for all non-plan-review items AND for role-empty
+        # human-park charters (which have no analyst to converge — #1281). This is
+        # the three-site canon guard, identical to the launcher and approve-guard:
+        #   block/hide  <=>  plan_review_role != ""  AND  "plan:agreed" absent.
         if st == "plan-review":
-            plan_convergence_active = "plan:agreed" not in labels
+            plan_convergence_active = plan_review_role != "" and "plan:agreed" not in labels
         else:
             plan_convergence_active = False
+        # Additive UI honesty (#1281): surface the review role + plan round/cap so
+        # the cockpit can render "analyst reviewing round k/cap" vs "waiting on you".
+        # Cheap reads only; never renames plan_convergence_active (690-tests/App.tsx).
+        plan_round = 0
+        plan_cap = 0
+        if kind == "charter":
+            try:
+                plan_round = int(open(os.path.join(RUN, "state", str(n), "pround")).read().strip())
+            except Exception:
+                plan_round = 0
+            _cap_label = next((l.split("converge-cap:", 1)[1] for l in labels
+                               if l.startswith("converge-cap:")), "")
+            try:
+                plan_cap = int(_cap_label) if _cap_label else int(
+                    os.environ.get("CB_PLAN_CONVERGE_CAP",
+                                   os.environ.get("CB_CONVERGE_CAP", "6")))
+            except Exception:
+                plan_cap = 0
         if kind == "charter":
             stuck = _compute_stuck(n, it.get("labels", []), issues, plan_convergence_active, finale_pr)
         else:
@@ -554,6 +581,8 @@ def build_state():
                           git_status=git_status, blast_radius=blast_radius,
                           finale_pr=finale_pr,
                           plan_convergence_active=plan_convergence_active,
+                          plan_review_role=plan_review_role,
+                          plan_round=plan_round, plan_cap=plan_cap,
                           stuck=stuck))
     board.sort(key=lambda r: -r["n"])
     by_n = {r["n"]: r for r in board}
@@ -792,7 +821,7 @@ def do_command(body):
             _live_labels = [l["name"] for l in json.loads(_live_raw).get("labels", [])]
         except Exception:
             _live_labels = []
-        if "status:plan-review" in _live_labels and "plan:agreed" not in _live_labels:
+        if _plan_review_role != "" and "status:plan-review" in _live_labels and "plan:agreed" not in _live_labels:
             return {"ok": False, "msg": f"plan-convergence in progress — {_plan_review_role} must agree before approve"}
         sh(["gh","issue","edit",n,"-R",REPO,"--add-label","status:approved","--remove-label","status:plan-review"]); return {"ok":True,"msg":f"approved #{n}"}
     elif a=="hold" and n.isdigit():
