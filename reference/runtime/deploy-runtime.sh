@@ -88,6 +88,19 @@ fi
 scp $CB_SSH_OPTS "$MANIFEST" "$CB_HOST:$CB_REMOTE_HOME/runtime-manifest.tsv"
 printf '  deployed: runtime-manifest.tsv (manifest copy)\n'
 
+# ── gh-shim wiring: RL-aware `gh` wrapper (charter #1274, leaf #1301) ──────────
+# scp does not preserve the +x bit, so make the shim executable on the box, and expose it
+# under the bare name `gh` so the jail's PATH-prepend (crewboss-prep-spawn-gh.sh sets
+# PATH=/cbnet:$PATH) resolves in-jail `gh` to the shim FIRST. The shim then walks past
+# itself in PATH to run the real gh binary. Idempotent (chmod / ln -sf).
+# shellcheck disable=SC2086,SC2029
+ssh $CB_SSH_OPTS "$CB_HOST" "
+  set -e; H=\$(eval echo $CB_REMOTE_HOME)
+  chmod +x \"\$H/gh-shim.sh\"
+  ln -sf gh-shim.sh \"\$H/gh\"
+"
+printf '  wired: gh-shim.sh (chmod +x + gh -> gh-shim.sh symlink for PATH-prepend)\n'
+
 # ── Build + deploy the dashboard UI ───────────────────────────────────────────
 # The box serves the built vite dist from <home>/www (see crewboss-api.py static route).
 # Runs by default so CSS/JS fixes (e.g. #698) reach the live box on every deploy.
