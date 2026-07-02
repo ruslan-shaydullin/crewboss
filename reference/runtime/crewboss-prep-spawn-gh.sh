@@ -469,4 +469,9 @@ if [ -n "${CB_MANIFEST:-}" ] && [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
   export CB_FS_WORK CB_FS_CBNET CB_MODEL
 fi
 
+# gh-shim wiring (charter #1274, leaf #1301): prepend /cbnet so the jailed session resolves
+# `gh` to the RL-aware shim FIRST. nsjail keep_env (-e) forwards this HOST PATH into the jail,
+# where /cbnet is the CB_HOME mount and /cbnet/gh -> gh-shim.sh (deploy-runtime.sh symlink).
+# The shim walks past itself in PATH to run the real gh, then refreshes /cbnet/run/rl_state.
+export PATH="/cbnet:$PATH"
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"
