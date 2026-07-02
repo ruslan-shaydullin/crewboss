@@ -65,6 +65,28 @@ RECOVERY_SPAWN="${CB_RECOVERY_SPAWN:-$PLAN_SPAWN}"
 CB_RECOVERY_LEAD_CAP="${CB_RECOVERY_LEAD_CAP:-1}"
 # CB_RECOVERY_PARSE: parser for the manager's `## Recovery (machine)` plan block.
 CB_RECOVERY_PARSE="${CB_RECOVERY_PARSE:-$HERE_LAUNCHER/recovery-parse.sh}"
+# ── triage crash-death survival (charter #1290) ──────────────────────────────
+# Incident 2026-07-02 (leaf #1281): the triage intercept (#787) was spawned INTO the
+# same RL-storm it was meant to rescue from. The triage session crash-died in 39s
+# WITHOUT posting a verdict; the completion handler read "no verdict" and unconditionally
+# set triage_done=1 + term=1 → the leaf was parked permanently in status:blocked with
+# ONE triage attempt per lifetime. A crash-death of the triage session is NOT the same
+# as an agent that deliberately declined to give a verdict, and must not be terminal.
+#
+# Discriminator: a triage session whose observed lifetime (now - triage_spawn_ts) is
+# below CB_TRIAGE_MIN_LIFETIME is treated as a CRASH-DEATH; at/above it, the agent lived
+# long enough that a missing verdict is a DELIBERATE no-verdict (current #1049 routing).
+#   CB_TRIAGE_MIN_LIFETIME — seconds; below this a no-verdict is a crash-death (default 60;
+#                            the incident died in 39s).
+#   CB_TRIAGE_RETRY_CAP    — max crash-death re-spawns per leaf before routing to the
+#                            deferred/blocked recovery path (small default 3). Counted via
+#                            run-state triage_n.
+#   CB_TRIAGE_BACKOFF      — base backoff seconds before a crash-death re-spawn; scales
+#                            linearly with the attempt number to let the storm drain
+#                            (default 5). Set 0 to disable the delay.
+CB_TRIAGE_MIN_LIFETIME="${CB_TRIAGE_MIN_LIFETIME:-60}"
+CB_TRIAGE_RETRY_CAP="${CB_TRIAGE_RETRY_CAP:-3}"
+CB_TRIAGE_BACKOFF="${CB_TRIAGE_BACKOFF:-5}"
 # ── Rate-limit guard v2 shared config (charter #1274) ────────────────────────
 # GitHub meters TWO independent pools per identity and the launcher's board ops split
 # across BOTH: REST *core* (gh api, list/view REST paths) and *GraphQL* (gh issue
@@ -571,6 +593,7 @@ route(){ # id, spawn-exit
          if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
            board route "$id" needs-triage "executor failed $tries×" >/dev/null
            sset "$id" kind "triage"
+           sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
            "$TRIAGE_SPAWN" "$id" &
            sset "$id" pid "$!"
            log "#$id failed (try $tries) -> needs-triage (triage spawned)"
@@ -885,6 +908,7 @@ _integrator_cycle(){
             sset "$rid" kind triage
             sset "$rid" red_reason "$_vmreason"   # carry RED_REASON so a no-verdict triage can escalate to recovery (#1049/#1110)
             sset "$rid" starttime "$(now)"
+            sset "$rid" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
             ( "$TRIAGE_SPAWN" "$rid" triage >/dev/null 2>&1 ) & sset "$rid" pid "$!"
             sset "$rid" int_done "triage-pending"
             log "triage: spawned for #$rid (integrator path)"
@@ -1989,7 +2013,46 @@ cmd_run(){
             | jq -r '[.comments[]?.body | select(contains("## Triage (machine)"))] | last // empty' \
             2>/dev/null || true)
           if [ -z "$_tvrd" ]; then
-            # charter #1049 (a): triage returned NO verdict → escalate to the recovery-lead
+            # charter #1290 (P2): a no-verdict has TWO distinct causes and they must NOT
+            # be conflated (the 2026-07-02 incident, leaf #1281):
+            #   (1) CRASH-DEATH — the triage session was spawned into an RL-storm and died
+            #       before it could post a verdict (observed: 39s). This is NOT a refusal;
+            #       parking the leaf terminal (triage_done=1 + term=1) on the FIRST death is
+            #       the bug. Retry with backoff up to CB_TRIAGE_RETRY_CAP; only route to the
+            #       deferred/blocked recovery path AFTER the cap is exhausted.
+            #   (2) DELIBERATE no-verdict — the agent lived long enough (>= MIN_LIFETIME) and
+            #       chose not to post a verdict. Keep the CURRENT #1049 recovery routing.
+            # Discriminate by observed session lifetime vs CB_TRIAGE_MIN_LIFETIME.
+            _tsts=$(sget "$id" triage_spawn_ts)
+            _tlife=-1
+            if [ -n "$_tsts" ]; then _tlife=$(( $(date +%s) - _tsts )); fi
+            if [ "$_tlife" -ge 0 ] && [ "$_tlife" -lt "$CB_TRIAGE_MIN_LIFETIME" ]; then
+              # ── crash-death path (#1290) ─────────────────────────────────────────────
+              _tn=$(sget "$id" triage_n); _tn=${_tn:-0}
+              if [ "$_tn" -lt "$CB_TRIAGE_RETRY_CAP" ]; then
+                _tn=$((_tn + 1)); sset "$id" triage_n "$_tn"
+                _tbk=$(( ${CB_TRIAGE_BACKOFF:-5} * _tn ))
+                log "#$id kind=triage: crash-death (lifetime ${_tlife}s < ${CB_TRIAGE_MIN_LIFETIME}s) -> retry ${_tn}/${CB_TRIAGE_RETRY_CAP} after ${_tbk}s backoff (NOT terminal)"
+                [ "$_tbk" -gt 0 ] && sleep "$_tbk"
+                # re-spawn triage; do NOT set triage_done/term — the leaf stays recoverable.
+                sset "$id" triage_spawn_ts "$(date +%s)"
+                sset "$id" starttime "$(now)"
+                "$TRIAGE_SPAWN" "$id" &
+                sset "$id" pid "$!"
+                continue
+              fi
+              # cap exhausted: the storm outlived our retries → route to deferred/blocked
+              # recovery, mirroring the deliberate-no-verdict fall-through below.
+              log "#$id kind=triage: crash-death retry-cap (${_tn}/${CB_TRIAGE_RETRY_CAP}) exhausted -> recovery/blocked"
+              sset "$id" triage_done "1"
+              if _recovery_escalate "$id" "$(sget "$id" red_reason)"; then
+                continue
+              fi
+              board route "$id" blocked "triage: crash-death retry-cap ${CB_TRIAGE_RETRY_CAP} exhausted" >/dev/null
+              sset "$id" pid ""; sset "$id" kind ""; sset "$id" term 1
+              continue
+            fi
+            # charter #1049 (a): DELIBERATE no-verdict → escalate to the recovery-lead
             # (status:needs-recovery) INSTEAD of blocked, gated behind RED_REASON (#1110).
             sset "$id" triage_done "1"
             if _recovery_escalate "$id" "$(sget "$id" red_reason)"; then
@@ -2098,6 +2161,7 @@ cmd_run(){
                          if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
                            board route "$id" needs-triage "executor failed $tries×" >/dev/null
                            sset "$id" kind "triage"
+                           sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
                            "$TRIAGE_SPAWN" "$id" &
                            sset "$id" pid "$!"
                            log "#$id failed($tries) -> needs-triage (triage spawned)"
