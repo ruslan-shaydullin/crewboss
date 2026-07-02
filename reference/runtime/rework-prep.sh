@@ -35,7 +35,7 @@ Your earlier work for this issue is on origin/$OLD. Do this, in order:
 2. Resolve EVERY conflict by KEEPING BOTH sides (the additive union): siblings added their feature next to yours in the same files — preserve both; when function/component signatures differ, keep the SUPERSET (all params). Do NOT delete sibling features.
 3. Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass; fix until green.
 4. git add -A && git commit if the merge left a commit, then: git push -u origin HEAD
-5. gh pr create --base charter/$C --title \"rework(#$ID): rebase onto charter/$C\" --body \"Closes #$ID — reworked onto integration branch, conflicts resolved as additive union.\"
+5. source /cbnet/cb-pr-create.sh && cb_pr_create --base charter/$C --title \"rework(#$ID): rebase onto charter/$C\" --body \"Closes #$ID — reworked onto integration branch, conflicts resolved as additive union.\"
 Then STOP at the PR. Do NOT merge. Do NOT target main — base MUST be charter/$C.
 
 Issue #$ID:
@@ -45,7 +45,7 @@ else
 You are ALREADY on branch rework/$ID-$TS, based on origin/charter/$C. Implement the fix described below in the existing code on this branch.
 Verify green: the ALLOW-filtered engine suite (run 'bash <t>' for every reference/tests/*.test.sh whose basename is listed ALLOW in reference/runtime/per-leaf-manifest; all must exit 0) — all must pass.
 git add -A && git commit -m \"fix(#$ID): ...\"; git push -u origin HEAD
-gh pr create --base charter/$C --title \"fix(#$ID): rework onto charter/$C\" --body \"Closes #$ID\"
+source /cbnet/cb-pr-create.sh && cb_pr_create --base charter/$C --title \"fix(#$ID): rework onto charter/$C\" --body \"Closes #$ID\"
 STOP at the PR. Do NOT merge. base MUST be charter/$C.
 
 Issue #$ID:
