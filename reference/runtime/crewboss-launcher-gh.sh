@@ -109,6 +109,59 @@ now(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
 log(){ echo "[launcher-gh $(now)] $*"; }
 sget(){ cat "$STATE/$1/$2" 2>/dev/null || echo ""; }
 sset(){ mkdir -p "$STATE/$1"; printf '%s' "$3" > "$STATE/$1/$2"; }
+# ── _cb_role_guard: role-presence guard (charter #1291 P3; incident 2026-07-02 #1281) ──
+# Before ANY routing/spawning of an item into a role, verify that role's DEFINITION file
+# exists in the LIVE team catalog. On 2026-07-02 the loop routed leaf #1281 into role
+# `triage`, whose role file did not exist ANYWHERE on the box — not in team/roles, not in
+# gov, not in the repo `.claude/agents`. The spawned session silently crash-died in 39s
+# with no log and no board comment; the leaf was then parked as if it had genuinely failed.
+# This guard converts that silent session-death into a LOUD, RETRYABLE refusal:
+#   * a LOUD log line naming the absent role,
+#   * an issue comment naming the absent role (so the gap is visible on the board),
+#   * a non-zero return so the caller SKIPS the spawn and leaves the item in its CURRENT
+#     status — no status mutation here — so the loop retries automatically once the catalog
+#     is fixed on the box (the deploy-side catalog-sync is a separate infra leaf).
+# It NEVER mutates the item's status and NEVER marks it terminal: an absent role is an
+# operator/catalog gap, not an agent failure.
+#
+# Catalog roots (the three locations named in the #1281 incident, plus dev/CI + override):
+#   team/roles          — $CB_MANIFEST/roles, $CB_HOME/team/roles
+#   gov                 — $CB_HOME/gov/.claude/agents, $CB_HOME/gov/roles
+#   repo .claude/agents — $HERE_LAUNCHER/../.claude/agents, $CB_GATE_REPO_DIR/.claude/agents
+#   dev/CI fallback     — $HERE_LAUNCHER/../../team-example/roles (absent on a real box, so
+#                         production still enforces against the deployed catalog only)
+#   operator override   — colon-separated dirs in $CB_ROLE_CATALOG_DIRS
+# Usage: _cb_role_guard <issue_number> <role>  → 0 role present, non-zero role absent.
+_cb_role_guard() {
+  local _id="${1:-}" _role="${2:-}"
+  if [ -z "$_role" ]; then
+    log "ROLE-GUARD: REFUSING #${_id:-?} — empty role name (routing bug, charter #1291 P3)"
+    return 2
+  fi
+  local _roots=(
+    "${CB_MANIFEST:-}/roles"
+    "$CB_HOME/team/roles"
+    "$CB_HOME/gov/.claude/agents"
+    "$CB_HOME/gov/roles"
+    "$HERE_LAUNCHER/../.claude/agents"
+    "${CB_GATE_REPO_DIR:-}/.claude/agents"
+    "$HERE_LAUNCHER/../../team-example/roles"
+  )
+  if [ -n "${CB_ROLE_CATALOG_DIRS:-}" ]; then
+    local _oIFS="$IFS" _d; IFS=':'
+    for _d in $CB_ROLE_CATALOG_DIRS; do [ -n "$_d" ] && _roots+=("$_d"); done
+    IFS="$_oIFS"
+  fi
+  local _r
+  for _r in "${_roots[@]}"; do
+    [ -n "$_r" ] || continue
+    [ -f "$_r/$_role.md" ] && return 0
+  done
+  # Absent from EVERY catalog root → LOUD, retryable refusal; no status mutation.
+  log "ROLE-GUARD: REFUSING to route/spawn #${_id:-?} into role '$_role' — role definition file '$_role.md' is ABSENT from the live team catalog (checked team/roles, gov, repo .claude/agents). Leaving the item in its current status to retry once the catalog is fixed — NOT a silent session death. (incident 2026-07-02 #1281, charter #1291 P3)"
+  gh issue comment "$_id" -R "$CB_REPO" --body "⛔ **role-presence-guard**: this item was about to be routed/spawned into role \`$_role\`, but that role's definition file (\`$_role.md\`) is **absent from the live team catalog** — not in \`team/roles\`, not in \`gov\`, and not in the repo \`.claude/agents\`. The route is **refused** and the item is left in its **current status** so the loop retries automatically once the role catalog is fixed on the box. This prevents the silent session-death from incident #1281 (2026-07-02). (charter #1291 P3)" >/dev/null 2>&1 || true
+  return 1
+}
 # ── _cb_issue_list: scalable replacement for the invalid `--paginate` board flag ──
 # `--paginate` is NOT a valid flag on the issue `list` subcommand (it exists only on
 # `gh api`); #969 wired it into every board query, so live `gh` answered `unknown
@@ -590,13 +643,17 @@ route(){ # id, spawn-exit
     3) board route "$id" requeue >/dev/null; sset "$id" pid ""; log "#$id budget hard-stop -> requeued, STOPPING cycle"; return 9 ;;
     *) local prev; prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
        if [ "$tries" -ge "$RETRY_CAP" ]; then
-         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ] && _cb_role_guard "$id" triage; then
            board route "$id" needs-triage "executor failed $tries×" >/dev/null
            sset "$id" kind "triage"
            sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
            "$TRIAGE_SPAWN" "$id" &
            sset "$id" pid "$!"
            log "#$id failed (try $tries) -> needs-triage (triage spawned)"
+         elif [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+           # #1291 P3: triage role absent from catalog — refuse (already commented+logged
+           # by the guard), leave the leaf in its current status to retry, do NOT block.
+           sset "$id" pid ""; log "#$id failed (try $tries) -> triage role absent from catalog; left in place to retry"
          else
            board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP) — tech-lead triage" >/dev/null
            sset "$id" pid ""; log "#$id failed (try $tries) -> blocked"
@@ -611,6 +668,13 @@ route(){ # id, spawn-exit
 claim_and_spawn(){ # id
   local id="$1" role spawn_cmd old_branch=""
   role=$(board get "$id" role)
+  # #1291 P3: refuse to claim+spawn a role whose file is absent from the live catalog.
+  # Leave the leaf in its current status (do NOT claim) so it retries once the catalog
+  # is fixed — never a silent session death (incident #1281).
+  if ! _cb_role_guard "$id" "$role"; then
+    sset "$id" pid ""; log "claim #$id refused: role '${role:-?}' absent from catalog — left in place to retry"
+    return 0
+  fi
   # Choose spawn path before claiming: needs-rework -> rework script, otherwise normal.
   if [ "$(board get "$id" state)" = "needs-rework" ]; then
     spawn_cmd="$REWORK_SPAWN"
@@ -638,6 +702,13 @@ claim_and_spawn(){ # id
 _recovery_escalate() {
   local _id="$1" _reason="${2:-}"
   [ -n "$_reason" ] || { log "#$_id recovery: no RED_REASON (manager blind, #1110) — falling through to blocked"; return 1; }
+  # #1291 P3: never escalate into a recovery-lead whose role file is absent from the catalog
+  # (that is exactly the #1281 silent-death path). Decline BEFORE any status mutation so the
+  # caller falls through and the item stays retryable; the guard has already logged+commented.
+  if ! _cb_role_guard "$_id" recovery-lead; then
+    log "#$_id recovery: recovery-lead role absent from catalog — declining escalation (left retryable)"
+    return 1
+  fi
   local _rln; _rln=$(sget "$_id" recovery_lead_n); _rln=${_rln:-0}
   if [ "$_rln" -ge "$CB_RECOVERY_LEAD_CAP" ]; then
     log "#$_id recovery: lead-cap ($_rln/$CB_RECOVERY_LEAD_CAP) reached — falling through to blocked"
@@ -903,7 +974,7 @@ _integrator_cycle(){
           log "integrator: #$rid PR #$pr_num verify-merged FAIL confirmed — rework-cap (${_rwk}/${CB_REWORK_CAP:-2}) reached → blocked (${_vmreason:-RED})"
           # Trigger path (a): triage intercept (#787) — spawn triage before writing status:blocked.
           _td=$(sget "$rid" triage_done 2>/dev/null || true)
-          if [ -z "$_td" ]; then
+          if [ -z "$_td" ] && _cb_role_guard "$rid" triage; then
             gh issue edit "$rid" -R "$CB_REPO" --remove-label status:review --add-label status:needs-triage >/dev/null 2>&1 || true
             sset "$rid" kind triage
             sset "$rid" red_reason "$_vmreason"   # carry RED_REASON so a no-verdict triage can escalate to recovery (#1049/#1110)
@@ -912,6 +983,12 @@ _integrator_cycle(){
             ( "$TRIAGE_SPAWN" "$rid" triage >/dev/null 2>&1 ) & sset "$rid" pid "$!"
             sset "$rid" int_done "triage-pending"
             log "triage: spawned for #$rid (integrator path)"
+            continue
+          elif [ -z "$_td" ]; then
+            # #1291 P3: triage role absent from catalog — guard already logged+commented.
+            # Do NOT spawn into a missing role and do NOT block: leave the leaf in status:review
+            # so the integrator re-evaluates next tick once the catalog is fixed (retryable).
+            sset "$rid" int_done ""; log "triage: role absent from catalog for #$rid — left in place to retry (integrator path)"
             continue
           fi
           # triage_done is set: the simple route did not resolve and the rework-cap was hit a
@@ -1329,6 +1406,35 @@ _tqg_cycle(){
   fi
 }
 
+# ── finale fetch-cache (charter #1291, P2) ───────────────────────────────────
+# ONE persistent cache clone under $STATE, refreshed per tick, replaces the
+# per-candidate-per-tick `git clone --bare` PAIR that burned the clone/GraphQL
+# budget (zombie #306/#291 retried a full clone-pair EVERY tick for hours). Cost
+# is O(1) per tick regardless of candidate count; ancestry is read from the
+# cache's `origin/*` remote-tracking refs.
+#
+#   * Fast path — `git fetch --prune`: incremental, cheap, and prunes refs for
+#     operator-deleted/recycled branches (stale-ref hygiene). This is the steady
+#     state against the real (network) remote in production.
+#   * Rebuild path — a NON-bare `git clone` (NOT `git clone --bare`, which P2.1
+#     forbids and which is the primitive the zombie storm abused): used for the
+#     first build and whenever an incremental fetch cannot complete (fetch-pack
+#     failure / cache corruption). A fresh clone also carries no stale refs, so
+#     recycled branches are handled with no hard error.
+# Returns 0 when the cache holds a usable mirror of origin's heads.
+_finale_cache_refresh(){
+  local cache="$1"
+  if [ -d "$cache/.git" ]; then
+    if git -C "$cache" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null; then
+      return 0
+    fi
+    # incremental fetch failed → discard and rebuild from a fresh clone
+  fi
+  rm -rf "$cache"
+  git clone -q "$GIT_REMOTE" "$cache" 2>/dev/null || { rm -rf "$cache"; return 1; }
+  return 0
+}
+
 # ── charter finale cycle ──────────────────────────────────────────────────────
 # Called every tick of cmd_run after _integrator_cycle.
 # For each OPEN charter C where ALL leaves (Charter: #C issues) are CLOSED and
@@ -1343,6 +1449,16 @@ _tqg_cycle(){
 _charter_finale_cycle(){
   [ -n "$GIT_REMOTE" ] || return 0   # silence: already logged by _integrator_cycle
   [ -x "$INTEGRATOR_SCRIPT" ] || { log "charter-finale: integrator not found: $INTEGRATOR_SCRIPT"; return 0; }
+
+  # Consecutive-conflict cap before a charter is parked (env name is NORMATIVE:
+  # the merged finale-hygiene contract suite feature-detects on it).
+  local cap="${CB_FINALE_CONFLICT_CAP:-3}"
+
+  # Refresh the persistent finale fetch-cache ONCE per tick (O(1) regardless of
+  # candidate count — replaces the old per-candidate bare-clone pair).
+  local _finale_cache="$STATE/finale-cache.git"
+  _finale_cache_refresh "$_finale_cache" \
+    || { log "charter-finale: fetch-cache refresh failed — retry next tick"; return 0; }
 
   # Snapshot the board (single gh call)
   local all_issues
@@ -1367,6 +1483,39 @@ _charter_finale_cycle(){
       ] | length' 2>/dev/null) || open_leaf_count=1
     [ "$open_leaf_count" = "0" ] || continue
 
+    # ── Candidate selection: respect the board (charter #1291, P1) ────────────
+    # Skip finale candidates carrying bare `hold` (the launcher's live operator
+    # veto — six other background cycles already filter on index("hold")),
+    # status:hold, or status:needs-conflict-resolution (parked, awaiting a human
+    # to resolve conflicts and remove the label). Root cause of the #306/#291
+    # zombie storm: these labels were SET but never consumed here, so finale
+    # retried a full merge every tick for hours. Log ONCE per state change.
+    local _clabels _skip_reason=""
+    _clabels=$(printf '%s' "$all_issues" | jq -r --argjson c "$cid" '
+      .[] | select(.number == $c) | .labels[]?.name' 2>/dev/null) || _clabels=""
+    if   printf '%s\n' "$_clabels" | grep -qx "hold";                             then _skip_reason="hold"
+    elif printf '%s\n' "$_clabels" | grep -qx "status:hold";                      then _skip_reason="status:hold"
+    elif printf '%s\n' "$_clabels" | grep -qx "status:needs-conflict-resolution"; then _skip_reason="status:needs-conflict-resolution"
+    fi
+    if [ -n "$_skip_reason" ]; then
+      if [ "$(sget "finale-$cid" skip_reason)" != "$_skip_reason" ]; then
+        log "charter-finale: #$cid skipped — board label '$_skip_reason' (no finale until cleared)"
+        sset "finale-$cid" skip_reason "$_skip_reason"
+      fi
+      continue
+    fi
+    # Not vetoed/parked now: clear any prior skip state (log the resume once).
+    if [ -n "$(sget "finale-$cid" skip_reason)" ]; then
+      log "charter-finale: #$cid board veto/park cleared — finale resumes"
+      sset "finale-$cid" skip_reason ""
+    fi
+    # If we had previously parked at the conflict cap (label since removed by an
+    # operator/resolver — else we'd have skipped above), reset the counter.
+    local _cc_prev; _cc_prev=$(sget "finale-$cid" conflict_count); _cc_prev=${_cc_prev:-0}
+    if [ "$_cc_prev" -ge "$cap" ]; then
+      sset "finale-$cid" conflict_count 0
+    fi
+
     # Condition: charter/C branch exists on the remote and is strictly ahead of main
     # (main must be an ancestor of charter/C — stale/diverged branches are rejected)
     local branch="charter/$cid"
@@ -1375,43 +1524,51 @@ _charter_finale_cycle(){
     b_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/$branch" 2>/dev/null | awk '{print $1}' | head -1)
     m_sha=$(git ls-remote "$GIT_REMOTE" "refs/heads/main"    2>/dev/null | awk '{print $1}' | head -1)
     [ -n "$b_sha" ] && [ "$b_sha" != "$m_sha" ] || continue
-    # Ancestor check via temporary bare clone: main must be an ancestor of charter/C.
-    # A charter behind or diverged from main fails this check and is skipped.
-    local _anc_tmp _anc_rc
-    _anc_tmp=$(mktemp -d)
-    git clone -q --bare "$GIT_REMOTE" "$_anc_tmp/repo" 2>/dev/null \
-      || { rm -rf "$_anc_tmp"; continue; }
-    _anc_rc=0
-    git -C "$_anc_tmp/repo" merge-base --is-ancestor \
-      "main" "$branch" 2>/dev/null || _anc_rc=$?
-    rm -rf "$_anc_tmp"
+    # Ancestor check via the persistent finale fetch-cache (charter #1291, P2 —
+    # replaces the per-tick temporary `git clone --bare`): main must be an
+    # ancestor of charter/C. A charter behind or diverged from main fails this
+    # check and triggers auto-rebase.
+    local _anc_rc=0
+    git -C "$_finale_cache" merge-base --is-ancestor \
+      "origin/main" "origin/$branch" 2>/dev/null || _anc_rc=$?
     if [ "$_anc_rc" != "0" ]; then
       # main is NOT an ancestor of charter/C — attempt auto-rebase (#255)
       local _ar_rc=0
       _charter_autorebase "$cid" "$branch" || _ar_rc=$?
       if [ "$_ar_rc" = "0" ]; then
         log "charter-finale: #$cid auto-rebased onto main"
-        # Re-verify ancestor after successful rebase
-        local _arc2_tmp _arc2_rc
-        _arc2_tmp=$(mktemp -d)
-        git clone -q --bare "$GIT_REMOTE" "$_arc2_tmp/repo" 2>/dev/null \
-          || { rm -rf "$_arc2_tmp"; continue; }
-        _arc2_rc=0
-        git -C "$_arc2_tmp/repo" merge-base --is-ancestor \
-          "main" "$branch" 2>/dev/null || _arc2_rc=$?
-        rm -rf "$_arc2_tmp"
+        # Re-verify ancestor after successful rebase: refresh the cache (fetch,
+        # or clone fallback) then re-check — no bare clone.
+        _finale_cache_refresh "$_finale_cache" || true
+        local _arc2_rc=0
+        git -C "$_finale_cache" merge-base --is-ancestor \
+          "origin/main" "origin/$branch" 2>/dev/null || _arc2_rc=$?
         [ "$_arc2_rc" = "0" ] || { log "charter-finale: #$cid still not ancestor after rebase — skip"; continue; }
         # Fall through to normal finale processing
       elif [ "$_ar_rc" = "2" ]; then
-        log "charter-finale: #$cid real conflicts with main — needs conflict-resolution"
-        gh issue edit "$cid" -R "$CB_REPO" \
-          --add-label status:needs-conflict-resolution 2>/dev/null || true
+        # Real conflicts (charter #1291, P2): increment the consecutive-conflict
+        # counter and park only after CB_FINALE_CONFLICT_CAP attempts, instead of
+        # retrying a full merge every tick forever (the #306/#291 zombie storm).
+        local _cc; _cc=$(sget "finale-$cid" conflict_count); _cc=${_cc:-0}
+        _cc=$((_cc + 1)); sset "finale-$cid" conflict_count "$_cc"
+        if [ "$_cc" -ge "$cap" ]; then
+          log "charter-finale: #$cid real conflicts with main ($_cc >= CB_FINALE_CONFLICT_CAP=$cap) — parking (status:needs-conflict-resolution)"
+          gh issue edit "$cid" -R "$CB_REPO" \
+            --add-label status:needs-conflict-resolution 2>/dev/null || true
+          gh issue comment "$cid" -R "$CB_REPO" \
+            --body "charter-finale: charter/$cid has real merge conflicts with main after $_cc consecutive auto-rebase attempt(s) (CB_FINALE_CONFLICT_CAP=$cap). Parking finale — no further retries until the conflicts are resolved and the \`status:needs-conflict-resolution\` label is removed." \
+            2>/dev/null || true
+        else
+          log "charter-finale: #$cid real conflicts with main ($_cc/$cap) — will retry next tick"
+        fi
         continue
       else
         log "charter-finale: #$cid autorebase infra error (rc=$_ar_rc) — will retry next tick"
         continue
       fi
     fi
+    # Successful ancestry (already ahead, or clean rebase) → reset conflict counter.
+    sset "finale-$cid" conflict_count 0
 
     # Idempotent: check for an existing open PR charter/C → main
     local existing_pr
@@ -2029,7 +2186,7 @@ cmd_run(){
             if [ "$_tlife" -ge 0 ] && [ "$_tlife" -lt "$CB_TRIAGE_MIN_LIFETIME" ]; then
               # ── crash-death path (#1290) ─────────────────────────────────────────────
               _tn=$(sget "$id" triage_n); _tn=${_tn:-0}
-              if [ "$_tn" -lt "$CB_TRIAGE_RETRY_CAP" ]; then
+              if [ "$_tn" -lt "$CB_TRIAGE_RETRY_CAP" ] && _cb_role_guard "$id" triage; then
                 _tn=$((_tn + 1)); sset "$id" triage_n "$_tn"
                 _tbk=$(( ${CB_TRIAGE_BACKOFF:-5} * _tn ))
                 log "#$id kind=triage: crash-death (lifetime ${_tlife}s < ${CB_TRIAGE_MIN_LIFETIME}s) -> retry ${_tn}/${CB_TRIAGE_RETRY_CAP} after ${_tbk}s backoff (NOT terminal)"
@@ -2039,6 +2196,12 @@ cmd_run(){
                 sset "$id" starttime "$(now)"
                 "$TRIAGE_SPAWN" "$id" &
                 sset "$id" pid "$!"
+                continue
+              elif [ "$_tn" -lt "$CB_TRIAGE_RETRY_CAP" ]; then
+                # #1291 P3: triage role vanished from the catalog mid-recovery — guard
+                # logged+commented. Do NOT re-spawn into a missing role and do NOT mark
+                # terminal: clear pid and leave the leaf recoverable for the next tick.
+                sset "$id" pid ""; log "#$id kind=triage: triage role absent from catalog — left recoverable to retry"
                 continue
               fi
               # cap exhausted: the storm outlived our retries → route to deferred/blocked
@@ -2158,13 +2321,19 @@ cmd_run(){
           budget-stop) board route "$id" requeue >/dev/null; stop=1; log "#$id budget -> requeue, STOP new claims" ;;
           *)           prev=$(sget "$id" tries); prev=${prev:-0}; tries=$((prev+1)); sset "$id" tries "$tries"
                        if [ "$tries" -ge "$RETRY_CAP" ]; then
-                         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+                         if [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ] && _cb_role_guard "$id" triage; then
                            board route "$id" needs-triage "executor failed $tries×" >/dev/null
                            sset "$id" kind "triage"
                            sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
                            "$TRIAGE_SPAWN" "$id" &
                            sset "$id" pid "$!"
                            log "#$id failed($tries) -> needs-triage (triage spawned)"
+                           continue
+                         elif [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
+                           # #1291 P3: triage role absent from catalog — guard logged+commented.
+                           # Do NOT spawn into a missing role and do NOT block: leave the leaf in
+                           # its current status so it retries once the catalog is fixed.
+                           sset "$id" pid ""; log "#$id failed($tries) -> triage role absent from catalog; left in place to retry"
                            continue
                          fi
                          board route "$id" blocked "executor failed $tries× (retry-cap $RETRY_CAP)" >/dev/null; sset "$id" term 1; log "#$id failed($tries) -> blocked"
@@ -2295,6 +2464,7 @@ cmd_run(){
             # Get analysis role from manifest
             _analysis_role=$(manifest_analysis_roles "$CB_MANIFEST" | head -1)
             [ -n "$_analysis_role" ] || { log "#$cid no analysis_role in manifest — skip"; continue; }
+            _cb_role_guard "$cid" "$_analysis_role" || { log "#$cid analysis role '$_analysis_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
             sset "$cid" kind analysis; sset "$cid" starttime "$(now)"
             ( "$ANALYSIS_SPAWN" "$cid" "$_analysis_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
             running=$((running+1))
@@ -2319,6 +2489,7 @@ cmd_run(){
             [ -n "$(sget "$cid" term)" ] && continue
             _analysis_role=$(manifest_analysis_roles "$CB_MANIFEST" | head -1)
             [ -n "$_analysis_role" ] || { log "#$cid no analysis_role in manifest — skip"; continue; }
+            _cb_role_guard "$cid" "$_analysis_role" || { log "#$cid analysis role '$_analysis_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
             sset "$cid" kind analysis; sset "$cid" starttime "$(now)"
             ( "$ANALYSIS_SPAWN" "$cid" "$_analysis_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
             running=$((running+1))
@@ -2440,6 +2611,7 @@ ${_last_verdict:-не удалось получить}
                     continue
                   fi
                   [ "$running" -ge "$MAXP" ] && break
+                  _cb_role_guard "$cid" "$_review_role" || { log "#$cid review role '$_review_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
                   sset "$cid" kind review; sset "$cid" cround "$((_cround+1))"; sset "$cid" starttime "$(now)"
                   ( "$REVIEW_SPAWN" "$cid" "$_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
                   running=$((running+1))
@@ -2526,6 +2698,7 @@ ${_last_verdict:-не удалось получить}
               fi
               # d. est ≤ threshold → bg-spawn approval_role
               [ "$running" -ge "$MAXP" ] && break
+              _cb_role_guard "$cid" "$_approval_role" || { log "#$cid approval role '$_approval_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
               sset "$cid" kind approval; sset "$cid" starttime "$(now)"
               ( "$APPROVAL_SPAWN" "$cid" "$_approval_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
               running=$((running+1))
@@ -2550,6 +2723,7 @@ ${_last_verdict:-не удалось получить}
           fi
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
+          _cb_role_guard "$cid" git-resolver || { log "#$cid git-resolver role absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
           sset "$cid" kind conflict-resolution; sset "$cid" starttime "$(now)"
           ( "$CONFLICT_SPAWN" "$cid" git-resolver >/dev/null 2>&1 ) & sset "$cid" pid "$!"
           running=$((running+1))
@@ -2572,6 +2746,7 @@ ${_last_verdict:-не удалось получить}
           [ "$running" -ge "$MAXP" ] && break
           [ -n "$(sget "$cid" pid)" ] && continue
           [ -n "$(sget "$cid" term)" ] && continue
+          _cb_role_guard "$cid" tech-lead || { log "#$cid tech-lead role absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
           sset "$cid" kind charter; sset "$cid" starttime "$(now)"
           ( "$PLAN_SPAWN" "$cid" tech-lead >/dev/null 2>&1 ) & sset "$cid" pid "$!"
           running=$((running+1)); log "bg-spawn tech-lead for charter #$cid (running=$running/$MAXP)"
@@ -2642,6 +2817,7 @@ ${_last_verdict:-не удалось получить}
               continue
             fi
             [ "$running" -ge "$MAXP" ] && break
+            _cb_role_guard "$cid" "$_plan_review_role" || { log "#$cid plan-review role '$_plan_review_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
             sset "$cid" kind plan-review; sset "$cid" pround "$((_pround+1))"; sset "$cid" starttime "$(now)"
             ( CB_PLAN_REVIEW=1 "$PLAN_REVIEW_SPAWN" "$cid" "$_plan_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
             running=$((running+1))
@@ -2750,6 +2926,7 @@ ${_last_verdict:-не удалось получить}
               fi
               continue
             fi
+            _cb_role_guard "$cid" "$_acc_review_role" || { log "#$cid acceptance-review role '$_acc_review_role' absent from catalog — skip (left in place to retry)"; continue; }  # #1291 P3
             sset "$cid" aound "$((_aound+1))"; sset "$cid" kind acceptance-review; sset "$cid" starttime "$(now)"
             ( CB_ACCEPTANCE_REVIEW=1 "$ACCEPT_REVIEW_SPAWN" "$cid" "$_acc_review_role" >/dev/null 2>&1 ) & sset "$cid" pid "$!"
             running=$((running+1))
@@ -2769,6 +2946,15 @@ ${_last_verdict:-не удалось получить}
             if [ -z "$_q_head" ]; then break; fi
             _id_ch=$(board get "$id" charter 2>/dev/null || echo "")
             [ "$_id_ch" = "$_q_head" ] || continue
+          fi
+          # #1291 P3: verify the leaf's role exists in the live catalog BEFORE claiming.
+          # A missing role is refused (guard logs+comments) and the leaf is left in its
+          # current status — no claim, no term — so it retries once the catalog is fixed
+          # (this is exactly the #1281 silent-death path this guard closes).
+          _bg_role="$(board get "$id" role)"
+          if ! _cb_role_guard "$id" "$_bg_role"; then
+            log "bg-spawn #$id refused: role '${_bg_role:-?}' absent from catalog — left in place to retry"
+            continue
           fi
           # Choose spawn path before claiming (needs-rework -> rework script)
           _bg_spawn="$SPAWN"
