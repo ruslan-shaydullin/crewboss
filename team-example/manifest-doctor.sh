@@ -27,13 +27,19 @@ while read -r r; do
 done < <(roles_in_org | sort -u)
 
 echo "== role invariants =="
+top=$(jq -r '.policy.approval_role' "$ORG")
 for r in $(roles_in_org | sort -u); do
   [ -f "$ROLES/$r.md" ] || continue
   k=$(field "$r" kind); t=$(field "$r" tools); cb=$(field "$r" code_blind)
   case "$k" in
     manager)
       { has Edit "$t" || has Write "$t" || has Agent "$t"; } && FAIL "manager '$r' must NOT have Edit/Write/Agent (has: $t)" || OK "manager '$r' has no code/spawn tools"
-      [ "$cb" = "true" ] && { has Read "$t" && FAIL "code-blind top '$r' must NOT have Read" || OK "top '$r' code-blind (no Read)"; } ;;
+      # code_blind is a no-write capability (fs_work: ro) and is compatible with Read: dept
+      # managers/leads stay code_blind yet still Read to review PRs. Only the org top
+      # (approval_role) is *fully* code-blind — it must carry no Read at all.
+      if [ "$cb" = "true" ] && [ "$r" = "$top" ]; then
+        has Read "$t" && FAIL "code-blind top '$r' must NOT have Read" || OK "top '$r' code-blind (no Read)"
+      fi ;;
     analyst)
       { has Edit "$t" || has Write "$t" || has Agent "$t"; } && FAIL "analyst '$r' must be read-only (has: $t)" || OK "analyst '$r' read-only" ;;
     executor)

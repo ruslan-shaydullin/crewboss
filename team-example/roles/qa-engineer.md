@@ -4,6 +4,8 @@ kind: executor
 domain: qa
 tools: Read, Edit, Write, Bash
 profile: executor
+fs_work: rw
+fs_cbnet: ro
 skills: [testing, e2e, fixtures]
 model: claude-opus-4-8
 ---
