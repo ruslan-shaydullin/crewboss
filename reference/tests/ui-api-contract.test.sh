@@ -63,9 +63,20 @@ extract_ui_actions(){
 
 extract_api_actions(){
   local api_py="$1"
-  # Match a=="action-name" in do_command branches (double-quoted, preceded by a==)
-  grep -oP 'a=="([a-z][a-z-]+)"' "$api_py" 2>/dev/null | \
-    grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u
+  {
+    # (a) Literal branches: a=="action-name" in do_command
+    grep -oP 'a=="([a-z][a-z-]+)"' "$api_py" 2>/dev/null | \
+      grep -oP '"[a-z][a-z-]+"' | tr -d '"'
+    # (b) Constant-based branches: `a == CMD_X` / `a in (CMD_X, CMD_Y)` where the
+    #     constant is defined at module level as CMD_X = "action-name". The old
+    #     literal-only pattern was blind to these (chronic baseline RED: approve-hd/
+    #     close-hd/request-changes-hd — incident 2026-07-03, factology theme G5).
+    local c
+    for c in $(grep -P '\ba\s*(==|in\s*\()' "$api_py" 2>/dev/null | \
+                 grep -oP 'CMD_[A-Z_]+' | sort -u); do
+      grep -oP "^\s*${c}\s*=\s*\"\K[a-z][a-z-]+(?=\")" "$api_py" 2>/dev/null
+    done
+  } | sort -u | grep -v '^$'
 }
 
 # ── 1. Check ui/app/src and crewboss-api.py exist ─────────────────────────────
