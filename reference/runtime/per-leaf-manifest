@@ -14,7 +14,7 @@
 #   Any unclassified *.test.sh ⇒ guard RED.
 #   To add a test to ALLOW you MUST document it here with a criterion justification.
 #
-# Counts: ALLOW=25, EXCLUDED=77, union=102  (verify with: leaf-verifier.test.sh Test 7)
+# Counts: ALLOW=23, EXCLUDED=63, union=86  (verify with: leaf-verifier.test.sh Test 7)
 #
 # #206 Part B: runtime-manifest promoted EXCLUDED→ALLOW. Its verdict is a pure
 #   function of merged content (sha256 / find / awk / grep — no launcher loop, no
@@ -273,3 +273,11 @@ EXCLUDED 1290-envfail-classify
 EXCLUDED 1290-triage-storm-retry
 EXCLUDED 1290-rework-pr-hygiene
 EXCLUDED 1290-longstorm-rework-head
+# charter #357 (full capability-axis enforcement: creds/net/seccomp) — test-writer leaf #920.
+# capabilities-static: pure static analysis of spawn/proxy/kafel source (grep/awk only); no
+#   nsjail or live infrastructure required; safe for per-leaf verify-merged. It encodes the
+#   expectations the #357 impl leaves must satisfy — their per-leaf verify-merged gate runs it.
+ALLOW capabilities-static
+# capabilities-adversarial: requires live nsjail + proxy infrastructure; not a pure function of
+#   merged content; CI coverage via GHA full suite only; not eligible for per-leaf verify-merged.
+EXCLUDED capabilities-adversarial
