@@ -346,7 +346,10 @@ GITEOF
   CBH="$ROOT/p2_1"; reset_sandbox "$CBH"; remote_ahead
   printf '%s' "$FINALE_BOARD" > "$BOARD_STATE"
   run_finale "$CBH" "$ROOT/p2_1.log" "" "$GITBIN:" 3
-  _nbare=$(grep -c bare-clone "$CLONE_BARE_LOG" 2>/dev/null || echo 0)
+  # grep -c prints "0" AND exits 1 on zero matches — a bare `|| echo 0` appends a
+  # second line ("0\n0") and crashes the integer test below. tail -n1 keeps one line
+  # in all three cases: N matches / 0 matches / log file missing. (#1333 blocker)
+  _nbare=$({ grep -c bare-clone "$CLONE_BARE_LOG" 2>/dev/null || echo 0; } | tail -n1)
   [ "$_nbare" -eq 0 ] \
     && ok "P2.1: ancestor-check uses fetch-cache — 0 'git clone --bare' across ticks" \
     || ko "P2.1: ancestor-check still bare-clones ($_nbare 'git clone --bare' calls)"
