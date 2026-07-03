@@ -155,7 +155,28 @@ quiesce(){
   svc stop "$CB_LAUNCHER_UNIT" || report "QUIESCE WARN: 'stop $CB_LAUNCHER_UNIT' returned non-zero"
 }
 
-# ── Step 3b: swap files (+ refresh box manifest copy) ─────────────────────────
+# ── Team-catalog sync (charter #1291 P4, leaf #1332) ──────────────────────────
+# _cb_role_guard (#1331) REFUSES to route/spawn into a role whose file is absent
+# from the live catalog. Incident 2026-07-02 #1281 proved that catalog reached the
+# box only by operator hand (role `triage` file missing → silent crash-death).
+# Deploy the role catalog WITH the code, into the exact roots the guard checks
+# ($CB_HOME/team/roles + $CB_HOME/gov/.claude/agents), so the NEW launcher never
+# trips the guard on a role that IS defined in the repo. Best-effort, never blocks
+# the swap. Opt-out: CB_SYNC_TEAM=0.
+sync_team_catalog(){
+  [ "${CB_SYNC_TEAM:-1}" != "0" ] || { log "team-catalog sync skipped (CB_SYNC_TEAM=0)"; return 0; }
+  local dst_team="$CB_HOME/team/roles" dst_gov="$CB_HOME/gov/.claude/agents" n=0 src
+  mkdir -p "$dst_team" "$dst_gov" 2>/dev/null || true
+  for src in "$REPO_ROOT"/reference/.claude/agents/*.md "$REPO_ROOT"/team-example/roles/*.md; do
+    [ -f "$src" ] || continue
+    cp "$src" "$dst_team/" 2>/dev/null || true
+    cp "$src" "$dst_gov/"  2>/dev/null || true
+    n=$((n+1))
+  done
+  report "team catalog synced: $n role file(s) → team/roles + gov/.claude/agents (matches _cb_role_guard roots)"
+}
+
+# ── Step 3b: swap files (+ refresh box manifest copy + team catalog) ──────────
 _put(){ cp "$1" "$2"; chmod 0755 "$2"; }
 swap_in(){
   for name in "${FILES[@]}"; do
@@ -166,6 +187,7 @@ swap_in(){
     cp "$MANIFEST" "$CB_HOME/runtime-manifest.tsv"
     log "refreshed box manifest copy (doctor drift now reflects new sha-lock)"
   fi
+  sync_team_catalog
 }
 
 # ── Step 4: restart on new code ───────────────────────────────────────────────

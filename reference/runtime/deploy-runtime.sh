@@ -131,6 +131,34 @@ if [ "${CB_SYNC_LABELS:-}" = "1" ]; then
   "
 fi
 
+# ── Team-catalog sync: role files deploy WITH the code (charter #1291 P4, #1332) ─
+# Incident 2026-07-02 #1281: issue routed into role `triage` whose file was ABSENT
+# from the box because the live team catalog was never part of deploy — role files
+# (triage/reviewer/recovery-lead) reached the box only by operator hand, so the
+# spawned session silently crash-died. This step deploys the role catalog into the
+# exact roots _cb_role_guard (#1331) checks — $CB_HOME/team/roles and
+# $CB_HOME/gov/.claude/agents — so a routed role can never be silently missing.
+# Best-effort + non-fatal (never aborts a deploy). Opt-out: CB_SYNC_TEAM=0.
+if [ "${CB_SYNC_TEAM:-1}" != "0" ]; then
+  printf '=== syncing team catalog (role files) to %s ===\n' "$CB_HOST"
+  # shellcheck disable=SC2086,SC2029
+  ssh $CB_SSH_OPTS "$CB_HOST" \
+    "H=\$(eval echo $CB_REMOTE_HOME); mkdir -p \"\$H/team/roles\" \"\$H/gov/.claude/agents\"" \
+    || printf '  WARN: could not create team-catalog dirs on box\n' >&2
+  role_count=0
+  for _src in "$REPO_ROOT"/reference/.claude/agents/*.md "$REPO_ROOT"/team-example/roles/*.md; do
+    [ -f "$_src" ] || continue
+    _rb="$(basename "$_src")"
+    # shellcheck disable=SC2086
+    scp $CB_SSH_OPTS "$_src" "$CB_HOST:$CB_REMOTE_HOME/team/roles/$_rb"        || true
+    # shellcheck disable=SC2086
+    scp $CB_SSH_OPTS "$_src" "$CB_HOST:$CB_REMOTE_HOME/gov/.claude/agents/$_rb" || true
+    role_count=$((role_count+1))
+  done
+  printf '  team catalog synced: %d role file(s) → team/roles + gov/.claude/agents (matches _cb_role_guard roots)\n' \
+    "$role_count"
+fi
+
 # ── Restart API daemon ────────────────────────────────────────────────────────
 printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
