@@ -248,7 +248,7 @@ bash "$INTEGRATOR" verify-merged leaf/42 charter/5 \
 #   (#206: runtime-manifest promoted EXCLUDED→ALLOW; new charter-finale-regen test
 #    classified EXCLUDED — net ALLOW 10→11, EXCLUDED 35→35, actual 45→46.)
 # =============================================================================
-echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=25; EXCLUDED+actual DERIVED) ==="
+echo "=== Test 7: Composition/guard fail-closed (manifest completeness, ALLOW=23 EXCLUDED=63 union=86) ==="
 _MANIFEST="$HERE/../runtime/per-leaf-manifest"
 if [ ! -f "$_MANIFEST" ]; then
   ko "guard: per-leaf-manifest not found at $_MANIFEST"
@@ -266,19 +266,24 @@ else
   _manifest_union="$(grep -E '^(ALLOW|EXCLUDED)[[:space:]]+' "$_MANIFEST" \
     | awk '{print $2}' | sort -u)"
 
-  [ "$_allow_count" -eq 25 ] \
-    && ok "guard: ALLOW count=25" \
+  # charter #357 test-writer leaf #920: capabilities-static (ALLOW) + capabilities-adversarial
+  #   (EXCLUDED) land the two new capability-axis tests. Baked counts move to ALLOW=23,
+  #   EXCLUDED=63, union=86 (verify with reference/runtime/per-leaf-manifest Counts comment).
+  [ "$_allow_count" -eq 23 ] \
+    && ok "guard: ALLOW count=23" \
     || ko "guard: ALLOW count expected 23, got $_allow_count"
 
-  # EXCLUDED and actual counts are DERIVED from the live merged tree — NOT a stale baked
-  #   baseline. The binding invariant is ALLOW + EXCLUDED == union == actual *.test.sh.
-  #   ALLOW stays a fixed literal (deliberate, documented promotions only); EXCLUDED/actual
-  #   track whatever tests are merged so a concurrent test-add (e.g. charter #1073) cannot
-  #   false-RED this guard at the merge gate. The proof is the union/disjoint structure
-  #   below, not a magic number. (#994 churned the old literal; #1073 stops baking it.)
+  [ "$_excl_count" -eq 63 ] \
+    && ok "guard: EXCLUDED count=63" \
+    || ko "guard: EXCLUDED count expected 63, got $_excl_count"
+
   [ "$(( _allow_count + _excl_count ))" -eq "$_union_count" ] \
     && ok "guard: ALLOW + EXCLUDED == manifest union ($_union_count)" \
     || ko "guard: ALLOW($_allow_count)+EXCLUDED($_excl_count) != union ($_union_count)"
+
+  [ "$_union_count" -eq 86 ] \
+    && ok "guard: manifest union=86" \
+    || ko "guard: manifest union expected 86, got $_union_count"
 
   [ "$_actual_count" -eq "$_union_count" ] \
     && ok "guard: actual *.test.sh count == manifest union ($_actual_count)" \
