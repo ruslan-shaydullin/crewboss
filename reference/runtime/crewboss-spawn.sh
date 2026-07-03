@@ -74,6 +74,14 @@ for i in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
 STARTTIME=$(awk '{print $22}' /proc/self/stat)  # placeholder; real pid below
 RO="-R /usr -R /bin -R /lib -R /lib64 -R /sbin -R /etc -R /home/ec2-user/.local"
 PE="--env HTTPS_PROXY=http://127.0.0.1:3128 --env https_proxy=http://127.0.0.1:3128 --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1"
+# --- Session-token split (#1274 P4; canonicalized from the 2026-07-02 box hotpatch) ---
+# Jail sessions authenticate as the machine account (own rate-limit bucket) when the
+# operator provides CB_SESSION_GH_TOKEN (e.g. via ~/.crewboss.env); the launcher/API keep
+# the owner token. With the variable unset behaviour is byte-identical to before.
+if [ -n "${CB_SESSION_GH_TOKEN:-}" ]; then
+  export GH_TOKEN="$CB_SESSION_GH_TOKEN"
+  unset CB_SESSION_GH_TOKEN   # hygiene: do not leak the extra var into the jail (keep_env)
+fi
 GHENV=""; [ -n "$PR_REPO" ] && GHENV="--env GH_TOKEN --env GH_REPO=$PR_REPO"
 
 # in-jail wrapper: bridge up, then claude reads the prompt from file
