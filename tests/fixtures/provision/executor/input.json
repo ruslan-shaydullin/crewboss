@@ -1,0 +1,16 @@
+{
+  "kind": "executor",
+  "role": "executor",
+  "comp_body": "",
+  "plan_body": "",
+  "id": "999",
+  "pr_repo": "acme/widget",
+  "charter": "361",
+  "cb": "charter/361",
+  "is_manifest_role": "1",
+  "role_body": "You are the executor persona for the widget role.",
+  "task_prompt": "Implement the widget feature end to end.",
+  "branch": "leaf/999-1234567890",
+  "rubric_body": "",
+  "roles_body": ""
+}

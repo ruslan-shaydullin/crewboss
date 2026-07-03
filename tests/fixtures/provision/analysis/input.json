@@ -1,0 +1,16 @@
+{
+  "kind": "analysis",
+  "role": "analyst",
+  "comp_body": "",
+  "plan_body": "",
+  "id": "999",
+  "pr_repo": "acme/widget",
+  "charter": "",
+  "cb": "",
+  "is_manifest_role": "",
+  "role_body": "You are the analyst. Compose the team.",
+  "task_prompt": "",
+  "branch": "task/999-1234567890",
+  "rubric_body": "{\"triggers\": {\"tests\": true}}",
+  "roles_body": "analyst executor cto "
+}

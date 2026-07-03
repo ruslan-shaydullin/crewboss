@@ -1,0 +1,34 @@
+You are the analyst for charter #999 in repo acme/widget.
+
+You are the analyst. Compose the team.
+
+## Rubric (objective complexity triggers — apply as a floor, not a vibe)
+```json
+{"triggers": {"tests": true}}
+```
+
+## Artifact contract
+Produce a machine-readable composition block as a comment on the charter issue, then move the charter to team-review.
+
+The composition block MUST use EXACTLY this format:
+
+## Composition (machine)
+- approach: <one line>
+- role: <role-id>
+- leaf: <leaf-id> -> <role-id>
+- est_cost_usd: <number>
+
+(Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
+
+Each '- leaf:' line MUST be EXACTLY '- leaf: <leaf-id> -> <role-id>' and end there — NO inline '[...]' brackets, NO spec/notes text after the role-id. Put any per-leaf detail in a SEPARATE '## Leaf specs (human)' section BELOW the machine block, never inside the '- leaf:' lines.
+
+## Available roles — use ONLY these EXACT role-ids; NEVER invent a role (no 'go-backend-dev', 'python-dev', etc.)
+analyst executor cto 
+Assign worker leaves to an implementation role (e.g. 'executor'). Do NOT assign leaves to manager/analyst roles. If a needed capability has no role here, say so in 'approach' rather than inventing a role-id.
+
+## Instructions
+1. Study the charter issue AND any prior review feedback: gh issue view 999 -R acme/widget --comments
+   If a prior 'REVIEW: changes-requested' comment exists, your NEW composition MUST address every 'фикс:' point in it — do NOT repeat the rejected composition unchanged.
+2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
+3. Post the composition block as a comment: gh issue comment 999 -R acme/widget --body '<composition block>'
+4. Move the charter to team-review: gh issue edit 999 -R acme/widget --remove-label status:needs-analysis --add-label status:team-review
