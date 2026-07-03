@@ -40,6 +40,24 @@ _gh_shim_log() { printf 'gh-shim: %s\n' "$*" >&2; }
 # ── Integer predicate ─────────────────────────────────────────────────────────
 _gh_shim_isint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
+# ── Fully resolve a path through BOTH file and directory symlinks ─────────────
+# Returns an absolute canonical path. Used to compare a PATH candidate against
+# THIS script: the candidate is often a symlink named `gh` pointing at this very
+# shim (that is exactly how the shim is wired into a jail's PATH), so we MUST
+# resolve the candidate the same way we resolve ourselves — otherwise the shim
+# selects itself as the "real" gh and recurses without bound (fork bomb; #1274
+# regression observed live 2026-07-03: `/cbnet/gh -> gh-shim.sh` self-selected
+# because the candidate was dir-resolved but not file-symlink-resolved).
+_gh_shim_resolve() {
+  local src="$1" dir
+  while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" 2>/dev/null && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) : ;; *) src="$dir/$src" ;; esac
+  done
+  printf '%s' "$(cd -P "$(dirname "$src")" 2>/dev/null && pwd)/$(basename "$src")"
+}
+
 # ── Resolve the REAL gh binary (this script sits first in PATH as `gh`) ────────
 # Walks PATH, returns the first executable `gh` that is NOT this very script.
 # Honours CB_GH_REAL as an explicit override (deploy/test seam).
@@ -50,22 +68,17 @@ _gh_shim_real() {
   fi
 
   # Absolute, symlink-resolved path of this script (to exclude from the search).
-  local src="${BASH_SOURCE[0]}" dir
-  while [ -h "$src" ]; do
-    dir="$(cd -P "$(dirname "$src")" 2>/dev/null && pwd)"
-    src="$(readlink "$src")"
-    case "$src" in /*) : ;; *) src="$dir/$src" ;; esac
-  done
-  local selfdir self_real
-  selfdir="$(cd -P "$(dirname "$src")" 2>/dev/null && pwd)"
-  self_real="$selfdir/$(basename "$src")"
+  local self_real
+  self_real="$(_gh_shim_resolve "${BASH_SOURCE[0]}")"
 
   local IFS=: p cand cand_real
   for p in $PATH; do
     [ -n "$p" ] || p="."
     cand="$p/gh"
     [ -x "$cand" ] && [ ! -d "$cand" ] || continue
-    cand_real="$(cd -P "$(dirname "$cand")" 2>/dev/null && pwd)/$(basename "$cand")"
+    # Resolve the candidate through symlinks BEFORE comparing — a `gh` symlink
+    # pointing at this shim must be recognised as ourselves, not followed.
+    cand_real="$(_gh_shim_resolve "$cand")"
     [ "$cand_real" = "$self_real" ] && continue   # never resolve to ourselves
     printf '%s' "$cand"
     return 0
@@ -204,5 +217,9 @@ _gh_shim_main() {
   return "$rc"
 }
 
-_gh_shim_main "$@"
-exit $?
+# Entry point. CB_GH_SHIM_NO_MAIN lets tests source this file to unit-test the
+# helpers (e.g. _gh_shim_resolve) without running the wrapper or exiting.
+if [ -z "${CB_GH_SHIM_NO_MAIN:-}" ]; then
+  _gh_shim_main "$@"
+  exit $?
+fi

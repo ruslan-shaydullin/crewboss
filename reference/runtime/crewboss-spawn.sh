@@ -107,6 +107,10 @@ set +e
 #   -B "$CB_HOME/run:/cbnet/run" — a dedicated read-WRITE bind of run/ layered over the /cbnet
 #     mount, so gh-shim.sh can atomically write rl_state even when the role runs CB_FS_CBNET=ro
 #     (CBNET_MOUNT=-R makes /cbnet read-only, which would EROFS the state write without this).
+#   --env CB_GH_REAL=/usr/bin/gh — explicit real-gh override (defense in depth against the
+#     2026-07-03 fork-bomb: the `/cbnet/gh -> gh-shim.sh` PATH symlink self-selected as the
+#     "real" gh and recursed. The resolver bug is fixed in gh-shim.sh; this override makes
+#     the whole PATH-walk moot so the class cannot re-arm from a resolver regression).
 # seccomp: the shim runs the real gh via execve, already in the claude.kafel allowlist.
 /usr/local/bin/nsjail -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
   --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
@@ -114,7 +118,7 @@ set +e
   $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev $CBNET_MOUNT "$CB_HOME:/cbnet" \
   -B "$CB_HOME/run:/cbnet/run" \
   $WORK_MOUNT "$WORK:/work" \
-  -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --env CB_RL_STATE_FILE=/cbnet/run/rl_state --cwd /work \
+  -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --env CB_RL_STATE_FILE=/cbnet/run/rl_state --env CB_GH_REAL=/usr/bin/gh --cwd /work \
   --env CLAUDE_CODE_OAUTH_TOKEN $GHENV $PE \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --really_quiet \
   -- /bin/bash "/cbnet/run/work/$TASK/payload.sh" 2>&1 | perl "$REDACT" | tee -a "$LOG" > "$RESJSON.raw"
