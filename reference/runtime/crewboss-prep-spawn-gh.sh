@@ -3,6 +3,13 @@
 # by reading pr_repo+prompt from the REAL board (board-gh.sh get), doing the §4.5 repo prep,
 # and exec'ing crewboss-spawn.sh with full args. Exit code = crewboss-spawn.sh's.
 set -uo pipefail
+# provision() PROMPT-builder lives in a sibling lib (charter #361): the former 5-arm
+# if/elif cascade (plan-review/analysis/approval/review/executor) collapses to a single
+# provision() call. Sourced unconditionally; the main-guard at EOF still protects any
+# test context that sources THIS file (both mechanisms are independent).
+source "$(dirname "${BASH_SOURCE[0]}")/provision-lib.sh"
+
+main() {
 CB_HOME="${CB_HOME:-/tmp/cbnet}"
 RUN="$CB_HOME/run"
 BOARD="$CB_HOME/board-gh.sh"
@@ -78,168 +85,17 @@ fi
 # integrator could not find the PR). The loop-agent branch is ONLY for the NEW ops-roles
 # (git-resolver, observer, role-builder, test-planner). [fix: #275 L1 regression, 2026-06-17]
 case "$ROLE" in executor|tech-lead|analyst|boss|integrator|task-helper) _LOOP_AGENT_FILE="" ;; esac
-if [ "$_IS_PLAN_REVIEW" = "1" ]; then
-  # Plan-review spawn (#382 plan-convergence): the analyst reviews the TECH-LEAD's PLAN before
-  # execution. AGREE -> plan:agreed (leaves released next tick). CRITIQUE -> feedback comment +
-  # route to needs-plan so the tech-lead revises (the tech-lead reads the critique on re-plan).
-  # Checked BEFORE _IS_ANALYSIS_ROLE because the plan-reviewer IS the analysis role in another mode.
-  # Ensure plan:agreed label exists (idempotent) — analyst can add labels but not create them (#425).
-  gh label create "plan:agreed" -R "$PR_REPO" --description "charter: plan approved by plan-reviewer" --color "0e8a16" 2>/dev/null || true
-  TS=$(date +%s)
-  BRANCH="task/$ID-$TS"
-  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
-  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
-  _PLAN_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
-    | jq -r '[.comments[] | select(.body | test("Plan decomposition|plan-review|leaf"; "i"))] | last | .body // ""' \
-    2>/dev/null || true)
-  PROMPT="You are the $ROLE reviewing the TECH-LEAD's PLAN for charter #$ID in repo $PR_REPO.
+# role_body is prefetched for ALL five provision paths (each formerly called
+# manifest_role_prompt inline). Prefetched ONCE here; passed to provision().
+role_body=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
 
-$_ROLE_PROMPT
-
-## Rubric (objective floor)
-\`\`\`json
-$_RUBRIC
-\`\`\`
-
-## The tech-lead's plan under review (latest)
-$_PLAN_BODY
-
-## Also read the leaf sub-issues the tech-lead created
-gh issue list -R $PR_REPO --search 'Charter: #$ID' --state open --json number,title,body
-
-## Judge the PLAN BY SUBSTANCE against four grounded anchors
-1. Rubric — does the leaf set respect the objective triggers (roles, tests, security…)?
-2. Real code — READ the repo (Read/Bash); is the decomposition feasible against reality? missing gotchas (sha regen, test classification, file conflicts, deploy steps)?
-3. Acceptance — does each leaf carry a concrete checkable acceptance block? is 'done' provable BEFORE work?
-4. Intent — does the plan still deliver what charter #$ID actually asks (no drift, right size, atomic leaves)?
-
-## Instructions
-1. Study the charter + plan + leaves + relevant code: gh issue view $ID -R $PR_REPO --comments
-2. Output ONE verdict (default to rigor — do NOT agree on a plausible-but-ungrounded plan):
-
-**AGREE** (plan genuinely sound on all four anchors):
-   gh issue comment $ID -R $PR_REPO --body 'PLAN-REVIEW: agreed — <one-line why>'
-   gh issue edit $ID -R $PR_REPO --add-label plan:agreed
-
-**CRITIQUE** (otherwise — feedback the tech-lead can act on, then send back):
-   gh issue comment $ID -R $PR_REPO --body 'PLAN-REVIEW: changes-requested
-- что: <concrete flaw in the plan> | почему: <which anchor + how> | фикс: <what the tech-lead should change>
-(one line per issue)'
-   gh issue edit $ID -R $PR_REPO --remove-label status:plan-review --add-label status:needs-plan"
-elif [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
-  TS=$(date +%s)
-  BRANCH="task/$ID-$TS"
-  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
-  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
-  _MROLES=$(manifest_roles "$CB_MANIFEST" 2>/dev/null | tr '\n' ' ' || true)
-  PROMPT="You are the $ROLE for charter #$ID in repo $(bash "$BOARD" get "$ID" pr_repo).
-
-$_ROLE_PROMPT
-
-## Rubric (objective complexity triggers — apply as a floor, not a vibe)
-\`\`\`json
-$_RUBRIC
-\`\`\`
-
-## Artifact contract
-Produce a machine-readable composition block as a comment on the charter issue, then move the charter to team-review.
-
-The composition block MUST use EXACTLY this format:
-
-## Composition (machine)
-- approach: <one line>
-- role: <role-id>
-- leaf: <leaf-id> -> <role-id>
-- est_cost_usd: <number>
-
-(Repeat '- role:' and '- leaf:' lines as needed for each role and leaf.)
-
-Each '- leaf:' line MUST be EXACTLY '- leaf: <leaf-id> -> <role-id>' and end there — NO inline '[...]' brackets, NO spec/notes text after the role-id. Put any per-leaf detail in a SEPARATE '## Leaf specs (human)' section BELOW the machine block, never inside the '- leaf:' lines.
-
-## Available roles — use ONLY these EXACT role-ids; NEVER invent a role (no 'go-backend-dev', 'python-dev', etc.)
-$_MROLES
-Assign worker leaves to an implementation role (e.g. 'executor'). Do NOT assign leaves to manager/analyst roles. If a needed capability has no role here, say so in 'approach' rather than inventing a role-id.
-
-## Instructions
-1. Study the charter issue AND any prior review feedback: gh issue view $ID -R $(bash "$BOARD" get "$ID" pr_repo) --comments
-   If a prior 'REVIEW: changes-requested' comment exists, your NEW composition MUST address every 'фикс:' point in it — do NOT repeat the rejected composition unchanged.
-2. Apply rubric triggers as an objective floor — name every role a complete solution needs.
-3. Post the composition block as a comment: gh issue comment $ID -R $(bash "$BOARD" get "$ID" pr_repo) --body '<composition block>'
-4. Move the charter to team-review: gh issue edit $ID -R $(bash "$BOARD" get "$ID" pr_repo) --remove-label status:needs-analysis --add-label status:team-review"
-elif [ "$_IS_APPROVAL_ROLE" = "1" ]; then
-  # Approval-role spawn: CTO (or configured approval_role) reviews and approves/rejects composition.
-  # By analogy with analysis-role: prompt = manifest_role_prompt + composition artifact + outcome instructions.
-  TS=$(date +%s)
-  BRANCH="task/$ID-$TS"
-  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
-  _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
-    | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
-    2>/dev/null || true)
-  PROMPT="You are the $ROLE for charter #$ID in repo $PR_REPO.
-
-$_ROLE_PROMPT
-
-## Your task: Approve or reject the proposed team composition
-
-The analysis team has proposed the following composition for charter #$ID:
-
-$_COMP_BODY
-
-## Instructions
-
-1. Review the charter issue: gh issue view $ID -R $PR_REPO
-2. Evaluate the composition: roles, scope, leaf assignments, and overall soundness.
-3. Make one of the following decisions:
-
-**To approve** (composition is sound — proceed to planning):
-   gh issue edit $ID -R $PR_REPO --add-label composition:approved --add-label status:needs-plan --remove-label status:team-review
-
-**To reject** (composition needs revision — return to analysis):
-   gh issue comment $ID -R $PR_REPO --body 'Approval rejected: <your explanation>'
-   gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
-elif [ "$_IS_REVIEW_ROLE" = "1" ]; then
-  # Review-role spawn (#334 convergence loop): SUBSTANCE review of the composition, code-grounded.
-  # AGREE -> set review:agreed (cost/cto gate proceeds next tick). CRITIQUE -> actionable feedback
-  # comment + route back to needs-analysis so the analyst revises (the analyst reads the critique).
-  TS=$(date +%s)
-  BRANCH="task/$ID-$TS"
-  _ROLE_PROMPT=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
-  _RUBRIC=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
-  _COMP_BODY=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
-    | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
-    2>/dev/null || true)
-  PROMPT="You are the $ROLE for charter #$ID in repo $PR_REPO.
-
-$_ROLE_PROMPT
-
-## Rubric (objective floor)
-\`\`\`json
-$_RUBRIC
-\`\`\`
-
-## The composition under review
-$_COMP_BODY
-
-## Judge the composition BY SUBSTANCE against four grounded anchors
-1. Rubric — did the analyst respect the objective triggers above?
-2. Real code — READ the repo (you have Read/Bash); is the approach feasible and does it fit reality? what gotchas were missed?
-3. Acceptance — what would PROVE this is done/correct? is a verification plan implied?
-4. Intent — does the plan still serve what charter #$ID actually asks?
-
-## Instructions
-1. Study the charter + read the relevant code: gh issue view $ID -R $PR_REPO
-2. Output ONE verdict (default to rigor — do NOT agree on a plausible-but-ungrounded plan):
-
-**AGREE** (genuinely sound on all four anchors):
-   gh issue comment $ID -R $PR_REPO --body 'REVIEW: agreed — <one-line why>'
-   gh issue edit $ID -R $PR_REPO --add-label review:agreed
-
-**CRITIQUE** (otherwise — feedback the analyst can act on, then send back):
-   gh issue comment $ID -R $PR_REPO --body 'REVIEW: changes-requested
-- что: <concrete flaw> | почему: <which anchor + how> | фикс: <what to change>
-(one line per issue)'
-   gh issue edit $ID -R $PR_REPO --remove-label status:team-review --add-label status:needs-analysis"
-elif [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$_IS_REVIEW_ROLE" = "0" ] && [ "$ROLE" != "tech-lead" ]; then
+# -- pre-guards (NOT part of provision): loop-agent and tech-lead ------------
+# These two arms keep their own BRANCH prefix (loop-agent/ , tech-lead/) and are
+# preserved verbatim above the single provision() call site. The extra
+# _IS_PLAN_REVIEW/_IS_ANALYSIS_ROLE/_IS_APPROVAL_ROLE/_IS_REVIEW_ROLE guards keep
+# the ORIGINAL precedence (those four kinds matched before loop-agent/tech-lead
+# in the former cascade).
+if [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_PLAN_REVIEW" = "0" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$_IS_REVIEW_ROLE" = "0" ] && [ "$ROLE" != "tech-lead" ]; then
   # Loop-agent branch: roles defined in reference/.claude/agents/ (git-resolver, observer, etc.)
   # These are spawned directly by the launcher loop (not by manifest pipeline or tech-lead path).
   # Prompt: describe the specific instance task; agent persona comes from --agent $ROLE.
@@ -255,7 +111,7 @@ elif [ -n "$_LOOP_AGENT_FILE" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APP
 3. Run the ALLOW suite (each ALLOW entry in \`reference/runtime/per-leaf-manifest\`) — all must pass before push.
 4. Push the resolved branch: \`git push -f origin HEAD:refs/heads/charter/$ID\`.
 5. Remove the conflict label from the charter issue: \`gh issue edit $ID -R $PR_REPO --remove-label status:needs-conflict-resolution\`."
-elif [ "$ROLE" = "tech-lead" ]; then
+elif [ "$ROLE" = "tech-lead" ] && [ "$_IS_PLAN_REVIEW" = "0" ] && [ "$_IS_ANALYSIS_ROLE" = "0" ] && [ "$_IS_APPROVAL_ROLE" = "0" ] && [ "$_IS_REVIEW_ROLE" = "0" ]; then
   TS=$(date +%s)
   BRANCH="tech-lead/$ID-$TS"
   # Base tech-lead prompt — phrasing locked (HD-1 / legacy-pin #135); do NOT alter without pin bump.
@@ -302,54 +158,57 @@ Sub-issues correspond 1:1 to the composition; map symbolic leaf-ids to the creat
     PROMPT="$_TL_PROMPT"
   fi
 else
-  TS=$(date +%s)
-  BRANCH="task/$ID-$TS"
-  # Charter-aware: if the leaf belongs to a charter, the PR must target charter/C, not main.
-  CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
-  CB=""
-  [ -n "$CHARTER" ] && CB="charter/$CHARTER"
-  # Manifest-role fail-fast: if CB_MANIFEST is set and ROLE is unknown to the manifest,
-  # a typo in the role: label would silently fall through to a generic executor prompt.
-  # Instead, bail immediately with a clear error so the operator can fix the label.
-  if [ "$_MANIFEST_LOADED" = "1" ] && [ "$_IS_MANIFEST_ROLE" = "0" ]; then
-    echo "prep-spawn: role '$ROLE' not found in manifest $CB_MANIFEST (check role: label for typo)" >&2
-    exit 2
-  fi
-  if [ -n "$CB" ]; then
-    BRANCH="leaf/$ID-$TS"   # charter leaves must use leaf/ prefix so integrator can find them
-    if [ "$_IS_MANIFEST_ROLE" = "1" ]; then
-      # Role-resolved spawn: insert role body (from manifest) before ---- TASK ----
-      # so the executor knows its persona. Hard-rules block is preserved verbatim.
-      _ROLE_BODY=$(manifest_role_prompt "$CB_MANIFEST" "$ROLE" 2>/dev/null || true)
-      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
-Hard rules for THIS run:
-- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware helper (NOT a raw \`gh pr create\`, which silently drops the PR at RL=0 — bug #996): \`source /cbnet/cb-pr-create.sh && cb_pr_create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
-- This issue is self-contained; everything you need is below.
-
-$_ROLE_BODY
-
----- TASK (issue #$ID) ----
-$(bash "$BOARD" get "$ID" prompt)"
-    else
-      PROMPT="You are the executor for issue #$ID in repo $PR_REPO.
-Hard rules for THIS run:
-- You are ALREADY on branch \`$BRANCH\`, based on the charter integration branch \`$CB\` (NOT main). Sibling leaves of charter #$CHARTER may already be merged into \`$CB\`. Commit your work on THIS branch. Do NOT create or switch to any other branch.
-- When the work is done and the verification gate is green, push this branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware helper (NOT a raw \`gh pr create\`, which silently drops the PR at RL=0 — bug #996): \`source /cbnet/cb-pr-create.sh && cb_pr_create --base $CB --title '<short>' --body 'Closes #$ID'\`. The PR base MUST be \`$CB\`, NOT main. Then STOP — do not merge, do not touch other issues.
-- This issue is self-contained; everything you need is below.
-
----- TASK (issue #$ID) ----
-$(bash "$BOARD" get "$ID" prompt)"
-    fi
+  # -- single provision() call site (plan-review/analysis/approval/review/executor) --
+  # 1. determine kind from the existing flag logic
+  # 2. prefetch kind-specific context
+  # 3. set TS + BRANCH (provision() sets neither)
+  comp_body=""; plan_body=""; task_prompt=""; rubric_body=""; roles_body=""
+  if [ "$_IS_PLAN_REVIEW" = "1" ]; then
+    kind="plan-review"
+    # Ensure plan:agreed label exists (idempotent) -- analyst can add labels but not create them (#425).
+    gh label create "plan:agreed" -R "$PR_REPO" --description "charter: plan approved by plan-reviewer" --color "0e8a16" 2>/dev/null || true
+    rubric_body=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+    plan_body=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+      | jq -r '[.comments[] | select(.body | test("Plan decomposition|plan-review|leaf"; "i"))] | last | .body // ""' \
+      2>/dev/null || true)
+    TS=$(date +%s); BRANCH="task/$ID-$TS"
+  elif [ "$_IS_ANALYSIS_ROLE" = "1" ]; then
+    kind="analysis"
+    rubric_body=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+    roles_body=$(manifest_roles "$CB_MANIFEST" 2>/dev/null | tr '\n' ' ' || true)
+    TS=$(date +%s); BRANCH="task/$ID-$TS"
+  elif [ "$_IS_APPROVAL_ROLE" = "1" ]; then
+    kind="approval"
+    comp_body=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+      | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+      2>/dev/null || true)
+    TS=$(date +%s); BRANCH="task/$ID-$TS"
+  elif [ "$_IS_REVIEW_ROLE" = "1" ]; then
+    kind="review"
+    rubric_body=$(cat "$CB_MANIFEST/rubric.json" 2>/dev/null || echo "{}")
+    comp_body=$(gh issue view "$ID" -R "$PR_REPO" --json comments \
+      | jq -r '[.comments[] | select(.body | contains("## Composition (machine)"))] | last | .body // ""' \
+      2>/dev/null || true)
+    TS=$(date +%s); BRANCH="task/$ID-$TS"
   else
-    PROMPT="You are the executor for issue #$ID in repo $PR_REPO. Hard rules for THIS run:
-- You are ALREADY on the correct git branch \`$BRANCH\` (run \`git branch --show-current\` to confirm). Commit your work on THIS branch. Do NOT create or switch to any other branch (do NOT invent \`task/<charter>\`).
-- When the work is done and the verification gate is green, push the current branch (\`git push -u origin HEAD\`) and open ONE pull request using the rate-limit-aware helper (NOT a raw \`gh pr create\`, which silently drops the PR at RL=0 — bug #996): \`source /cbnet/cb-pr-create.sh && cb_pr_create --title '<short>' --body 'Closes #$ID'\`; the PR body MUST contain the line \`Closes #$ID\`. Then STOP — do not merge, do not touch other issues.
-- This issue is self-contained; everything you need is below.
-
----- TASK (issue #$ID) ----
-$(bash "$BOARD" get "$ID" prompt)"
+    kind="executor"
+    # Manifest-role fail-fast: CB_MANIFEST set but ROLE unknown -> typo in role: label.
+    if [ "$_MANIFEST_LOADED" = "1" ] && [ "$_IS_MANIFEST_ROLE" = "0" ]; then
+      echo "prep-spawn: role '$ROLE' not found in manifest $CB_MANIFEST (check role: label for typo)" >&2
+      exit 2
+    fi
+    TS=$(date +%s)
+    # Charter-aware: a charter leaf targets charter/C (leaf/ prefix so integrator finds it).
+    CHARTER=$(bash "$BOARD" get "$ID" charter 2>/dev/null || true)
+    CB=""
+    [ -n "$CHARTER" ] && CB="charter/$CHARTER"
+    [ -n "$CB" ] && BRANCH="leaf/$ID-$TS" || BRANCH="task/$ID-$TS"
+    task_prompt=$(bash "$BOARD" get "$ID" prompt)
   fi
+  provision "$kind" "$ROLE" "$comp_body" "$plan_body" \
+            "$ID" "$PR_REPO" "${CHARTER:-}" "${CB:-}" \
+            "$_IS_MANIFEST_ROLE" "$role_body" "$task_prompt" \
+            "$BRANCH" "$rubric_body" "$roles_body"
 fi
 TS="${TS:-$(date +%s)}"
 # Default BRANCH for the plan/tech-lead path (decompose-only role: runs gh issue
@@ -475,3 +334,7 @@ fi
 # The shim walks past itself in PATH to run the real gh, then refreshes /cbnet/run/rl_state.
 export PATH="/cbnet:$PATH"
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$PR_REPO"
+}
+
+# main-guard: run only when executed directly, not when sourced (test contexts).
+[ "$0" = "${BASH_SOURCE[0]}" ] && main "$@"
