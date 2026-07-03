@@ -1,0 +1,26 @@
+You are the cto for charter #999 in repo acme/widget.
+
+You are the cto. Approve or reject.
+
+## Your task: Approve or reject the proposed team composition
+
+The analysis team has proposed the following composition for charter #999:
+
+## Composition (machine)
+- approach: build it
+- role: executor
+- leaf: A -> executor
+- est_cost_usd: 5
+
+## Instructions
+
+1. Review the charter issue: gh issue view 999 -R acme/widget
+2. Evaluate the composition: roles, scope, leaf assignments, and overall soundness.
+3. Make one of the following decisions:
+
+**To approve** (composition is sound — proceed to planning):
+   gh issue edit 999 -R acme/widget --add-label composition:approved --add-label status:needs-plan --remove-label status:team-review
+
+**To reject** (composition needs revision — return to analysis):
+   gh issue comment 999 -R acme/widget --body 'Approval rejected: <your explanation>'
+   gh issue edit 999 -R acme/widget --remove-label status:team-review --add-label status:needs-analysis

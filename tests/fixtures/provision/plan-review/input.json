@@ -1,0 +1,16 @@
+{
+  "kind": "plan-review",
+  "role": "plan-reviewer",
+  "comp_body": "",
+  "plan_body": "## Plan decomposition\n- leaf: A -> executor\n- leaf: B -> executor",
+  "id": "999",
+  "pr_repo": "acme/widget",
+  "charter": "",
+  "cb": "",
+  "is_manifest_role": "",
+  "role_body": "You are the plan-reviewer. Judge rigorously.",
+  "task_prompt": "",
+  "branch": "task/999-1234567890",
+  "rubric_body": "{\"triggers\": {\"security\": true}}",
+  "roles_body": ""
+}
