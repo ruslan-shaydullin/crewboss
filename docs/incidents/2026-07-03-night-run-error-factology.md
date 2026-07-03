@@ -343,6 +343,8 @@
 
 Что это меняет в нарезке: зависимость №5 от деплоя RL v2 — снята; unit-часть №8 — закрыта (fd-CLOEXEC nohup-fallback, relaunch-cap, мост — остаются); №2 сводится к системной части (box-observable acceptance, doctor behind-main probe, фикс deploy-live-swap, manifest completeness, GC). №1 (unblock-1291) остаётся первым действием: charter/1291 по-прежнему unmerged, и задеплоенный main-код всё ещё несёт finale-storm класс (C) и отсутствие role guard (G1).
 
+⚠️ Подтверждённая ловушка полного деплоя: `deploy-runtime.sh` **затёр операторский token-split хотпатч** в `crewboss-spawn.sh` (#1274 P4, ruslan-cb-bot; патча нет в main) — обнаружено по памяти-предупреждению и восстановлено вручную из бэкапа (3 строки перед `GHENV=`, `bash -n` OK, бэкап `crewboss-spawn.sh.bak-pre-tokensplit-reapply`). Скан бэкапа по маркерам «operator/хотпатч» других затёртых патчей не нашёл. Дополнение к чартеру №5: закоммитить token-split в main (env-gated, байт-в-байт при пустой переменной), иначе каждый деплой сносит развод токенов.
+
 ---
 
 ## Не проверено / хвосты
