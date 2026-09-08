@@ -1,123 +1,126 @@
 # crewboss
 
-**Reliability-zero-trust governance for autonomous coding agents.**
+**GitHub-based orchestration and reliability gates for coding agents.**
 
-Coding agents (Claude Code, the Agent SDK, …) aren't malicious. They're *unreliable*: lazy,
-over-eager, and prone to saying "done" when it isn't. They read a question as a command, merge a
-PR nobody approved, close a half-finished issue, spawn work you never asked for. crewboss is a
-thin, native pattern + reference config that makes an agent's **dangerous actions** and
-**completion claims** answer to deterministic proof — not to the agent's own word.
+crewboss explores how to make autonomous development work inspectable: tasks live
+in GitHub issues, agents run with explicit roles, and selected merge and completion
+actions pass through checks against repository state. The repository includes a
+Bash runtime, a Python API, and a React + TypeScript dashboard.
 
-## The wedge: two kinds of zero-trust
+**Status: experimental reference implementation.** The code, design notes, and
+test harnesses are public. Setup still requires operator configuration, and the
+deployed runtime contains Linux- and systemd-specific components.
 
-- **Security** zero-trust distrusts the *input* (prompt injection, untrusted data). Well-explored:
-  dual-LLM, CaMeL, capability sandboxes.
-- **Reliability** zero-trust distrusts the *agent's own behavior* (it's lazy/dishonest, not
-  hostile). Much less explored. **This is crewboss's angle.**
+## How it works
 
-## Two nails + one honest layer
+1. **Define work on the board.** A charter describes a goal; child issues describe
+   tasks, dependencies, and acceptance criteria.
+2. **Launch explicit roles.** Claude Code agent configurations define responsibilities
+   and tool lists. The launcher runs agents as separate processes and coordinates
+   work through GitHub state.
+3. **Check selected transitions.** A `PreToolUse` hook gates commands such as
+   `gh pr merge`, `gh pr ready`, and `gh issue close` using review, check, and
+   completion evidence.
+4. **Inspect and intervene.** The CLI and dashboard expose board state; the runtime
+   includes approval handling, retries, recovery, and a kill switch.
 
-crewboss enforces exactly what can be enforced deterministically, and is honest about what can't.
+The [board orchestration design](board-orchestration.md) explains the state machine
+and the separation between conversational roles and board-driven execution.
 
-1. **Nail 1 — role = launch-time identity.** A role is a deterministic launch choice
-   (`claude --agent <role>`), not something the agent infers and not something a chat phrase
-   grants. Each role's `tools:` allowlist removes whole capabilities: an executor has no `Agent`
-   tool, so it *cannot* spawn sub-agents — the action is physically absent, not "the agent chose
-   not to." **Tool-absence is the one local control that holds even under
-   `--dangerously-skip-permissions`.**
+## Explore the implementation
 
-2. **Nail 2 — completion-gate on deterministic proof.** The finalizing verbs (`gh pr merge`,
-   `gh issue close`, `gh pr ready`) are gated by a central `PreToolUse` hook that checks an
-   *artifact*, not a self-report: a merge needs a non-author approval **+** green checks on the
-   head SHA; a close needs a merged PR, a completed parent, or an analysis digest. Saying "it's
-   done" doesn't get a half-finished thing past the gate.
+| Area | Entry point | What to inspect |
+| --- | --- | --- |
+| Agent configuration | [`reference/.claude/agents/`](reference/.claude/agents/) | Role responsibilities and declared tool lists |
+| Completion gates | [`crewboss-gate.sh`](reference/.claude/hooks/crewboss-gate.sh) | Command matching, role checks, and evidence checks |
+| CLI | [`reference/bin/crewboss`](reference/bin/crewboss) | Initialization, diagnostics, board status, and approvals |
+| Runtime | [`reference/runtime/`](reference/runtime/) | Board launcher, recovery, deployment scripts, and systemd units |
+| API | [`ui/server/crewboss-api.py`](ui/server/crewboss-api.py) | Dashboard state and commands, events, and GitHub webhooks |
+| Dashboard | [`ui/app/`](ui/app/) | React + TypeScript application and UI tests |
+| Tests | [`reference/tests/`](reference/tests/) | Gate, launcher, recovery, and runtime harnesses |
 
-3. **Layer 3 — disposition (honestly NOT enforced).** "A question isn't a command," self-praise,
-   looking busy — these are soft and can't be fixed by rules, only by training. crewboss does
-   **not** pretend to enforce them. Claiming a layer is enforced when it isn't is the exact
-   dishonesty this project exists to catch.
+The CLI's `run` command currently invokes the older launcher in
+[`reference/launcher/`](reference/launcher/). The deployed board runtime is kept
+separately in `reference/runtime/`; see the [reference guide](reference/README.md)
+before choosing a setup.
 
-## Honest ceiling (read this)
+## Get started
 
-- **Bypass-proof:** only tool-absence (`tools:`) and server-side GitHub branch protection survive
-  a determined human escape-hatch (`--dangerously-skip-permissions`, which the agent can't enable
-  for itself).
-- **Friction, not a wall:** the `PreToolUse` hook is deterministic against the literal command and
-  folds *in-model* obfuscations (quoting, global flags, `gh api` for merge/close), but a determined
-  `${IFS}`/`eval`/alias **evasion is out of the reliability threat-model by design** — that's
-  adversarial behavior, and the model is "lazy, not hostile." The hook catches the careless agent,
-  not an attacker.
-- We say this plainly instead of overclaiming. (Two un-correlated red-team sweeps of crewboss
-  caught *its own authors* overclaiming — and a live run found a real config gap. See the spec.)
-
-## Roles
-
-| Launch | Role | Tools (absence = hard boundary) |
-|---|---|---|
-| `claude` (no flag) | **dev-assistant** (default) | Read/Edit/Write/Bash; no Agent |
-| `claude --agent executor` | **executor** | Read/Edit/Write/Bash; **no Agent** — takes one issue → PR, stops at review |
-| `claude --agent task-helper` | **task-helper** | Read/Bash; **no Edit/Write** — board only |
-| `claude --agent tech-lead` | **tech-lead** | Read/Bash — decomposes work + reviews/merges *approved* PRs |
-| `claude --agent boss` | **boss** | Bash only; code-blind + exec-blind — authors charters for the tech-lead |
-| `claude --agent analyst` | **analyst** | Read/Bash (read-only) — investigates, posts a findings digest |
-
-Two planes: a **conversational** plane (dev-assistant, boss — you chat with them) and an
-**execution** plane (tech-lead, executor, analyst, task-helper — board-driven, "launch and sleep").
-The boundary is the task/issue. The execution plane never spawns sub-agents in-session; a launcher
-runs executors as separate processes (Arch-2). See [board-orchestration.md](board-orchestration.md).
-
-## Quick start
-
-One command (via the `crewboss` CLI in [`reference/bin/`](reference/bin/crewboss)):
+Clone the repository and inspect the CLI commands:
 
 ```bash
-crewboss init      # writes .claude/ (agents + hook + settings.json with permissions.allow) + labels
-crewboss doctor    # pre-flight: deps, auth, config, branch protection — tells you what to fix
+git clone https://github.com/ruslan-shaydullin/crewboss.git
+cd crewboss
+bash reference/bin/crewboss help
 ```
 
-Or by hand — `init` just does this:
+To install the reference configuration into a GitHub-backed working repository,
+first make Bash, Git, `jq`, GitHub CLI (`gh`), and Claude Code available. Authenticate
+`gh` for the target repository, then run the following from the crewboss checkout,
+replacing `/path/to/your/repository` with the target checkout:
 
 ```bash
-# from your repo root
-cp -r reference/.claude .                     # agents + hook
-chmod +x .claude/hooks/crewboss-gate.sh
+CREWBOSS_CHECKOUT="$(pwd)"
+cd /path/to/your/repository
+bash "$CREWBOSS_CHECKOUT/reference/bin/crewboss" init
+bash "$CREWBOSS_CHECKOUT/reference/bin/crewboss" doctor
 ```
-Add the `PreToolUse` hook **and** a tool allowlist to `.claude/settings.json` (the allowlist lets
-an unattended `claude -p` run without stalling on approval prompts; the hook still gates the
-dangerous subset — it runs first, and an exit-2 deny beats any allow rule):
 
-```json
-{
-  "permissions": { "allow": ["Bash", "Edit", "Write", "Read"] },
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/crewboss-gate.sh" } ] }
-    ]
-  }
-}
+`init` copies agent definitions and the hook into `.claude/`, merges configuration
+into `.claude/settings.json`, and attempts to create workflow labels through `gh`.
+It also adds `Bash`, `Edit`, `Write`, and `Read` to the permissions allowlist. Review
+the resulting configuration before launching agents. Configure GitHub branch
+protection with required reviews and checks for the target workflow.
+
+The [reference guide](reference/README.md), [Russian walkthrough](guide.ru.md),
+and [UI guide](ui/README.md) provide more setup context. Some deployment examples
+refer to the original development environment and need adaptation.
+
+## Testing and verification
+
+The repository contains shell and Python harnesses plus Vitest and browser-based
+UI tests. Two focused gate harnesses can be run from the crewboss checkout with
+Bash and `jq` installed:
+
+```bash
+bash reference/tests/gate-layer-a.test.sh
+bash reference/tests/gate-layer-b.test.sh
 ```
-Then launch a role **explicitly** (`claude --agent tech-lead`). For unattended/launcher runs, turn
-on GitHub **branch protection** (require approvals + required checks) — that is the server-side
-anchor that holds even where the local hook can be bypassed. Full config, the launcher, the test
-suite, and a live-sandbox script are in [reference/](reference/).
 
-## Status
+Verified locally on 9 September 2026: **46 Layer-A cases and 20 Layer-B cases
+passed**, with zero failures. The CLI `help` command was also exercised.
 
-Reference v0, **live-verified**: role-gating + completion-gates (harness 46/46 + 20/20), the
-launcher (integration 10/10, data-loss fix proven), and an end-to-end live run — launcher → real
-`claude --agent executor` → real PR → review, with the merge-gate denying an unapproved merge on a
-real PR (including an obfuscated `--admin` attempt). Not yet covered: the approved→merge happy path
-(needs a second reviewer) and a public/paid branch-protection demo.
+The first exercises command and role decisions; the second supplies controlled
+`gh` responses for merge, ready, and close scenarios. These harnesses cover local
+gate behavior. Live GitHub permissions, Claude Code integration, and deployment
+behavior require separate verification.
 
-## Docs
+The current [GitHub Actions workflow](.github/workflows/ci.yml) is a placeholder:
+it prints a message and does not execute the test suites. Historical test counts
+and live-run notes are recorded in [STATUS.md](STATUS.md); that file is an
+incubation snapshot, with outdated visibility and release details.
 
-- **Spec** — [agent-reliability-gating-spec-v0.en.md](docs/agent-reliability-gating-spec-v0.en.md):
-  the full design (three layers, roles, the proof contract §5, the honest ceiling).
-- **Reference** — [reference/](reference/): drop-in Claude Code config (agents, hook, launcher,
-  tests, live-sandbox script).
-- **Board orchestration** — [board-orchestration.md](board-orchestration.md): the Arch-2 launcher +
-  label state-machine.
-- **Status** — [STATUS.md](STATUS.md).
+## Scope and limitations
 
-> crewboss is incubating; the public repository and an English-first README will be split out at
-> release. This document is the front-page draft.
+- The hook handles selected command forms. Shell indirection and deliberate
+  evasion are outside its documented reliability model.
+- Agent tool lists describe available interfaces. Roles that retain `Bash` need
+  additional controls to restrict filesystem, process, or network access.
+- GitHub branch protection is a separate control. The merge-gate fixtures include
+  a case that accepts an approved PR with no checks, so required checks must be
+  configured on GitHub.
+- The recorded live validation leaves the approved-merge path with a second
+  reviewer and branch protection as an open verification item.
+- The reference notes document specific Claude Code versions. Compatibility with
+  another version should be checked before unattended use.
+
+## Design and project notes
+
+- [English design specification](docs/agent-reliability-gating-spec-v0.en.md)
+- [Russian design specification](docs/agent-reliability-gating-spec-v0.md)
+- [Board orchestration](board-orchestration.md)
+- [Reference implementation guide](reference/README.md)
+- [Historical status and validation notes](STATUS.md)
+- [Roadmap](ROADMAP.md)
+
+The repository currently has no `LICENSE` file.
