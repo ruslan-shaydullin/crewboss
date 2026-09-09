@@ -141,8 +141,8 @@ set +e
 #     "real" gh and recursed. The resolver bug is fixed in gh-shim.sh; this override makes
 #     the whole PATH-walk moot so the class cannot re-arm from a resolver regression).
 # seccomp: the shim runs the real gh via execve, already in the claude.kafel allowlist.
-"$CB_NSJAIL_BIN" -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
-  --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
+"$CB_NSJAIL_BIN" -C "$CB_HOME/nsjail-limits.cfg" -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
+  --rlimit_cpu max --rlimit_nofile 8192 \
   --seccomp_policy "$PROFILE" --seccomp_log \
   "${RO[@]}" -R "$GH_REAL:/crewboss-gh-real" \
   -B "$CB_CLAUDE_CONFIG_DIR:$CB_AGENT_HOME/.claude" \

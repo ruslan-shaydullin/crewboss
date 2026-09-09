@@ -57,6 +57,7 @@ RUNTIME_SOURCES = {
     "reference/runtime/bridge.py": "#!/usr/bin/env python3\nprint('stub bridge')\n",
     "reference/runtime/redact.pl": "#!/usr/bin/env perl\nprint 'stub';\n",
     "reference/runtime/claude.kafel": "POLICY stub { ALLOW { read, write } }\n",
+    "reference/runtime/nsjail-limits.cfg": "rlimit_as_type: HARD\nrlimit_fsize_type: HARD\n",
     "ui/server/crewboss-api.py": "#!/usr/bin/env python3\nprint('stub api')\n",
     "reference/launcher/launchable.sh": "#!/usr/bin/env bash\necho stub launchable\n",
     "reference/launcher/labels-setup.sh": "#!/usr/bin/env bash\necho stub labels\n",

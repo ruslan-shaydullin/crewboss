@@ -89,7 +89,7 @@ SYSTEMD_TEMPLATES = (
 # must be provided by canonical manifest rows from the allowed origins
 # (prototype copies do NOT satisfy this — migrate them to reference/runtime/).
 REQUIRED_RUNTIME_BASENAMES = frozenset({
-    "claude.kafel", "proxy.py", "bridge.py", "redact.pl",
+    "claude.kafel", "nsjail-limits.cfg", "proxy.py", "bridge.py", "redact.pl",
     "crewboss-spawn.sh", "crewboss-launcher-gh.sh", "board-gh.sh",
     "crewboss-doctor.sh", "run-env.sh", "start-api.sh",
     "crewboss-api.py", "gh-shim.sh", "crewboss_http.py", "crewboss_launch.py",

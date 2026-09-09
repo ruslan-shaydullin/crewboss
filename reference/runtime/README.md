@@ -57,7 +57,7 @@ bash "$CB_HOME/start-api.sh" --foreground
 ```
 
 Preflight checks the Linux architecture, dependencies, configuration, governance
-hook, and a real nsjail `/bin/true` sandbox probe. It makes no GitHub or provider
+hook, and a real nsjail file write/read sandbox probe. It makes no GitHub or provider
 requests. Agent launch entrypoints and API Run actions repeat it before starting
 work. It does not establish that live credentials or repository permissions work.
 

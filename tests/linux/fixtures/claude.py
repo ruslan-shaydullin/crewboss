@@ -5,12 +5,15 @@ import errno
 import json
 import os
 from pathlib import Path
+import resource
 import signal
 import socket
 import subprocess
 import sys
 
 assert '--agent' in sys.argv and '-p' in sys.argv
+print('fixture RLIMIT_FSIZE=' + repr(resource.getrlimit(resource.RLIMIT_FSIZE)),
+      file=sys.stderr, flush=True)
 assert not Path(os.environ['CB_TEST_HOST_SENTINEL']).exists(), 'host home leaked into jail'
 assert os.readlink('/proc/self/ns/net') != os.environ['CB_TEST_HOST_NET'], 'host network namespace leaked'
 status = Path('/proc/self/status').read_text()

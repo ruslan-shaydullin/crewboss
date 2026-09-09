@@ -31,7 +31,7 @@ class RuntimePortabilityTests(unittest.TestCase):
         for directory in (self.home, self.runtime, self.install, self.config_dir, self.bin):
             directory.mkdir(parents=True)
         self.config_file.write_text("{}")
-        for name in ("run-env.sh", "crewboss-doctor.sh", "crewboss-spawn.sh", "redact.pl", "claude.kafel"):
+        for name in ("run-env.sh", "crewboss-doctor.sh", "crewboss-spawn.sh", "redact.pl", "claude.kafel", "nsjail-limits.cfg"):
             shutil.copyfile(RUNTIME / name, self.runtime / name)
         for name in ("bridge.py", "crewboss-launcher-gh.sh"):
             (self.runtime / name).touch()
@@ -50,13 +50,22 @@ class RuntimePortabilityTests(unittest.TestCase):
         self.record = self.root / "jail.jsonl"
         self.gh_record = self.root / "gh-called"
         self.write_tool("uname", "import sys\nprint('Linux' if sys.argv[-1]=='-s' else 'x86_64')\n")
-        self.write_tool("nsjail", '''import json,os,sys
+        self.write_tool("nsjail", '''import json,os,resource,subprocess,sys
 from pathlib import Path
 with Path(os.environ["TEST_JAIL_RECORD"]).open("a") as stream:
     stream.write(json.dumps(sys.argv[1:])+"\\n")
-if sys.argv[-1] != "/bin/true":
-    print('{"total_cost_usd":0.125,"is_error":false}')
-sys.exit(int(os.environ.get("TEST_JAIL_EXIT", "0")))
+if int(os.environ.get("TEST_JAIL_EXIT", "0")):
+    sys.exit(int(os.environ["TEST_JAIL_EXIT"]))
+command = sys.argv[sys.argv.index("--")+1:]
+if command[:2] == ["/bin/sh", "-ec"]:
+    # Run the actual preflight write/read locally, inside this test's temporary
+    # directory. Only a Linux acceptance test supplies the real mount namespace.
+    command[-1] = command[-1].replace("/tmp/crewboss-preflight.", os.environ["TEST_PROBE_PREFIX"])
+    def limits():
+        if os.environ.get("TEST_FSIZE_ZERO"):
+            resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+    sys.exit(subprocess.run(command, preexec_fn=limits).returncode)
+print('{"total_cost_usd":0.125,"is_error":false}')
 ''')
         self.write_tool("gh", "from pathlib import Path\nimport os\nPath(os.environ['TEST_GH_RECORD']).touch()\nraise SystemExit(99)\n")
         # Only locking is stubbed on macOS; Linux integration verifies real flock.
@@ -72,6 +81,7 @@ sys.exit(int(os.environ.get("TEST_JAIL_EXIT", "0")))
             "CB_CLAUDE_CONFIG_FILE": str(self.config_file), "CB_NSJAIL_BIN": str(self.bin / "nsjail"),
             "CB_GH_BIN": str(self.bin / "gh"), "TEST_JAIL_RECORD": str(self.record),
             "TEST_GH_RECORD": str(self.gh_record),
+            "TEST_PROBE_PREFIX": str(self.root / "preflight."),
         }
 
     def write_tool(self, name, body):
@@ -125,10 +135,27 @@ sys.exit(int(os.environ.get("TEST_JAIL_EXIT", "0")))
         result = self.doctor()
         self.assertEqual(result.returncode, 0, result.stderr)
         args = self.jail_calls()[0]
-        self.assertEqual(args[-2:], ["--", "/bin/true"])
+        self.assertEqual(args[args.index("--") + 1:][:2], ["/bin/sh", "-ec"])
+        # nsjail loads config by replacement; load it before command-line mounts
+        # and policy so they cannot be discarded by a later -C option.
+        self.assertEqual(args[:2], ["-C", str(self.runtime / "nsjail-limits.cfg")])
+        limits = (self.runtime / "nsjail-limits.cfg").read_text()
+        self.assertRegex(limits, r"(?m)^rlimit_as_type: HARD$")
+        self.assertRegex(limits, r"(?m)^rlimit_fsize_type: HARD$")
+        self.assertNotIn("--rlimit_as", args)
+        self.assertNotIn("--rlimit_fsize", args)
         self.assertEqual(args[args.index("--seccomp_policy") + 1], str(self.runtime / "claude.kafel"))
         self.assertIn(str(self.install), args)
         self.assertEqual(args[args.index(str(self.install)) - 1], "-R")
+        self.assertFalse(self.gh_record.exists())
+
+    def test_preflight_rejects_zero_file_limit_even_when_namespace_would_start(self):
+        # /bin/true would pass under this limit; the actual shell probe must fail
+        # before any GitHub or agent work because not even a small file can grow.
+        self.env["TEST_FSIZE_ZERO"] = "1"
+        result = self.doctor()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("inherited resource limits", result.stderr)
         self.assertFalse(self.gh_record.exists())
 
     def test_unsupported_architecture_fails_without_namespace_attempt(self):
@@ -185,6 +212,11 @@ sys.exit(int(os.environ.get("TEST_JAIL_EXIT", "0")))
         run_mount = str(self.runtime / "run") + ":/cbnet/run"
         self.assertEqual(args[args.index(run_mount) - 1], "-B")
         self.assertIn("--seccomp_policy", args)
+        self.assertEqual(args[:2], ["-C", str(self.runtime / "nsjail-limits.cfg")])
+        self.assertNotIn("--rlimit_as", args)
+        self.assertNotIn("--rlimit_fsize", args)
+        self.assertEqual(args[args.index("--rlimit_cpu") + 1], "max")
+        self.assertEqual(args[args.index("--rlimit_nofile") + 1], "8192")
         self.assertIn("HTTPS_PROXY=http://127.0.0.1:3128", args)
         self.assertIn("CB_GH_REAL=/crewboss-gh-real", args)
         status = self.runtime / "run/work/17/status.json"
@@ -205,7 +237,7 @@ sys.exit(int(os.environ.get("TEST_JAIL_EXIT", "0")))
         result = subprocess.run([BASH, str(self.runtime / "crewboss-spawn.sh"), "18", "executor", str(prompt), str(work)],
                                 env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
-        self.assertTrue(all(args[-1] == "/bin/true" for args in self.jail_calls()))
+        self.assertTrue(all(args[args.index("--") + 1:][:2] == ["/bin/sh", "-ec"] for args in self.jail_calls()))
         self.assertEqual(json.loads((run / "work/18/status.json").read_text())["phase"], "budget-stop")
 
     def test_unit_renderer_supports_custom_account_runtime_and_config(self):

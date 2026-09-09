@@ -160,7 +160,7 @@ bash "$CB_HOME/start-api.sh" --foreground
 ```
 
 Preflight checks configuration, dependencies, provider mounts, credentials being
-present, governance wiring, and a real nsjail `/bin/true` probe with the shipped
+present, governance wiring, and a real nsjail file write/read probe with the shipped
 seccomp policy. It makes no GitHub or provider requests. A successful preflight
 does not prove credentials or live repository permissions work. Fix any reported
 failure before launching work; API Run actions and launcher entrypoints repeat

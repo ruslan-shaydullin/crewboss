@@ -182,7 +182,14 @@ def main():
         record('API Run preserves singleton flock and Pause prevents agent dispatch')
         assert request('resume')['ok']
         isolation = runtime/'run/fixture-checkout-10/isolation.json'
-        result = wait_for(lambda: json.loads(isolation.read_text()),
+        def completed_report():
+            status_path = runtime/'run/work/10/status.json'
+            if status_path.is_file():
+                status = json.loads(status_path.read_text())
+                if status.get('phase') in ('failed','budget-stop'):
+                    raise AssertionError('fixture agent stopped before isolation report: ' + json.dumps(status))
+            return json.loads(isolation.read_text())
+        result = wait_for(completed_report,
                           'completed real jailed fixture agent report',seconds=90)
         assert result == {'filesystem':True,'network':True,'seccomp':True}
         def delivered():

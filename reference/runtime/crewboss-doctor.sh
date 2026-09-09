@@ -23,7 +23,7 @@ set -uo pipefail
 
 # A local, fail-closed gate for every entrypoint that may launch or mutate work.
 # It does not contact GitHub or invoke an agent. The nsjail probe executes only
-# /bin/true with the real seccomp policy and namespace/mount settings.
+# a private /tmp write/read with the real seccomp policy and namespace/mount settings.
 if [ "${1:-}" = --preflight ]; then
   # shellcheck source=run-env.sh
   . "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
@@ -52,7 +52,7 @@ if [ "${1:-}" = --preflight ]; then
   [ -f "$CB_CLAUDE_CONFIG_FILE" ] && [ -r "$CB_CLAUDE_CONFIG_FILE" ] && [ -w "$CB_CLAUDE_CONFIG_FILE" ] \
     || preflight_fail 'CB_CLAUDE_CONFIG_FILE must name a readable, writable file (create an empty JSON object for a new OAuth setup)'
   case "$CB_CLAUDE_CONFIG_FILE" in /*) ;; *) preflight_fail 'CB_CLAUDE_CONFIG_FILE must be absolute' ;; esac
-  for required in claude.kafel proxy.py bridge.py redact.pl crewboss-spawn.sh crewboss-launcher-gh.sh; do
+  for required in claude.kafel nsjail-limits.cfg proxy.py bridge.py redact.pl crewboss-spawn.sh crewboss-launcher-gh.sh; do
     [ -r "$CB_HOME/$required" ] || preflight_fail "runtime file missing: $required"
   done
   if [ "${CB_GOVERNED:-1}" = 1 ]; then
@@ -83,13 +83,14 @@ if [ "${1:-}" = --preflight ]; then
   for mount in /usr /bin /lib /lib64 /sbin /etc; do
     [ ! -e "$mount" ] || probe_mounts+=(-R "$mount")
   done
-  if ! "$CB_NSJAIL_BIN" -Mo -t 5 --rlimit_as max --rlimit_cpu max --rlimit_fsize max \
+  if ! "$CB_NSJAIL_BIN" -C "$CB_HOME/nsjail-limits.cfg" -Mo -t 5 --rlimit_cpu max \
       --seccomp_policy "$CB_HOME/claude.kafel" "${probe_mounts[@]}" \
       -R "$CB_CLAUDE_INSTALL_DIR" -R "$resolved_gh:/crewboss-gh-real" \
       -R "$CB_CLAUDE_CONFIG_DIR:$CB_AGENT_HOME/.claude" \
       -R "$CB_CLAUDE_CONFIG_FILE:$CB_AGENT_HOME/.claude.json" -R "$CB_HOME:/cbnet" -B /dev \
-      -m none:/tmp:tmpfs:size=16M --really_quiet -- /bin/true; then
-    preflight_fail 'nsjail probe failed: check Linux user namespaces, mount permissions and the seccomp policy'
+      -m none:/tmp:tmpfs:size=16M --really_quiet -- /bin/sh -ec \
+      'probe=$(mktemp /tmp/crewboss-preflight.XXXXXX); trap '\''rm -f "$probe"'\'' EXIT; printf %s crewboss-preflight > "$probe"; test "$(cat "$probe")" = crewboss-preflight'; then
+    preflight_fail 'nsjail probe failed: check inherited resource limits, Linux user namespaces, mount permissions and the seccomp policy'
     exit 2
   fi
   printf '[doctor] ok: runtime configuration, dependencies and sandbox probe\n'
