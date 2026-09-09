@@ -29,5 +29,8 @@ with socket.socket() as connection:
 # x86_64 mount(2) must be killed by the shipped DEFAULT KILL_PROCESS policy.
 probe = subprocess.run([sys.executable, '-c', 'import ctypes; ctypes.CDLL(None).syscall(165,0,0,0,0,0)'])
 assert probe.returncode == -signal.SIGSYS, f'forbidden syscall was not killed: {probe.returncode}'
-Path('/work/isolation.json').write_text(json.dumps({'filesystem':True,'network':True,'seccomp':True}))
+result = Path('/work/isolation.json')
+pending = result.with_suffix('.tmp')
+pending.write_text(json.dumps({'filesystem':True,'network':True,'seccomp':True}))
+pending.replace(result)
 print(json.dumps({'is_error':False,'total_cost_usd':0,'result':'Fixture complete: https://github.com/fixture/project/pull/100'},separators=(',',':')))

@@ -182,8 +182,9 @@ def main():
         record('API Run preserves singleton flock and Pause prevents agent dispatch')
         assert request('resume')['ok']
         isolation = runtime/'run/fixture-checkout-10/isolation.json'
-        wait_for(lambda: isolation.exists(),'real jailed fixture agent',seconds=90)
-        assert json.loads(isolation.read_text()) == {'filesystem':True,'network':True,'seccomp':True}
+        result = wait_for(lambda: json.loads(isolation.read_text()),
+                          'completed real jailed fixture agent report',seconds=90)
+        assert result == {'filesystem':True,'network':True,'seccomp':True}
         def delivered():
             board=json.loads((runtime/'run/fixture-board.json').read_text())
             return 'status:review' in [l['name'] for l in board[1]['labels']]
