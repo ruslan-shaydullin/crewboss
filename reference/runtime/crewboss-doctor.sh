@@ -89,7 +89,7 @@ if [ "${1:-}" = --preflight ]; then
       -R "$CB_CLAUDE_CONFIG_DIR:$CB_AGENT_HOME/.claude" \
       -R "$CB_CLAUDE_CONFIG_FILE:$CB_AGENT_HOME/.claude.json" -R "$CB_HOME:/cbnet" -B /dev \
       -m none:/tmp:tmpfs:size=16M --really_quiet -- /bin/sh -ec \
-      'probe=$(mktemp /tmp/crewboss-preflight.XXXXXX); trap '\''rm -f "$probe"'\'' EXIT; printf %s crewboss-preflight > "$probe"; test "$(cat "$probe")" = crewboss-preflight'; then
+      'test -r /proc/self/stat; test -L /proc/self/ns/net; probe=$(mktemp /tmp/crewboss-preflight.XXXXXX); trap '\''rm -f "$probe"'\'' EXIT; printf %s crewboss-preflight > "$probe"; test "$(cat "$probe")" = crewboss-preflight'; then
     preflight_fail 'nsjail probe failed: check inherited resource limits, Linux user namespaces, mount permissions and the seccomp policy'
     exit 2
   fi

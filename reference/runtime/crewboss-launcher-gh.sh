@@ -668,7 +668,7 @@ route(){ # id, spawn-exit
            board route "$id" needs-triage "executor failed $tries×" >/dev/null || return 75
            sset "$id" kind "triage"
            sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
-           _cb_spawn "$TRIAGE_SPAWN" "$id" &
+           _cb_spawn "$TRIAGE_SPAWN" "$id" triage &
            sset "$id" pid "$!"
            log "#$id failed (try $tries) -> needs-triage (triage spawned)"
          elif [ -n "${TRIAGE_SPAWN:-}" ] && [ -z "$(sget "$id" triage_done)" ]; then
@@ -2261,7 +2261,7 @@ cmd_run(){
                 # re-spawn triage; do NOT set triage_done/term — the leaf stays recoverable.
                 sset "$id" triage_spawn_ts "$(date +%s)"
                 sset "$id" starttime "$(now)"
-                _cb_spawn "$TRIAGE_SPAWN" "$id" &
+                _cb_spawn "$TRIAGE_SPAWN" "$id" triage &
                 sset "$id" pid "$!"
                 continue
               elif [ "$_tn" -lt "$CB_TRIAGE_RETRY_CAP" ]; then
@@ -2392,7 +2392,7 @@ cmd_run(){
                            board route "$id" needs-triage "executor failed $tries×" >/dev/null || continue
                            sset "$id" kind "triage"
                            sset "$id" triage_spawn_ts "$(date +%s)"   # #1290: crash-death discriminator
-                           _cb_spawn "$TRIAGE_SPAWN" "$id" &
+                           _cb_spawn "$TRIAGE_SPAWN" "$id" triage &
                            sset "$id" pid "$!"
                            log "#$id failed($tries) -> needs-triage (triage spawned)"
                            continue

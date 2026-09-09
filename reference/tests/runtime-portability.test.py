@@ -50,7 +50,7 @@ class RuntimePortabilityTests(unittest.TestCase):
         self.record = self.root / "jail.jsonl"
         self.gh_record = self.root / "gh-called"
         self.write_tool("uname", "import sys\nprint('Linux' if sys.argv[-1]=='-s' else 'x86_64')\n")
-        self.write_tool("nsjail", '''import json,os,resource,subprocess,sys
+        self.write_tool("nsjail", '''import json,os,re,resource,subprocess,sys
 from pathlib import Path
 with Path(os.environ["TEST_JAIL_RECORD"]).open("a") as stream:
     stream.write(json.dumps(sys.argv[1:])+"\\n")
@@ -61,6 +61,16 @@ if command[:2] == ["/bin/sh", "-ec"]:
     # Run the actual preflight write/read locally, inside this test's temporary
     # directory. Only a Linux acceptance test supplies the real mount namespace.
     command[-1] = command[-1].replace("/tmp/crewboss-preflight.", os.environ["TEST_PROBE_PREFIX"])
+    # Model nsjail's explicit procfs setting. macOS has no /proc, so use a
+    # fixture only when the real config enables the private procfs mount.
+    proc = Path(os.environ["TEST_PROC_SELF"])
+    config = Path(sys.argv[sys.argv.index("-C")+1]).read_text()
+    if re.search(r"(?m)^mount_proc: true$", config):
+        (proc / "ns").mkdir(parents=True, exist_ok=True)
+        (proc / "stat").touch()
+        if not (proc / "ns/net").is_symlink():
+            (proc / "ns/net").symlink_to("net:[fixture]")
+    command[-1] = command[-1].replace("/proc/self", str(proc))
     def limits():
         if os.environ.get("TEST_FSIZE_ZERO"):
             resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
@@ -82,6 +92,7 @@ print('{"total_cost_usd":0.125,"is_error":false}')
             "CB_GH_BIN": str(self.bin / "gh"), "TEST_JAIL_RECORD": str(self.record),
             "TEST_GH_RECORD": str(self.gh_record),
             "TEST_PROBE_PREFIX": str(self.root / "preflight."),
+            "TEST_PROC_SELF": str(self.root / "proc/self"),
         }
 
     def write_tool(self, name, body):
@@ -142,6 +153,7 @@ print('{"total_cost_usd":0.125,"is_error":false}')
         limits = (self.runtime / "nsjail-limits.cfg").read_text()
         self.assertRegex(limits, r"(?m)^rlimit_as_type: HARD$")
         self.assertRegex(limits, r"(?m)^rlimit_fsize_type: HARD$")
+        self.assertRegex(limits, r"(?m)^mount_proc: true$")
         self.assertNotIn("--rlimit_as", args)
         self.assertNotIn("--rlimit_fsize", args)
         self.assertEqual(args[args.index("--seccomp_policy") + 1], str(self.runtime / "claude.kafel"))
@@ -156,6 +168,14 @@ print('{"total_cost_usd":0.125,"is_error":false}')
         result = self.doctor()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("inherited resource limits", result.stderr)
+        self.assertFalse(self.gh_record.exists())
+
+    def test_preflight_rejects_missing_private_procfs(self):
+        config = self.runtime / "nsjail-limits.cfg"
+        config.write_text(config.read_text().replace("mount_proc: true", "mount_proc: false"))
+        result = self.doctor()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("nsjail probe failed", result.stderr)
         self.assertFalse(self.gh_record.exists())
 
     def test_unsupported_architecture_fails_without_namespace_attempt(self):

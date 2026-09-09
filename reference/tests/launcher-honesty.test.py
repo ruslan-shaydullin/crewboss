@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +57,93 @@ class LauncherHonestyTests(unittest.TestCase):
         data = self.read()
         data["10"]["comments"] = [{"body": text}]
         self.issues.write_text(json.dumps(data))
+
+    def triage_contract_fixture(self):
+        # Exercise the production prep argument validator and role catalog. The
+        # fixture doctor stops after preflight entry, before git/GitHub/nsjail.
+        for name in ("crewboss-prep-spawn-gh.sh", "run-env.sh"):
+            (self.home / name).write_bytes((RUNTIME / name).read_bytes())
+        catalog = self.home / "gov/.claude/agents"
+        catalog.mkdir(parents=True)
+        for role, source in (("executor", "reference/.claude/agents/executor.md"),
+                             ("triage", "team-example/roles/triage.md")):
+            (catalog / f"{role}.md").write_bytes((ROOT / source).read_bytes())
+        doctor = self.home / "crewboss-doctor.sh"
+        doctor.write_text('#!/bin/sh\nprintf "%s" "$*" > "$CB_HOME/triage-preflight"\nexit 73\n')
+        flock = self.home / "bin/flock"
+        flock.write_text("#!/bin/sh\nexit 0\n"); flock.chmod(0o755)
+        triage = self.home / "bin/triage"
+        triage.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+home = Path(os.environ["CB_HOME"])
+with (home / "triage-args.jsonl").open("a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+# Stop the real loop on its next tick, after the dispatch under test.
+(home / "run/kill_switch").touch()
+os.execvp("bash", ["bash", str(home / "crewboss-prep-spawn-gh.sh"), *sys.argv[1:]])
+''')
+        triage.chmod(0o755)
+        return {"CB_ENV_FILE": "/dev/null", "CB_NO_INTEGRATE": "1",
+                "CB_TRIAGE_SPAWN": str(triage), "CB_RETRY_CAP": "1",
+                "CB_MAX_PARALLEL": "1", "CB_MAX_TICKS": "4", "CB_POLL": "1",
+                "CB_RL_FLOOR": "0", "CB_RL_FLOOR_GQL": "0",
+                "CB_TRIAGE_BACKOFF": "0", "CB_TRIAGE_MIN_LIFETIME": "3600"}
+
+    def assert_triage_contract(self):
+        calls = [json.loads(line) for line in (self.home / "triage-args.jsonl").read_text().splitlines()]
+        self.assertEqual(calls, [["20", "triage"]])
+        self.assertEqual((self.home / "triage-preflight").read_text(), "--preflight")
+        self.assertEqual((self.home / "run/state/20/kind").read_text(), "triage")
+        self.assertIn("status:needs-triage", self.labels(20))
+        self.assertFalse((self.home / "run/state/20/term").exists())
+
+    def test_route_passes_triage_role_to_real_prep(self):
+        result = self.run_shell(
+            'source "$RUNTIME/crewboss-launcher-gh.sh"; route 20 2; rc=$?; wait; exit "$rc"',
+            **self.triage_contract_fixture(),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_triage_contract()
+
+    def test_real_run_executor_failure_passes_triage_role_to_real_prep(self):
+        env = self.triage_contract_fixture()
+        executor = self.home / "bin/executor"
+        executor.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+home = Path(os.environ["CB_HOME"])
+(home / "executor-args.json").write_text(json.dumps(sys.argv[1:]))
+work = home / "run/work" / sys.argv[1]
+work.mkdir(parents=True, exist_ok=True)
+(work / "status.json").write_text('{"phase":"failed"}')
+sys.exit(2)
+''')
+        executor.chmod(0o755)
+        result = self.run_shell('source "$RUNTIME/crewboss-launcher-gh.sh"; cmd_run',
+                                **env, CB_SPAWN=str(executor))
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.home / "executor-args.json").read_text()), ["20", "executor"])
+        self.assertIn("#20 failed(1) -> needs-triage", result.stdout)
+        self.assert_triage_contract()
+
+    def test_real_run_triage_crash_retry_passes_role_to_real_prep(self):
+        env = self.triage_contract_fixture()
+        data = self.read()
+        data["20"]["labels"].append({"name": "status:needs-triage"})
+        self.issues.write_text(json.dumps(data))
+        state = self.home / "run/state/20"; state.mkdir()
+        (state / "pid").write_text("99999999")
+        (state / "kind").write_text("triage")
+        (state / "triage_spawn_ts").write_text(str(int(time.time())))
+        work = self.home / "run/work/20"; work.mkdir(parents=True)
+        (work / "status.json").write_text('{"phase":"failed"}')
+        result = self.run_shell('source "$RUNTIME/crewboss-launcher-gh.sh"; cmd_run', **env)
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertIn("kind=triage: crash-death", result.stdout)
+        self.assertEqual((state / "triage_n").read_text(), "1")
+        self.assertFalse((state / "triage_done").exists())
+        self.assert_triage_contract()
 
     def test_real_loop_read_failure_never_exits_as_successful_idle(self):
         # The source entrypoint executes the real run loop; flock is outside this
