@@ -1,9 +1,35 @@
+# Dependencies and generated output
 node_modules/
 dist/
-.DS_Store
-*.log
-# *.log validated by issue #376: pattern present, .DS_Store intact, server.log ignored
-.crewboss-launcher.beat
-.claude/settings.local.json
+coverage/
+playwright-report/
+test-results/
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+!.env.*.example
+.crewboss.env
+.claude/settings.local.json
+
+# Local agent configuration, runtime state, and task payloads
+/.codex/
+/.cbhome/
+.task.prompt
+.crewboss-launcher.beat
+.crewboss-launcher.stop
+.crewboss-launcher.lock
+
+# Logs and editor/OS files
+*.log
+.DS_Store
+*.swp
+*.swo
+*~

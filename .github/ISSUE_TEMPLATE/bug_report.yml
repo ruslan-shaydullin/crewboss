@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem in crewboss.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. For security vulnerabilities, follow SECURITY.md.
+        Remove tokens, private repository data, and other sensitive information from examples and logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the expected result and the actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal command sequence or configuration that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the commit, OS, affected component, and relevant Bash, Python, Node, gh, or Claude CLI versions. State whether this used fixtures or a live runtime.
+      placeholder: |
+        Commit:
+        OS:
+        Component:
+        Tool versions:
+        Fixture or live runtime:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Include relevant, redacted output and any workaround you found.

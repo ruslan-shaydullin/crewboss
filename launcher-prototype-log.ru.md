@@ -1,5 +1,9 @@
 # Лаунчер — лог валидации / точка возобновления
 
+> Historical record. Commands, versions, test totals, and deployment details below
+> describe earlier experiments. Start with [README.md](README.md) and
+> [the documentation index](docs/README.md) for current entry points.
+
 > Что реально проверено живьём на хосте, рабочие рецепты и грабли — чтобы не терять мысли между сессиями.
 > Дизайн — [launcher-design.ru.md](launcher-design.ru.md). Простыми словами — [launcher-brief.ru.md](launcher-brief.ru.md).
 > Обновлено: **2026-06-10**.
@@ -62,14 +66,14 @@ env:   HOME=/home/<user>, CLAUDE_CODE_OAUTH_TOKEN,
 - **SSH к инстансу рвётся на длинных командах** (когда данные не текут) → слать `ServerAliveInterval`, писать результат в файлы на боксе.
 - **Self-kill `pkill -f` в инлайн-ssh (рецидив, ловился дважды):** `ssh box 'pkill -f "cbnet/proxy.py"'` убивает САМ удалённый shell — паттерн совпадает с его же командной строкой (`exit 255`). Любой `pkill -f`/`kill` по строке-паттерну держать ТОЛЬКО в скрипте-файле (его содержимое не попадает в `ps` ssh-шелла), не в инлайн-команде.
 - **Биллинг (с 15.06.2026):** headless `claude -p` — месячный долларовый Agent-SDK-пул ($100 Max5x), не «5-час окно». Baseline-оверхед ~**$0.027 на каждый `claude -p`** (системный промпт ~17k кэш-токенов) сверх самой задачи → бюджет-гард несущий.
-- EC2 **публичный IP меняется на stop/start** → повесить **Elastic IP** (СДЕЛАНО 2026-06-10: `3.217.199.168`). С фев-2024 IPv4 платный (~$3.6/мес) что для динамического, что для EIP — EIP не дороже, просто статичный.
+- EC2 **публичный IP меняется на stop/start** → повесить **Elastic IP** (СДЕЛАНО 2026-06-10: `your-server.example.com`). С фев-2024 IPv4 платный (~$3.6/мес) что для динамического, что для EIP — EIP не дороже, просто статичный.
 
 ## Red-team дизайна (сделан)
 Воркфлоу `launcher-design-redteam`: 46 агентов, **35 находок подтверждено, 4 отклонено**, 25 punch-list. 5 блокеров (git-push, `--mirror`, netns-пустой, OAuth-refresh-хосты, биллинг) и ключевые hardening-правки **уже вложены в [launcher-design.ru.md](launcher-design.ru.md)**. Решения: LLM-диспетчер вырезан из v1 (детерминированный бэкенд); egress=прокси; §7=долларовый пул.
 
 ## Хост / как возобновить
 > Полный воспроизводимый список операций настройки бокса (скелет `crewboss provision`) — [ec2-provision.ru.md](ec2-provision.ru.md).
-- **EC2:** Amazon Linux 2023, x86_64, t3.xlarge-класс (4 vCPU / 15 ГБ / 70 ГБ), `i-00b00931600135ec3`, регион **us-east-1**. Юзер `ec2-user`, ключ `~/.ssh/NewOne.pem`. **Elastic IP `3.217.199.168`** (повешен 2026-06-10 — статичный, не меняется на stop/start).
+- **EC2:** Amazon Linux 2023, x86_64, t3.xlarge-класс (4 vCPU / 15 ГБ / 70 ГБ), `i-EXAMPLE`, регион **us-east-1**. Юзер `ec2-user`, ключ `~/.ssh/crewboss-example.pem`. **Elastic IP `your-server.example.com`** (повешен 2026-06-10 — статичный, не меняется на stop/start).
 - Тулчейн: git, jq, **node 18** (→ поднять до 20 для Expo), **gh 2.93** (`gh auth login` web-flow сделан), **claude 2.1.170** (`~/.local/bin`, Bun), **nsjail** собран из исходников → `/usr/local/bin/nsjail`.
 - `~/.crewboss.env` (chmod 600) — `CLAUDE_CODE_OAUTH_TOKEN` (НЕ в гит, не в чат).
 - Прототип-скрипт: `/tmp/proto-run.sh` на боксе. Throwaway-репо: `stratch1989/crewboss-proto` (+ PR #2).

@@ -1,78 +1,115 @@
-# reference/runtime — Operator Setup Guide
+# Runtime operator notes
 
-## Operator setup — GitHub Webhooks
+The board launcher and its sandboxed agents target Linux. This directory is part
+of a runtime assembled from
+[`runtime-manifest.tsv`](../runtime-manifest.tsv); installing the API alone does
+not provision agents, nsjail, GitHub permissions, or the launcher. For local UI
+work, start with the [dashboard guide](../../ui/README.md).
 
-This section documents how to configure the crewboss API daemon to receive GitHub webhook events.
+The checked-in systemd unit is a template for a new installation. Existing
+operators must adapt its account and paths before replacing a deployed unit.
+The current launcher requires its runtime at `$HOME/cbnet` and reads shared
+configuration from `$HOME/.crewboss.env`. The API unit uses those same locations
+so dashboard Run actions inherit the intended repository and credentials.
+Older prototypes and incident records describe specific historical hosts.
 
-### Webhook registration
+## Configure API startup
 
-In your GitHub repository go to **Settings → Webhooks → Add webhook** and set:
+[`start-api.sh`](start-api.sh) starts an already deployed API. It requires:
 
-- **Payload URL**: `http://<host>:<PORT>/api/gh-webhook`  
-  (e.g. `http://your-server-ip:8787/api/gh-webhook`)
-- **Content type**: `application/json`
-- **Events**: select **Issues** and **Pull requests**
-- **Secret**: paste the secret value generated in the next step
+- `CB_REPO`: the GitHub `owner/repository` the operator intends to manage.
+- `CB_API_TOKEN`: a nonempty, private bearer token.
+- `CB_HOME`: the deployed runtime directory, defaulting to `$HOME/cbnet`.
 
-### Secret generation
+Generate a token locally with `openssl rand -hex 32`. Copy
+[`api.env.example`](api.env.example) to the service account's `$HOME/.crewboss.env`,
+fill in the required values, and restrict it to that account (`chmod 600`). The
+API and launcher must read the same file. Keep the real file outside Git. Use plain `KEY=value` assignments and absolute paths so
+the file can also be loaded by systemd; systemd does not expand shell expressions
+such as `$HOME`, `~`, or `$(...)`.
 
-Generate a strong random secret and configure it in both GitHub and the systemd unit:
-
-```sh
-openssl rand -hex 32
-```
-
-1. Copy the output.
-2. Paste it into the **Secret** field of the GitHub webhook form.
-3. Set the same value as `CB_WEBHOOK_SECRET` in the systemd unit
-   (`reference/runtime/crewboss-api.service`), replacing the `<placeholder>`:
-
-```ini
-Environment=CB_WEBHOOK_SECRET=<paste-your-secret-here>
-```
-
-After editing the unit file, reload and restart:
+For a foreground operator session:
 
 ```sh
+bash reference/runtime/start-api.sh --foreground
+```
+
+`CB_ENV_FILE` is sourced as a **trusted shell file** by the startup script. If it
+is not specified, the script loads `~/.crewboss.env` when present. File values
+override inherited environment values. Set `CB_ENV_FILE=/dev/null` to use only
+the current environment. Without `--foreground`, the script starts a background
+process and records its PID and log under `$CB_HOME/run/`; it refuses to replace
+a running process from an existing PID file.
+
+The script defaults to `CB_API_HOST=127.0.0.1` and `CB_API_PORT=8787`, and refuses
+to start without a repository and token. Set `CB_API_SCRIPT` to an absolute path
+to `ui/server/crewboss-api.py` when using a source checkout instead of a deployed
+copy. A custom `CB_ENV_FILE` or `CB_HOME` supports API-only development; dashboard
+Run actions still need the shared `$HOME/.crewboss.env` and `$HOME/cbnet` runtime.
+Set `CB_WEB_DIR` to the absolute path of built dashboard assets if the API
+should serve the UI. Authentication for `gh` must be configured separately for
+the account running the service; API startup does not retrieve or print tokens.
+
+## Run under systemd
+
+[`crewboss-api.service`](crewboss-api.service) expects:
+
+- A dedicated `crewboss` user and group, with home `/var/lib/crewboss`.
+- An installed runtime at `/var/lib/crewboss/cbnet`, including `start-api.sh` and
+  `crewboss-api.py`. The service account must be able to write its runtime state
+  and read any configured credentials and UI assets.
+- A private configuration file at `/var/lib/crewboss/.crewboss.env` based on the example.
+  The file is mandatory and must contain the intended repository and API token.
+- Python 3 and GitHub CLI available on the service's PATH, plus any additional
+  runtime dependencies needed for enabled actions.
+
+Create or adapt those resources before enabling the unit. With the prerequisites
+in place, install the reviewed unit:
+
+```sh
+sudo install -m 644 reference/runtime/crewboss-api.service /etc/systemd/system/crewboss-api.service
 sudo systemctl daemon-reload
-sudo systemctl restart crewboss-api
+sudo systemctl enable --now crewboss-api
+sudo systemctl status crewboss-api
 ```
 
-### Port exposure
+Use `journalctl -u crewboss-api` for startup failures. The unit loads the environment
+file itself and invokes the same validated startup script in foreground mode.
+Do not use `export` statements in the systemd environment file. For an existing
+installation with a different account or directory, adapt `User`, `Group`,
+`WorkingDirectory`, `HOME`, `CB_HOME`, `EnvironmentFile`, and `ExecStart` together.
+Keep `CB_HOME` at `$HOME/cbnet` and the shared file at `$HOME/.crewboss.env` for
+launcher compatibility. Keep deployment tooling's destination directory aligned
+with the unit.
 
-The API daemon must be reachable from GitHub's IP ranges on the configured port
-(default `8787`).
+## Remote access and webhooks
 
-- `CB_API_HOST=0.0.0.0` is set in the systemd unit so the server binds on all
-  interfaces — this is what allows GitHub's servers to POST to the endpoint.
-- **Firewall**: restrict inbound access on the webhook port to
-  [GitHub's published IP ranges](https://api.github.com/meta) (`hooks` key)
-  where possible (e.g. via `iptables`, `ufw`, or your cloud security group).
-
-### Security note
-
-Binding on `0.0.0.0` exposes all API routes to the network. Two gates mitigate this:
-
-1. **All non-webhook routes** require a valid `Authorization: Bearer <CB_API_TOKEN>`
-   header. Requests without a matching token are rejected with `401 Unauthorized`.
-2. **`/api/gh-webhook`** does not require a Bearer token but requires a valid
-   HMAC-SHA256 signature computed from `CB_WEBHOOK_SECRET`. GitHub signs every
-   delivery; the daemon rejects any request whose `X-Hub-Signature-256` header does
-   not match.
-
-These two gates are the stated mitigations for the `0.0.0.0` binding. Do **not**
-leave `CB_WEBHOOK_SECRET` at its default `changeme` value in production — always
-set a real secret generated with `openssl rand -hex 32`.
-
-### Local development
-
-For local dev runs (`start-api.sh`), `CB_API_HOST` defaults to `127.0.0.1`
-(no network exposure) and `CB_WEBHOOK_SECRET` defaults to `changeme`.
-Override before running if you need to test webhook delivery locally
-(e.g. via [smee.io](https://smee.io) or `gh webhook forward`):
+For the dashboard, prefer an SSH tunnel to the loopback-bound API:
 
 ```sh
-export CB_WEBHOOK_SECRET=your-dev-secret
-export CB_API_HOST=127.0.0.1
-bash reference/runtime/start-api.sh
+ssh -N -L 8787:127.0.0.1:8787 user@your-server
 ```
+
+GitHub webhook delivery needs an HTTPS endpoint reachable from GitHub. Use a TLS
+reverse proxy or an appropriate forwarding service; the Python API does not
+terminate TLS. Route webhook traffic to `/api/gh-webhook` without exposing
+operator routes unnecessarily.
+
+Generate a separate secret with `openssl rand -hex 32`. Add it as
+`CB_WEBHOOK_SECRET` in the API environment and in the GitHub repository's webhook
+settings. Choose JSON content and the **Issues** and **Pull requests** events,
+with a payload URL such as `https://your-server.example.com/api/gh-webhook`.
+Restart the API after changing its environment. Deliveries are checked using
+HMAC-SHA256 and the `X-Hub-Signature-256` header.
+
+## Authentication limits
+
+The Python API itself permits requests when `CB_API_TOKEN` is empty. The startup
+script above rejects that configuration; invoking Python directly bypasses this
+startup check. `/api/health` and static UI files are public even with a token.
+Webhooks use their own signature check instead of bearer authentication.
+
+The browser stores the API token in local storage and includes it in EventSource
+URLs. Avoid logging token-bearing URLs. The API has permissive CORS, so network
+exposure and token handling must be configured deliberately. Read
+[SECURITY.md](../../SECURITY.md) for the broader boundaries and reporting process.

@@ -1,5 +1,9 @@
 # EC2-провижининг crewboss-хоста — полный список операций
 
+> Historical record. Commands, versions, test totals, and deployment details below
+> describe earlier experiments. Start with [README.md](README.md) and
+> [the documentation index](docs/README.md) for current entry points.
+
 > Снято с живого бокса 2026-06-10 (всё ниже реально выполнялось при его настройке).
 > Это скелет будущего `crewboss provision` (см. design §4.7). Разметка шагов:
 > **[auto]** — скриптуется без человека · **[interactive]** — нужен человек один раз ·
@@ -9,8 +13,8 @@
 
 1. **[aws]** Инстанс: Amazon Linux 2023, x86_64, класс **t3.xlarge** (4 vCPU / 16 ГБ), диск **70 ГБ gp3**. AMI — стоковый AL2023 (user-namespaces включены из коробки, `max_user_namespaces≈62k` — проверяется в doctor, не настраивается).
 2. **[aws]** Security group: inbound — только SSH (22/tcp) с IP оператора; outbound — открыт (фильтрация egress — забота jail-прокси, не SG).
-3. **[aws]** Key pair → `~/.ssh/<key>.pem` у оператора (текущий: `NewOne.pem`).
-4. **[aws]** **Elastic IP — обязательно** (выделить + привязать). Без него публичный IP меняется на каждом stop/start, отваливаются SSH-конфиги и всё, что захардкодило адрес. (Текущий бокс: EIP `3.217.199.168` повешен 2026-06-10.) С фев-2024 любой публичный IPv4 платный (~$3.6/мес) — EIP не дороже динамического, просто статичный.
+3. **[aws]** Key pair → `~/.ssh/<key>.pem` у оператора (текущий: `crewboss-example.pem`).
+4. **[aws]** **Elastic IP — обязательно** (выделить + привязать). Без него публичный IP меняется на каждом stop/start, отваливаются SSH-конфиги и всё, что захардкодило адрес. (Текущий бокс: EIP `your-server.example.com` повешен 2026-06-10.) С фев-2024 любой публичный IPv4 платный (~$3.6/мес) — EIP не дороже динамического, просто статичный.
 5. **[aws]** (опц.) IMDSv2-метаданные доступны только с токеном — скрипту, которому нужен instance-type/region, использовать `ec2-metadata` или token-flow, голый `curl 169.254.169.254` молчит.
 
 ## 1. Базовая ОС
@@ -69,6 +73,6 @@
 
 ## Известные «не сделано» на текущем боксе
 
-- ~~Elastic IP не привязан~~ — СДЕЛАНО (`3.217.199.168`, 2026-06-10).
+- ~~Elastic IP не привязан~~ — СДЕЛАНО (`your-server.example.com`, 2026-06-10).
 - node 18, не 20 (шаг 11) — поднять перед Expo-гейтом.
 - gh на web-flow оператора, не fine-grained PAT (шаг 13).

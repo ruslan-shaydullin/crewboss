@@ -1,54 +1,91 @@
-# crewboss UI — web dashboard (roadmap phase 0 + skeleton) — 2026-06-10
+# Dashboard and API
 
-Replaces the curses TUI. Per [ui-roadmap.ru.md](../ui-roadmap.ru.md): a web client over the
-**Engine↔View** contract — the engine (bash on the box) writes files/board; the UI reads via
-a thin API and writes only through the same mechanisms the launcher uses.
+The dashboard is a React + TypeScript app backed by a Python HTTP API. The API
+reads GitHub board data and runtime files, and exposes operator actions. The
+Python server uses only the standard library.
 
-## Layout
-- **`app/`** — the **React + Vite + TS** dashboard (the way forward; roadmap Ф1/Ф2 base).
-  Design tokens + components, top bar (brand/conn/budget/Run-Pause-Kill), Board (charters +
-  tasks cards, state-colored), per-card Approve/Hold, **confirm dialogs** on spendy actions,
-  toasts, SSE+poll, Settings tab. Builds clean (`npm run build`, 28 modules). This is where
-  the visual phases (design system, animations, gamification) grow.
-- **`web/index.html`** — the buildless single-file v0 (kept; proves the contract, no toolchain).
-- **`server/crewboss-api.py`** — demon-API (python3 stdlib, no deps). HTTP + SSE + bearer auth.
-  - `GET /api/health` (no auth) · `GET /api/state` · `GET /api/events` (SSE) ·
-    `POST /api/command {action,number}` (run/pause/resume/kill/unkill/approve/hold/unhold).
-  - Auth: `Authorization: Bearer <CB_API_TOKEN>` OR `?token=` (the browser EventSource can't
-    set headers). CORS open (UI is a separate origin).
-  - Validated: `run-api-test.sh` 9/9 (header path), `run-api-test2.sh` 3/3 (browser ?token path).
-- **`web/index.html`** — single-file client (no build): live board (charters + tasks,
-  state-colored cards), pool budget bar, pause/kill flag chips, connection dot; buttons
-  Run/Pause/Kill + per-card Approve/Hold; **confirm dialogs on the spendy/irreversible**
-  (Run, Kill, Approve — roadmap phase 4 predictability baked in from the start); toasts;
-  SSE realtime + slow authed poll fallback; token/API-URL in localStorage (⚙).
+## Local development
 
-## Run the React app (recommended)
-```
-# 1. on the box: API running (see below).  2. laptop: tunnel the port:
-ssh -N -L 8787:127.0.0.1:8787 -i ~/.ssh/NewOne.pem ec2-user@<ip> &
-# 3. laptop: dev server
-cd ui/app && npm install && npm run dev    # -> http://localhost:5500
-```
-Open `http://localhost:5500` → ⚙ Settings → API URL `http://127.0.0.1:8787`, token = `CB_API_TOKEN`.
+Use Node.js 22 with npm, Python 3, and OpenSSL (to generate a local token). From
+the repository root:
 
-## Run the single-file v0
-On the box (start the API):
+```sh
+npm ci --prefix ui/app
+npm run dev --prefix ui/app -- --host 127.0.0.1
 ```
-CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=~/cbnet CB_API_TOKEN=<pick-a-secret> \
-  nohup python3 ~/cbnet/crewboss-api.py >~/cbnet/run/api.out 2>&1 &
-```
-From your laptop (tunnel the API port, then serve the page):
-```
-ssh -N -L 8787:127.0.0.1:8787 -i ~/.ssh/NewOne.pem ec2-user@3.217.199.168 &
-cd ui/web && python3 -m http.server 5500
-```
-Open `http://localhost:5500`, click ⚙ → API URL `http://127.0.0.1:8787`, token = your secret.
 
-## Status vs roadmap
-- **Phase 0 (API + realtime + auth):** done + tested.
-- **Skeleton of Ф1/Ф2/Ф3/Ф4/Ф8:** live board, core actions, confirm-predictability, toasts,
-  connection state — in the single file.
-- **Not yet:** real design system / animations / gamification (Ф2 deep, Ф5, Ф6) — these need
-  a visual iteration loop (can't be verified headlessly) and likely a React app at that scale.
-  This single-file client is the runnable foundation to iterate on, and proves the contract.
+Open `http://127.0.0.1:5500`. In a second terminal, from the repository root, start
+an API with an empty board and an example team:
+
+```sh
+export CB_HOME="$PWD/.cbhome"
+export CB_REPO=""
+export CB_API_HOST=127.0.0.1
+export CB_API_PORT=8787
+export CB_API_TOKEN="$(openssl rand -hex 32)"
+mkdir -p "$CB_HOME/run" "$CB_HOME/team"
+cp -R team-example/. "$CB_HOME/team/"
+printf 'Local API token: %s\n' "$CB_API_TOKEN"
+python3 ui/server/crewboss-api.py
+```
+
+In the dashboard's Settings, set API URL to `http://127.0.0.1:8787` and paste the
+local token printed by the second terminal. The board is empty because `CB_REPO`
+is unset. This setup lets you develop the UI and API without agent credentials;
+launching agents needs a provisioned runtime. Stop the API and Vite with Ctrl-C.
+The local `.cbhome/` directory is ignored by Git.
+
+To connect a real board, authenticate `gh` with the intended repository access,
+set `CB_REPO=owner/repository`, and restart the API. Dashboard actions can then
+modify that repository. Use a disposable repository when testing mutations.
+
+## Build and test
+
+```sh
+make test-ui
+make build-ui
+```
+
+The build checks TypeScript and creates `ui/app/dist/`. To serve that build from
+the API, set `CB_WEB_DIR` to its absolute path when starting Python. The API can
+then serve the dashboard and `/api/` on the same port.
+
+Vitest tests live under `app/src/`. Browser and visual scripts under
+`app/scripts/` are separate from the default test suite and may require
+Playwright browsers, a running server, or scenario-specific fixtures. The PNGs
+under `app/scripts/baselines/` are committed visual fixtures.
+
+## API configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `CB_HOME` | Runtime files and `run/` directory; defaults to `~/cbnet` |
+| `CB_REPO` | GitHub `owner/repository`; empty gives an empty board |
+| `CB_API_TOKEN` | Operator token; **an empty value disables authentication** |
+| `CB_API_HOST` | Bind address; defaults to `127.0.0.1` in the Python server |
+| `CB_API_PORT` | HTTP port; defaults to `8787` |
+| `CB_WEB_DIR` | Absolute path to built dashboard assets |
+| `CB_WEBHOOK_SECRET` | Independent secret for signed GitHub webhook deliveries |
+
+`GET /api/health` and static dashboard assets do not require a token. Other API
+routes accept a bearer token; the EventSource connection sends its token in the
+query string. The UI stores connection settings and the token in browser local
+storage. The server has permissive CORS and does not provide TLS.
+
+Keep development bound to loopback. For a remote runtime, tunnel the API over
+SSH using your own host and key configuration:
+
+```sh
+ssh -N -L 8787:127.0.0.1:8787 user@your-server
+```
+
+For service installation and remote webhook delivery, see the
+[operator guide](../reference/runtime/README.md) and
+[security policy](../SECURITY.md).
+
+## Source map
+
+- `app/`: current React dashboard.
+- `server/crewboss-api.py`: API implementation.
+- `server/crewboss_api.py`: import shim used by tests and smoke tooling.
+- `web/index.html`: historical single-file dashboard, retained for reference.
