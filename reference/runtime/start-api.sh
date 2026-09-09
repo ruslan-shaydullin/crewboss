@@ -1,17 +1,88 @@
 #!/usr/bin/env bash
-source ~/.crewboss.env
-export CB_REPO=ruslan-shaydullin/crewboss-proto CB_HOME=/tmp/cbnet CB_API_TOKEN=secret123
-export CB_WEBHOOK_SECRET="${CB_WEBHOOK_SECRET:-changeme}"
+# Start a deployed API, or use --foreground under a process supervisor.
+# Optional CB_ENV_FILE is a trusted shell file; its assignments override the
+# inherited environment. See api.env.example for the required configuration.
+set -euo pipefail
+umask 077
+
+fail() { printf 'start-api: %s\n' "$*" >&2; exit 1; }
+case "${1:-}" in
+  '') foreground=0 ;;
+  --foreground) foreground=1 ;;
+  *) fail 'usage: start-api.sh [--foreground]' ;;
+esac
+[ "$#" -le 1 ] || fail 'usage: start-api.sh [--foreground]'
+
+config_file="${CB_ENV_FILE:-$HOME/.crewboss.env}"
+if [ -n "${CB_ENV_FILE:-}" ] && [ ! -r "$config_file" ]; then
+  fail "cannot read CB_ENV_FILE: $config_file"
+fi
+if [ -r "$config_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$config_file"
+  set +a
+fi
+
+[[ "${CB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || fail 'set CB_REPO to the GitHub owner/repository to operate'
+[[ "${CB_API_TOKEN:-}" =~ [^[:space:]] ]] \
+  || fail 'set CB_API_TOKEN to a private, randomly generated bearer token'
+
+export CB_REPO CB_API_TOKEN
+export CB_HOME="${CB_HOME:-$HOME/cbnet}"
 export CB_API_HOST="${CB_API_HOST:-127.0.0.1}"
-export CB_SPAWN=/tmp/cbnet/crewboss-prep-spawn-gh.sh CB_GOVERNED=1
-export CLAUDE_CODE_OAUTH_TOKEN GH_TOKEN="$(gh auth token)"
-mkdir -p /tmp/cbnet/run
-API_PID=/tmp/cbnet/run/api.pid
-if [ -f "$API_PID" ]; then kill "$(cat "$API_PID")" 2>/dev/null; rm -f "$API_PID"; fi; sleep 0.4
-nohup python3 /tmp/cbnet/crewboss-api.py >/tmp/cbnet/run/api.out 2>&1 &
-echo $! > "$API_PID"
-disown 2>/dev/null
-for i in $(seq 1 30); do curl -s -m1 http://127.0.0.1:8787/api/health >/dev/null 2>&1 && break; sleep 0.2; done
-echo "=== health ==="; curl -s -m3 http://127.0.0.1:8787/api/health; echo
-echo "=== state (authed) ==="; curl -s -m15 -H "Authorization: Bearer secret123" http://127.0.0.1:8787/api/state | jq '{rows:(.board|length), spent:.budget.spent, cap:.budget.cap, flags:.flags}'
-echo "=== api.out ==="; tail -2 /tmp/cbnet/run/api.out
+export CB_API_PORT="${CB_API_PORT:-8787}"
+export CB_API_SCRIPT="${CB_API_SCRIPT:-$CB_HOME/crewboss-api.py}"
+export CB_SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
+export CB_GOVERNED="${CB_GOVERNED:-1}"
+[[ "$CB_API_PORT" =~ ^[0-9]+$ ]] && [ "${#CB_API_PORT}" -le 5 ] \
+  && (( 10#$CB_API_PORT >= 1 && 10#$CB_API_PORT <= 65535 )) \
+  || fail 'CB_API_PORT must be an integer from 1 to 65535'
+[ -f "$CB_API_SCRIPT" ] || fail "API script not found: $CB_API_SCRIPT (set CB_API_SCRIPT or deploy the runtime to CB_HOME)"
+command -v python3 >/dev/null || fail 'python3 is required'
+mkdir -p "$CB_HOME/run"
+
+if [ "$foreground" -eq 1 ]; then
+  exec python3 "$CB_API_SCRIPT" --port "$CB_API_PORT"
+fi
+
+command -v curl >/dev/null || fail 'curl is required for the startup health check'
+api_pid_file="$CB_HOME/run/api.pid"
+if [ -f "$api_pid_file" ]; then
+  old_pid="$(cat "$api_pid_file")"
+  if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+    fail "a process already uses $api_pid_file; stop that API before starting another"
+  fi
+  rm -f "$api_pid_file"
+fi
+
+nohup python3 "$CB_API_SCRIPT" --port "$CB_API_PORT" >"$CB_HOME/run/api.out" 2>&1 < /dev/null &
+api_pid=$!
+printf '%s\n' "$api_pid" > "$api_pid_file"
+# Only stop the process started by this invocation if readiness fails.
+cleanup() {
+  kill "$api_pid" 2>/dev/null || true
+  wait "$api_pid" 2>/dev/null || true
+  rm -f "$api_pid_file"
+}
+trap cleanup EXIT
+
+check_host="$CB_API_HOST"
+case "$check_host" in
+  0.0.0.0) check_host=127.0.0.1 ;;
+  ::) check_host='[::1]' ;;
+  *:*) check_host="[$check_host]" ;;
+esac
+health_url="http://$check_host:$CB_API_PORT/api/health"
+for (( attempt=0; attempt<30; attempt++ )); do
+  sleep 0.2
+  kill -0 "$api_pid" 2>/dev/null || fail "API exited during startup; see $CB_HOME/run/api.out"
+  if curl --noproxy '*' --fail --silent --max-time 1 "$health_url" >/dev/null 2>&1; then
+    trap - EXIT
+    disown "$api_pid" 2>/dev/null || true
+    printf 'API started (PID %s): %s\nLog: %s/run/api.out\n' "$api_pid" "$health_url" "$CB_HOME"
+    exit 0
+  fi
+done
+fail "API did not become healthy; see $CB_HOME/run/api.out"

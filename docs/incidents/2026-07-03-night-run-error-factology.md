@@ -368,4 +368,4 @@
 
 ---
 
-*Воспроизведение сбора: forensics-workflow из 78 агентов — 6 параллельных срезов (charter-1291-finale-hygiene, charter-1220-oversight, charter-1274-ratelimit, charter-1290-1142-loopfixes, box-forensics, board-current-state) + critic gap-closure, затем адверсариальный verify-пасс по каждой находке (re-check эвиденса у источника: gh API, read-only ssh на бокс 3.217.199.168, git main/charter-ветки; вердикты CONFIRMED/REFUTED с коррекциями severity и root cause). Дата сбора и верификации: 2026-07-03.*
+*Воспроизведение сбора: forensics-workflow из 78 агентов — 6 параллельных срезов (charter-1291-finale-hygiene, charter-1220-oversight, charter-1274-ratelimit, charter-1290-1142-loopfixes, box-forensics, board-current-state) + critic gap-closure, затем адверсариальный verify-пасс по каждой находке (re-check эвиденса у источника: gh API, read-only ssh на бокс your-server.example.com, git main/charter-ветки; вердикты CONFIRMED/REFUTED с коррекциями severity и root cause). Дата сбора и верификации: 2026-07-03.*

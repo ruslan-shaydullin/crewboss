@@ -1,5 +1,9 @@
 # crewboss — общий план (consolidated)
 
+> Historical record. Commands, versions, test totals, and deployment details below
+> describe earlier experiments. Start with [README.md](README.md) and
+> [the documentation index](docs/README.md) for current entry points.
+
 > Сводка по всем трекам. Детали — в профильных доках (ссылки внизу). Ветка `crewboss`.
 > Легенда: ✅ сделано · 🟡 частично · ☐ не начато · 💲 нужен включённый EC2 + траты пула · 🙅 блок на инфре/человеке.
 

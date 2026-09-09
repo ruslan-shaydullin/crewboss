@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# crewboss — install the reference config into THIS repo for a dogfood run.
-# Idempotent + reversible (see uninstall.sh). Local-only: agents/hook are untracked,
-# settings.local.json is gitignored. Requires jq.
+# crewboss — copy the reference config into the current Git repository.
+# Requires jq. Existing same-named agents/hook are replaced; hook wiring is
+# merged into settings.local.json. Review and back up existing config first.
 #
 # After install:  claude --agent tech-lead
-# Tech-lead task (paste):
-#   Ты тех-лид. Сначала триаж: `gh issue list` — не плодить дубли. Затем аудит
-#   quarter-ts/src по трём осям: логические/корректностные баги, security-гэпы,
-#   архитектура. На каждую РЕАЛЬНО НОВУЮ конкретную проблему (file:line) — заведи
-#   GitHub issue с метками (status:ready, type:bug|agent, prio:P1–P3). Не дублируй
-#   #25/#30/#37/#39/#40/#41 — уточняй их комментом. Дедуп жёстко, качество важнее.
+# For a new setup, prefer the documented `crewboss init` CLI instead.
 set -euo pipefail
 command -v jq >/dev/null || { echo "crewboss install needs jq"; exit 1; }
 
@@ -37,5 +32,5 @@ echo "  agents : $(ls "$DEST"/agents | tr '\n' ' ')"
 echo "  hook   : .claude/hooks/crewboss-gate.sh"
 echo "  wiring : .claude/settings.local.json (gitignored)"
 echo
-echo "Run the tech-lead :  claude --agent tech-lead   (then paste the task in this file's header)"
-echo "Uninstall         :  bash reference/uninstall.sh"
+echo "Run the tech-lead :  claude --agent tech-lead"
+echo "Uninstall helper  :  $(dirname "$SRC")/uninstall.sh"

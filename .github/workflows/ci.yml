@@ -1,8 +1,39 @@
-# no-op — crewboss runs its own engine-suite locally; GHA billing is dropped.
 name: ci
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  noop:
-    runs-on: ubuntu-latest
+  contributor-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - run: echo "GHA disabled — crewboss box is the CI engine."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/app/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install shell test prerequisites
+        run: sudo apt-get update && sudo apt-get install -y jq coreutils
+      - name: Install UI dependencies
+        run: make setup
+      - name: Check source, offline contracts, and UI
+        run: make check
+      - name: Verify checks did not change tracked files
+        run: git diff --exit-code HEAD

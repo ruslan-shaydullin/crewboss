@@ -1,80 +1,84 @@
-# crewboss — reference implementation (v0, DRAFT)
+# Reference implementation
 
-Drop-in Claude Code config реализующий паттерн **crewboss** (reliability-gating для
-кодящих агентов). Спека: [`../docs/agent-reliability-gating-spec-v0.md`](../docs/agent-reliability-gating-spec-v0.md).
+This directory contains the distributable Claude Code configuration, a small
+CLI, the board runtime, and regression tests. Start with the
+[project README](../README.md) or [contributor guide](../CONTRIBUTING.md).
 
-> **Pinned: Claude Code v2.1.161** — механики выверены по докам на этой версии.
-> Фичи стабильны (не за флагами). На других версиях — перепроверять.
+## Install the role configuration
 
-## Архитектура — два слоя (= два гвоздя)
+From your crewboss checkout, add the CLI to the current shell's PATH:
 
-1. **Роль = launch-time identity** (`claude --agent <name>`) + **`tools:`-allowlist** в
-   agent-файле. Нет инструмента в наборе роли → агент его не видит. Это **единственный
-   локальный слой, держащий даже против `bypassPermissions`.**
-2. **Командный уровень + completion-gates = центральный PreToolUse-хук**, ветвящийся по
-   stdin-полю **`agent_type`** (несёт имя `--agent`). Гейтит «эта роль может `gh pr merge`,
-   та — нет» и пруф-контракт (§5.1/§5.2 спеки). **← реализовано в `hooks/crewboss-gate.sh` (draft).**
+```sh
+export PATH="$PWD/reference/bin:$PATH"
+crewboss help
+```
 
-## Роли (как запускать)
+Then change into a separate Git repository and run `crewboss init`. It copies
+`.claude/agents/` and the hook from this directory, merges tool permissions and
+hook wiring into the target's `.claude/settings.json`, and ensures labels when
+`gh` is authenticated. Existing same-named roles and hook files are overwritten;
+review the target's diff before committing. `crewboss doctor` checks dependencies,
+configuration, GitHub access, and branch protection.
 
-| Запуск | Роль | Инструменты (tool-absence = hard) |
-|---|---|---|
-| `claude` (без флага) | **dev-assistant** (default) | Read/Edit/Write/Bash; нет Agent |
-| `claude --agent executor` | **Executor** | Read/Edit/Write/Bash; **нет Agent** (спавнить не может) |
-| `claude --agent task-helper` | **Task-helper** | Read/Bash; **нет Edit/Write** (код не трогает) |
-| `claude --agent tech-lead` | **Tech-lead** | Read/Bash; **нет Edit/Write/Agent** — под Арх-2 не спавнит (executor'ов запускает лаунчер); декомпозит + ревью/мерж |
-| `claude --agent boss` | **boss** (стратег, выше тех-лида) | **только Bash** (gh-чартеры) + хук-роллл; **нет Read/Edit/Write/Agent** — code-blind + exec-blind, чартерит тех-лиду |
-| `claude --agent analyst` | **analyst** (research, цель делегирования) | Read/Bash (read-only); **нет Edit/Write/Agent** — расследует, постит findings-дайджест, кода не меняет |
+Launching a role requires your own Claude Code installation and account:
 
-Уже на этом слое tool-absence даёт твёрдые границы: спавнить может только tech-lead;
-код руками не трогают tech-lead и task-helper. Различия по **gh-подкомандам**
-(merge / issue create / close, push-таргеты) — на командном уровне → chunk-2 (хук).
+```sh
+claude --agent executor
+```
 
-## Честный потолок enforcement (читать)
+Verify the installed CLI's role and hook behavior before an unattended run.
+Version numbers and test totals in older design records describe past runs.
 
-- **Твёрдо против `bypassPermissions`:** только tool-absence (`tools:`) и server-side
-  GitHub branch protection (merge-гейт, §5.2 спеки).
-- **settings-`deny` и PreToolUse-хук детерминированы, но обходятся** человеческим
-  `--dangerously-skip-permissions`. **Агент сам в этот режим не войдёт** (launch-выбор
-  человека) → для threat-model reliability (не security) достаточно. Но мы это говорим
-  прямо, а не прячем.
-- **Командный хук — friction, не enforcement.** `canon()` сворачивает **внутри-модельные**
-  варианты к литералу (кавычки `gh pr "merge"`, `command`/`/path/gh`, global-flags
-  `gh -R o/r pr merge`, REST `gh api …/pulls/N/merge`) → они тоже `deny`. Слипает только
-  **намеренная evasion** (`gh${IFS}pr…` / `$VAR` / `eval` / alias) — adversarial, вне модели
-  (агент ленив, не злонамерен); гонку за ней не ведём. push не гейтим (якорь — branch
-  protection). `gh pr merge --admin` пробивает branch protection → включать **require-admins**.
+## Components
 
-## Установка (для своего репо)
+| Path | Responsibility |
+| --- | --- |
+| `.claude/agents/` | Distributable role definitions and tool lists |
+| `.claude/hooks/crewboss-gate.sh` | Command and completion-evidence checks |
+| `.claude/settings.json` | Reference hook wiring |
+| `bin/crewboss` | `init`, `doctor`, `status`, approval, and role launch commands |
+| `launcher/crewboss-launcher.sh` | Legacy foreground launcher used by `crewboss run` |
+| `runtime/crewboss-launcher-gh.sh` | Current GitHub board launcher |
+| `runtime/` | Integration, spawn, supervision, and deployment helpers |
+| `runtime-manifest.tsv` | Canonical runtime inventory and checksums |
+| `tests/` | Runtime and regression checks |
 
-Скопировать `.claude/` (agents + settings.json + hooks) в корень своего репо;
-`chmod +x .claude/hooks/crewboss-gate.sh`. Нужны `jq` и `gh` (auth). Запускать роль
-явным `--agent`. Для merge-гейта включить GitHub **branch protection** (§5.2 спеки:
-require approvals + required checks + up-to-date + dismiss-stale-approvals) — это
-серверный якорь, который держит даже там, где локальный хук обходится bypass.
+The current board runtime is a separate Linux deployment. See the
+[operator notes](runtime/README.md). `crewboss init` installs role configuration;
+it does not provision a complete hosted runtime.
 
-## Два лаунчера (решение tech-lead 2026-06-11, обратимо)
+The manifest is authoritative for deployed file locations. Some canonical files
+still live in `../proto/`, and tests depend on `../_box-snapshot/`. Do not delete
+those directories merely because they contain older implementations.
 
-| Файл | Статус | Kill-switch | Описание |
-|---|---|---|---|
-| `reference/launcher/crewboss-launcher.sh` | **LEGACY** (Arch-2-референс) | `.crewboss-launcher.stop` (файл) | worktree+foreground; тесты `launcher-*.test.sh` гоняют его до миграции |
-| `crewboss-launcher-gh.sh` (бокс/reference/runtime/) | **КАНОН** (production) | `run/kill_switch` (файл) | GitHub-board, фоновый параллельный, per-task proxy socket; задеплоен в ~/cbnet/ |
+## Roles and boundaries
 
-Детали в `reference/runtime-manifest.tsv` (строки `crewboss-launcher*.sh`).
-Legacy-файл **НЕ удалять** пока `launcher-*.test.sh` от него зависят.
+Read each agent file for its complete contract. Common roles include:
 
-## Статус
+- **boss**: turns goals into charters.
+- **tech-lead**: plans work and reviews changes through the board.
+- **executor**: implements one assigned issue and hands off a pull request.
+- **integrator**: assembles changes on the charter branch.
+- **analyst** and **test-planner**: produce investigation and test-planning evidence.
+- **task-helper**: handles board tasks without editing source.
 
-- **chunk-1:** identity/tool-слой — **5 agent-файлов** (executor/task-helper/tech-lead/boss/analyst) + dev-assistant default + базовый `settings.json`. ✅
-- **chunk-2:** центральный `hooks/crewboss-gate.sh` — per-role командный гейт (Layer A) +
-  merge / close / «ready» пруф-гейты (Layer B) по `agent_type`. ✅
-- **Тесты:** Layer-A харнесс — **46/46** ✅ (буквальная команда + whitespace/chaining-негативы
-  + in-model-обфускация `canon()`: кавычки/global-flags/`command`/path/`gh api`; + boundary-кейс
-  `${IFS}` как документированный non-goal; + false-deny guards). Layer-B харнесс — **20/20** ✅
-  (стабит `gh`, гоняет merge §5.2 / ready §5.2 / close 5-rule §5.1 — все ветки вердикта,
-  вкл. fail-closed). НЕ покрыто исполняемо: happy-path live-merge на реальном branch protection.
-- **End-to-end (live, Claude Code v2.1.162):** `--agent` грузит роль (баннер `@executor`) ✅;
-  PreToolUse-хук **срабатывает детерминированно** — `gh issue create` под dev-assistant
-  перехвачен `crewboss BLOCK` до выполнения, **дважды**, не обходится «авторизацией» модели ✅.
-- **НЕ проверено:** happy-path мутационный merge (реальный approval+green → merge проходит) —
-  нужен внешний репо + 2-й ревьюер (воркстрим H). Наименее рисковая часть (over-block безопаснее over-allow).
+The launcher starts execution agents as separate processes. Prompt instructions
+and tool lists are useful boundaries, but a role with Bash can use shell
+capabilities beyond named editor tools. The command hook does not constitute a
+hostile-code sandbox; see [SECURITY.md](../SECURITY.md).
+
+The repository-root `.claude/` is crewboss's own development configuration and
+can differ from this distributable copy. `install.sh` and `uninstall.sh` are older
+local installation helpers; use the documented CLI for a new setup and inspect
+any existing configuration before replacing it.
+
+## Checks and design records
+
+Run `make check` from the repository root for the contributor baseline. The
+[contributor guide](../CONTRIBUTING.md) explains its scope and the separate live
+and process-integration tests.
+
+The [original specification](../docs/agent-reliability-gating-spec-v0.en.md),
+[board design](../board-orchestration.md), and
+[live sandbox record](live/README.md) document the project's development. The live
+sandbox script creates GitHub resources and can spend agent sessions.

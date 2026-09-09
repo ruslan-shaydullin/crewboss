@@ -1,5 +1,9 @@
 # crewboss — STATUS (snapshot)
 
+> Historical record. Commands, versions, test totals, and deployment details below
+> describe earlier experiments. Start with [README.md](README.md) and
+> [the documentation index](docs/README.md) for current entry points.
+
 > Точка возобновления. Полный roadmap — [spinout-plan](docs/agent-reliability-gating-spinout-plan.md);
 > дизайн — [spec](docs/agent-reliability-gating-spec-v0.md). Обновлено: **2026-06-04**.
 
