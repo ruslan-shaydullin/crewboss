@@ -38,3 +38,8 @@ The current syscall policy is specific to x86_64. Doctor rejects other runtime
 architectures before spawning work. The local dashboard/demo does not need Linux.
 These fixture checks do not verify provider account access, live GitHub branch
 protection, production credentials or a particular operator's network configuration.
+
+The first alpha candidate passes all nine installed-runtime assertions in
+[CI run 34364586695](https://github.com/ruslan-shaydullin/crewboss/actions/runs/34364586695).
+Its report records the tested archive SHA-256; publication checks that value
+against the release artifact from successful main CI.
