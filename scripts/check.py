@@ -9,11 +9,13 @@ and is intentionally not discovered or executed by this runner.
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+from urllib.parse import unquote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +30,16 @@ SOURCE_TESTS = (
     ("tests/969-api-pagination.test.py", "CB_969_MODE", sys.executable),
     ("tests/1131-build-state-nonlist.test.py", "CB_1131_MODE", sys.executable),
     ("tests/690-tests-plan-convergence-guard.test.py", "CB_690_MODE", sys.executable),
+)
+SUPPORTED_GUIDES = (
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "reference/README.md",
+    "ui/README.md",
+    "docs/install.md",
+    "docs/demo.md",
+    "docs/linux-validation.md",
 )
 
 
@@ -155,13 +167,63 @@ def offline():
         raise RuntimeError("Failed offline checks:\n" + "\n".join(failures))
     print(f"Offline checks passed: {len(checks)} test files.")
 
+def check_local_links(guides=SUPPORTED_GUIDES):
+    """Check repository-relative Markdown links in supported contributor guides."""
+    link_pattern = re.compile(
+        r"\[[^\]]*\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)"
+    )
+
+    failures = []
+
+    for guide in guides:
+        source = ROOT / guide
+
+        if not source.is_file():
+            failures.append(f"{guide}: supported guide is missing")
+            continue
+
+        text = source.read_text(encoding="utf-8")
+
+        for match in link_pattern.finditer(text):
+            target = match.group(1).strip()
+            parsed = urlsplit(target)
+
+            # External URLs and other schemes are not local files.
+            if parsed.scheme or parsed.netloc:
+                continue
+
+            # Fragment-only links stay within the current document.
+            # Heading anchors are intentionally not validated.
+            if not parsed.path:
+                continue
+
+            local_target = source.parent / unquote(parsed.path)
+
+            try:
+                local_target.resolve().relative_to(ROOT.resolve())
+            except ValueError:
+                failures.append(
+                    f"{guide}: local link escapes repository: {target}"
+                )
+                continue
+
+            if not local_target.exists():
+                failures.append(
+                    f"{guide}: missing local link target: {parsed.path}"
+                )
+
+    if failures:
+        raise RuntimeError("\n".join(failures))
+
+    print(f"Local Markdown links passed: {len(guides)} supported guides.")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=("syntax", "offline"))
+    parser.add_argument("check", choices=("syntax", "offline", "links"))
     args = parser.parse_args()
     try:
-        {"syntax": syntax, "offline": offline}[args.check]()
+        {"syntax": syntax, "offline": offline, "links": check_local_links}[args.check]()
     except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
