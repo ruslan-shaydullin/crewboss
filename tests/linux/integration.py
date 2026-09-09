@@ -5,6 +5,7 @@ Only GitHub and the model provider are fixtures. Install a built release archive
 before testing; never execute a separate frozen copy of the runtime.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,7 @@ def main():
     prefix = 'crewboss-integration-' + str(os.getpid())
     unit_names = [prefix + '-' + name for name in ('api.service','launcher.service','loop-keepalive.service','loop-keepalive.timer')]
     assertions = []
+    bundle_sha256 = hashlib.sha256(args.bundle.read_bytes()).hexdigest()
     created_user = False
     fixture_dir = Path(tempfile.mkdtemp(prefix='crewboss-linux-'))
     fixture_dir.chmod(0o755)
@@ -116,7 +118,7 @@ def main():
             'CB_GH_BIN':str(localbin/'gh'),'CB_CLAUDE_BIN':str(localbin/'claude'),
             'CB_SPAWN':str(runtime/'fixture-spawn.sh'),'CB_NO_INTEGRATE':'1',
             'CB_POLL':'1','CB_MAX_TICKS':'180','CB_MAX_PARALLEL':'1','CB_TASK_TIMEOUT':'30',
-            'CB_PROGRESS_STALL_HOURS':'0','CB_TEST_HOST_SENTINEL':str(home/'host-only-sentinel'),
+            'CB_TEST_HOST_SENTINEL':str(home/'host-only-sentinel'),
             'CB_TEST_HOST_NET':os.readlink('/proc/self/ns/net'),
         }
         envfile = home / '.crewboss.env'
@@ -205,13 +207,17 @@ def main():
         assert pid(launcher_unit) == service_pid
         assert Path(f'/proc/{service_pid}').exists()
         record('keepalive oneshot leaves launcher alive in its own cgroup and is idempotent')
-        args.report.write_text(json.dumps({'passed':True,'platform':platform.platform(),'assertions':assertions},indent=2)+'\n')
+        args.report.write_text(json.dumps({'passed':True,'platform':platform.platform(),
+            'bundle_sha256':bundle_sha256,'assertions':assertions},indent=2)+'\n')
     except Exception:
         for unit in unit_names:
             print(run('journalctl','-u',unit,'--no-pager','-n','100',check=False).stdout,file=sys.stderr)
-        for path in (runtime/'run/launcher.out',runtime/'run/work/10/run.log',runtime/'run/infra-failure'):
+        for path in (runtime/'run/launcher.out',runtime/'run/work/10/run.log',
+                     runtime/'run/work/10/status.json',runtime/'run/infra-failure',
+                     runtime/'run/fixture-gh.calls'):
             if path.is_file(): print(path, path.read_text(),file=sys.stderr)
-        args.report.write_text(json.dumps({'passed':False,'assertions':assertions},indent=2)+'\n')
+        args.report.write_text(json.dumps({'passed':False,'bundle_sha256':bundle_sha256,
+            'assertions':assertions},indent=2)+'\n')
         raise
     finally:
         for unit in unit_names:

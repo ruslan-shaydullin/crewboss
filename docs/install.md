@@ -76,10 +76,12 @@ CB_HOME/
 Review the installed example team and governance configuration for your project.
 The release includes the governance hook and its `PreToolUse` wiring; copying
 only the launcher scripts is insufficient for a working installation.
-Review `model` values in `team/roles/*.md` before launching work and select Claude
-model IDs available to your account. The sample roles do not establish provider
-availability. The current spawn primitive forwards `claude-*` model overrides;
-without such an override, the provider CLI chooses its default model.
+Review `model` values in the active role definitions before launching work and
+select Claude model IDs available to your account. With the default configuration,
+these definitions come from `gov/.claude/agents/`; manifest mode uses the selected
+team's role definitions as described below. The sample roles do not establish
+provider availability. The spawn primitive forwards explicit `claude-*` model
+overrides; the provider CLI handles model selection when no override is passed.
 
 ## Configure the account
 
@@ -106,6 +108,26 @@ Use literal `KEY=value` assignments in the file. Do not use `export`, `$HOME`,
 does not perform shell expansion. Startup sources it as trusted shell input, so
 keep it owned by the runtime account, mode `0600`, and outside version control.
 Assignments in the file override inherited environment values.
+
+The dashboard's Team editor reads and saves `CB_TEAM`, which defaults to the
+installed `CB_HOME/team` directory. The launcher loads that team's organization
+policy only when you explicitly enable manifest mode with `CB_MANIFEST`. To opt
+in after reviewing the team and its workflow, add both literal paths to the
+shared configuration, replacing the example prefix with your installation:
+
+```text
+CB_MANIFEST=/var/lib/crewboss/cbnet/team
+CB_TEAM=/var/lib/crewboss/cbnet/team
+```
+
+Keep these settings aligned so the dashboard edits the team selected by the
+launcher. The manifest directory must already exist. This mode enables its
+configured analysis, approval, and convergence policies; it is left disabled in
+the supplied example and is not exercised by the Linux sandbox integration
+fixture. Without `CB_MANIFEST`, agent preparation copies the installed
+`gov/.claude/agents/` definitions into the work directory. Saving Team changes
+does not synchronize that separate governance copy or enable manifest mode.
+Review and update the active definitions explicitly before starting new work.
 
 Install and configure the provider CLI for this account separately. The defaults
 are `$HOME/.local/bin/claude`, installation directory `$HOME/.local`, configuration

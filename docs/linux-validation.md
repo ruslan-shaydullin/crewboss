@@ -9,6 +9,7 @@ and does not create issues or pull requests.
 The test checks:
 
 - authenticated API startup and restart after a process crash;
+- saving and reading back a role through the installed API and team validator;
 - Pause/Resume and Kill/Unkill behavior through HTTP;
 - one launcher holding the actual `flock` lock;
 - dispatch through real nsjail and delivery back to the board fixture;

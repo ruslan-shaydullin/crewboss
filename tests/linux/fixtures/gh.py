@@ -22,6 +22,17 @@ def option(*names, default=None):
             return args[args.index(name) + 1]
     return default
 
+def api_fields():
+    return dict(args[index + 1].split('=', 1)
+                for index, arg in enumerate(args[:-1])
+                if arg in ('-f', '-F', '--field', '--raw-field') and '=' in args[index + 1])
+
+def persist_labels(labels):
+    target = root / 'fixture-labels.json'
+    temporary = target.with_suffix('.tmp')
+    temporary.write_text(json.dumps(labels))
+    temporary.replace(target)
+
 def emit(data):
     query = option('--jq', '-q')
     raw = json.dumps(data)
@@ -44,7 +55,16 @@ if args[:2] == ['api', '/rate_limit'] or args[:2] == ['api', 'rate_limit']:
 elif args and args[0] == 'api':
     endpoint = next((a for a in args[1:] if a.startswith('/repos/') or a.startswith('repos/')), '')
     if endpoint.endswith('/issues'):
-        data = [{**item, 'state':item['state'].lower()} for item in board]
+        fields = api_fields()
+        state = fields.get('state', 'open').upper()
+        data = [{**item, 'state':item['state'].lower()} for item in board
+                if state == 'ALL' or item['state'] == state]
+        if fields.get('labels'):
+            wanted = fields['labels'].split(',')
+            data = [item for item in data if all(name in [label['name'] for label in item['labels']]
+                                                for name in wanted)]
+        page = int(fields.get('page', 1)); size = int(fields.get('per_page', 30))
+        data = data[(page - 1) * size:] if '--paginate' in args else data[(page - 1) * size:page * size]
         if '--include' in args:
             print('HTTP/2.0 200 OK\r\netag: "fixture"\r\n\r')
         emit(data)
@@ -64,6 +84,15 @@ elif args[:2] == ['issue', 'list']:
     emit(items)
 elif args[:2] == ['issue', 'view']:
     emit(next(item for item in board if item['number'] == int(args[2])))
+elif args[:2] == ['issue', 'create']:
+    body = option('--body', '-b', default='')
+    if option('--body-file'): body = Path(option('--body-file')).read_text()
+    number = max((item['number'] for item in board), default=0) + 1
+    board.append({'number':number, 'title':option('--title', '-t', default=''),
+                  'state':'OPEN', 'body':body, 'comments':[],
+                  'labels':[{'name':name} for name in option('--label', '-l', default='').split(',') if name]})
+    persist()
+    print(f'https://github.com/{os.environ["CB_REPO"]}/issues/{number}')
 elif args[:2] in (['issue','edit'], ['issue','close'], ['issue','comment']):
     item = next(item for item in board if item['number'] == int(args[2]))
     if args[1] == 'edit':
@@ -79,13 +108,39 @@ elif args[:2] in (['issue','edit'], ['issue','close'], ['issue','comment']):
         if option('--body-file'): body = Path(option('--body-file')).read_text()
         item.setdefault('comments',[]).append({'body':body})
     persist(); emit({'ok':True})
-elif args[:2] == ['label','create']:
-    emit({'ok':True})
+elif args[:2] in (['label','list'], ['label','create'], ['label','edit']):
+    label_path = root / 'fixture-labels.json'
+    labels = json.loads(label_path.read_text()) if label_path.exists() else {}
+    for item in board:
+        for label in item['labels']:
+            labels.setdefault(label['name'], {'name':label['name'], 'color':'ededed', 'description':''})
+    if args[1] == 'list':
+        rows = [labels[name] for name in sorted(labels)]
+        if '--json' in args: emit(rows)
+        else:
+            for label in rows: print(f'{label["name"]}\t{label["description"]}\t#{label["color"]}')
+    else:
+        name = args[2]
+        if args[1] == 'create' and name in labels:
+            print('label already exists', file=sys.stderr); sys.exit(1)
+        if args[1] == 'edit' and name not in labels:
+            print('label does not exist', file=sys.stderr); sys.exit(1)
+        labels[name] = {'name':name, 'color':option('--color', default='ededed'),
+                        'description':option('--description', default='')}
+        persist_labels(labels)
 elif args[:2] == ['pr','list']:
-    leaf = next(i for i in board if i['number'] == 10)
-    if (root / 'work/10/status.json').exists():
-        emit([{'number':100,'state':'OPEN','headRefName':'leaf/10-fixture','baseRefName':'charter/1','url':'https://github.com/fixture/project/pull/100'}])
-    else: emit([])
+    status_file = root / 'work/10/status.json'
+    status = json.loads(status_file.read_text()) if status_file.exists() else {}
+    # A starting/failed provider has not delivered a PR. This scenario never
+    # merges one: --state merged/closed must remain empty after delivery too.
+    rows = ([{'number':100,'state':'OPEN','headRefName':'leaf/10-fixture',
+              'baseRefName':'charter/1','url':'https://github.com/fixture/project/pull/100'}]
+            if status.get('phase') == 'done' else [])
+    state = option('--state', '-s', default='open').upper()
+    head = option('--head', '-H'); base = option('--base', '-B')
+    emit([item for item in rows if (state == 'ALL' or item['state'] == state)
+          and (head is None or item['headRefName'] == head)
+          and (base is None or item['baseRefName'] == base)])
 elif args[:2] == ['repo','view']:
     emit({'defaultBranchRef':{'name':'main'}, 'nameWithOwner':'fixture/project'})
 else:
