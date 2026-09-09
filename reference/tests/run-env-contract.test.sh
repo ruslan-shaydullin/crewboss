@@ -214,7 +214,7 @@ echo "=== Case D: CB_NO_INTEGRATE=1 -> launcher loudly logs rework/escalation he
 FAKE_HOME_D="$ROOT/fh_d"; mkdir -p "$FAKE_HOME_D/cbnet/run"
 cp "$FAKE_HOME/.crewboss.env" "$FAKE_HOME_D/.crewboss.env"
 cp "$RUNTIME/crewboss-launcher-gh.sh" "$FAKE_HOME_D/cbnet/crewboss-launcher-gh.sh"
-cp "$RUNTIME/../../proto/r6/board-gh.sh"   "$FAKE_HOME_D/cbnet/board-gh.sh"
+cp "$RUNTIME/../../reference/runtime/board-gh.sh"   "$FAKE_HOME_D/cbnet/board-gh.sh"
 cp "$RUNTIME/../../proto/r6/launchable.sh" "$FAKE_HOME_D/cbnet/launchable.sh"
 chmod +x "$FAKE_HOME_D"/cbnet/*.sh
 cat > "$BIN/gh" <<'GHD207'

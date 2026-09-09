@@ -34,7 +34,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 TEAM_EXAMPLE="$(cd "$HERE/../../team-example" && pwd)"
 MANIFEST_LIB_SRC="$HERE/../../reference/launcher/manifest.sh"

@@ -20,10 +20,10 @@ OUT="${2:-$REPO_ROOT/proto/provision/provision.sh}"
 # Format: "repo-relative-path:bundle-filename"
 # Source of truth: reference/runtime-manifest.tsv (canonical entries below)
 EXTRA_FILES=(
-  "proto/net/bridge.py:bridge.py"
-  "proto/r5/redact.pl:redact.pl"
+  "reference/runtime/bridge.py:bridge.py"
+  "reference/runtime/redact.pl:redact.pl"
   "proto/r5/crewboss-prep-spawn.sh:crewboss-prep-spawn.sh"
-  "proto/r6/board-gh.sh:board-gh.sh"
+  "reference/runtime/board-gh.sh:board-gh.sh"
   "reference/launcher/launchable.sh:launchable.sh"
   "reference/launcher/labels-setup.sh:labels-setup.sh"
   "proto/seccomp/gen-policy.sh:gen-policy.sh"

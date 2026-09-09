@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 INTEGRATOR="${INTEGRATOR_OVERRIDE:-$HERE/../runtime/crewboss-integrator.sh}"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 REWORK_PREP="${REWORK_PREP_OVERRIDE:-$HERE/../runtime/rework-prep.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT

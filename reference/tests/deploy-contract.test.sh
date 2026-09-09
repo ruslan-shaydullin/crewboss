@@ -17,7 +17,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 RUN_CHARTER="$REPO_ROOT/reference/runtime/run-charter.sh"
 PREP_SPAWN="$REPO_ROOT/reference/runtime/crewboss-prep-spawn-gh.sh"
-BOARD_GH_SRC="$REPO_ROOT/proto/r6/board-gh.sh"
+BOARD_GH_SRC="$REPO_ROOT/reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$REPO_ROOT/proto/r6/launchable.sh"
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT

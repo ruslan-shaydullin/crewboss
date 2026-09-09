@@ -767,16 +767,28 @@ cmd_regen_persist() {
   fi
 }
 
+# Comment-only delivery uses the same board transaction as the run loop.
+cmd_reviewer_leaf() {
+  local id="${1:?reviewer leaf id required}"
+  local HERE_LAUNCHER RUN STATE BOARD
+  HERE_LAUNCHER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$HERE_LAUNCHER/run-env.sh" || return $?
+  RUN="$CB_HOME/run"; STATE="$RUN/state"; BOARD="$CB_HOME/board-gh.sh"
+  source "$HERE_LAUNCHER/launcher-board.sh" || return $?
+  _cb_reviewer_consume "$id"
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   case "${1:-}" in
+    reviewer-leaf) shift; cmd_reviewer_leaf "$@" ;;
     close-leaf)    shift; cmd_close_leaf "$@" ;;
     gate-charter)  shift; cmd_gate_charter "$@" ;;
     try-merge)     shift; cmd_try_merge "$@" ;;
     verify-merged) shift; cmd_verify_merged "$@" ;;
     regen-persist) shift; cmd_regen_persist "$@" ;;
     *)
-      printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist} ...\n' \
+      printf 'usage: %s {close-leaf|gate-charter|try-merge|verify-merged|regen-persist|reviewer-leaf} ...\n' \
         "$(basename "$0")" >&2
       exit 64 ;;
   esac

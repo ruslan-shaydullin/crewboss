@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # board-states.test.sh — charter manifest-pipeline state-machine tests (issue #133).
-# Class: unit, real proto/r6/board-gh.sh + PATH-shim gh stub + file-board.
+# Class: unit, real reference/runtime/board-gh.sh + PATH-shim gh stub + file-board.
 #
 # RED-1: charter with status:needs-analysis → board-gh.sh get N state = "needs-analysis"
 #        (before fix: falls through to "open").
@@ -17,7 +17,7 @@
 # State is observed ONLY via board-gh.sh get/plannable — never by reading the board JSON directly.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 
 pass=0; fail=0
 ok(){ pass=$((pass+1)); printf 'ok   %s\n' "$1"; }

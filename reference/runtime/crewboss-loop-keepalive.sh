@@ -50,7 +50,8 @@ done
 # ── 1) Env contract — root A: resolve CB_HOME exactly like operator `run` ─────
 # HOME must be concrete so run-env.sh resolves CB_HOME=$HOME/cbnet (systemd/cron env
 # may not export HOME). Tests inject HOME explicitly; honour it.
-export HOME="${HOME:-/home/ec2-user}"
+: "${HOME:?keepalive requires the service account HOME}"
+export HOME
 # Provisional CB_HOME so we can locate run-env.sh (run-env.sh re-exports the canonical
 # CB_HOME=$HOME/cbnet, closing the /tmp/cbnet divergence).
 : "${CB_HOME:=$HOME/cbnet}"

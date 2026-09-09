@@ -37,7 +37,7 @@ LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 RECOVERY_PARSE="$HERE/../runtime/recovery-parse.sh"
 TRIAGE_PARSE="$HERE/../runtime/triage-parse.sh"
 INTEGRATOR="$HERE/../runtime/crewboss-integrator.sh"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 
 pass=0; fail=0

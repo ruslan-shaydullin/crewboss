@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import React from 'react'
-import { fetchTask } from './api'
+import { fetchTask, config } from './api'
 
 // ─── Scenario 2 — QueuePanel click → TaskDrawer body ──────────────────────
 const mockFetch = vi.fn()
@@ -105,6 +105,7 @@ describe('QueuePanel onOpen prop — click fires callback with task number', () 
 
 describe('fetchTask /api/task/N returns body + TaskDrawer renders body prose', () => {
   beforeEach(() => {
+  config.token = 'fixture-ui-token'
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({

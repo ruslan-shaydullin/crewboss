@@ -32,7 +32,7 @@ unset CB_MANIFEST 2>/dev/null || true
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PRED_R6="$HERE/../../proto/r6/launchable.sh"
 PRED_REF="$HERE/../launcher/launchable.sh"
-BOARD_GH="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH="$HERE/../../reference/runtime/board-gh.sh"
 
 pass=0; fail=0
 ok(){ pass=$((pass+1)); printf 'ok   %s\n' "$1"; }

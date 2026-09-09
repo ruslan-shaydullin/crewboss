@@ -6,10 +6,14 @@
 # first use (under a per-charter flock). Honors the "review = whole charter" model.
 # Usage (matches launcher contract): charter-leaf-prep.sh <id> <role>
 set -uo pipefail
-CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
-CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] && [[ "$1" =~ ^[0-9]+$ ]] \
+  || { echo 'usage: charter-leaf-prep.sh TASK_NUMBER [ROLE_IDENTIFIER]' >&2; exit 2; }
 ID="$1"; ROLE="${2:-executor}"
-GH_TOKEN="$(gh auth token)"; export GH_TOKEN
+[[ "$ROLE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo 'leaf: invalid role identifier' >&2; exit 2; }
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
+bash "$CB_HOME/crewboss-doctor.sh" --preflight || exit 2
+RUN="$CB_HOME/run"
 # Token-free URL: CB_GIT_REMOTE from run-env.sh if set; else build from CB_REPO.
 # Credential helper (GIT_CONFIG_*) provides GH_TOKEN at git call time — no token in URL.
 URL="${CB_GIT_REMOTE:-https://github.com/${CB_REPO}.git}"
@@ -76,7 +80,7 @@ TS="$(date +%s)"
   fi
 ) 9>"$RUN/charter-$C.lock" || exit 2
 
-PROMPT="You are the executor for issue #$ID in repo $CB_REPO.
+PROMPT="You are the $ROLE for issue #$ID in repo $CB_REPO.
 Hard rules for THIS run:
 - You are ALREADY on branch leaf/$ID-$TS, based on the charter integration branch '$CB' (NOT main). Sibling leaves of charter #$C may already be merged into '$CB'. Commit your work on THIS branch. Do NOT create or switch to any other branch.
 - When the work is done and the verification gate is green, push this branch (git push -u origin HEAD) and open ONE pull request: gh pr create --base $CB --title '<short>' --body 'Closes #$ID'. The PR base MUST be '$CB', NOT main. Then STOP — do not merge, do not touch other issues.
@@ -85,4 +89,14 @@ Hard rules for THIS run:
 ---- TASK (issue #$ID) ----
 $BODY"
 PF="$RUN/work/$ID/task.prompt"; printf '%s' "$PROMPT" > "$PF"
+if [ "${CB_GOVERNED:-1}" = 1 ] && [ -d "$CB_HOME/gov/.claude" ]; then
+  mkdir -p "$WA/work/.claude"
+  cp -R "$CB_HOME/gov/.claude/." "$WA/work/.claude"
+  printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+if [ -n "${CB_MANIFEST:-}" ] && [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
+  mkdir -p "$WA/work/.claude/agents"
+  cp "$CB_MANIFEST/roles/$ROLE.md" "$WA/work/.claude/agents/$ROLE.md"
+  printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
 exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$CB_REPO"

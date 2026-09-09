@@ -1,3 +1,7 @@
+import { subscribeDemo } from './demo'
+import { apiRequest, DEMO_MODE } from './transport'
+import { streamState } from './sse'
+
 export type Task = {
   n: number
   kind: 'charter' | 'leaf' | 'milestone'
@@ -42,17 +46,20 @@ export type State = {
 }
 
 const KURL = 'cb_api'
-const KTOK = 'cb_token'
+// Remove credentials persisted by older versions; never migrate them into the
+// new session. An operator explicitly reconnects after loading the dashboard.
+try { localStorage.removeItem('cb_token') } catch { /* storage may be unavailable */ }
+let sessionToken = ''
 export const config = {
   get url() { return localStorage.getItem(KURL) || 'http://127.0.0.1:8787' },
   set url(v: string) { localStorage.setItem(KURL, v) },
-  get token() { return localStorage.getItem(KTOK) || '' },
-  set token(v: string) { localStorage.setItem(KTOK, v) },
+  get token() { return sessionToken },
+  set token(v: string) { sessionToken = v },
 }
 
 export async function fetchState(): Promise<State | null> {
   try {
-    const r = await fetch(config.url + '/api/state', { headers: { Authorization: 'Bearer ' + config.token } })
+    const r = await apiRequest(config.url + '/api/state', { headers: { Authorization: 'Bearer ' + config.token } })
     if (!r.ok) return null
     return (await r.json()) as State
   } catch {
@@ -60,19 +67,9 @@ export async function fetchState(): Promise<State | null> {
   }
 }
 
-/** SSE (token in query — EventSource can't set headers) + slow authed poll fallback. */
+/** Authenticated event stream with reconnect and polling fallback. */
 export function subscribe(onState: (s: State) => void, onConn: (ok: boolean) => void): () => void {
-  let es: EventSource | null = null
-  try {
-    es = new EventSource(config.url + '/api/events?token=' + encodeURIComponent(config.token))
-    es.addEventListener('state', (e) => { onConn(true); onState(JSON.parse((e as MessageEvent).data)) })
-    es.onerror = () => onConn(false)
-  } catch { /* fall through to poll */ }
-  const poll = setInterval(async () => {
-    const s = await fetchState()
-    if (s) { onConn(true); onState(s) } else onConn(false)
-  }, 8000)
-  return () => { es?.close(); clearInterval(poll) }
+  return DEMO_MODE ? subscribeDemo(onState, onConn) : streamState(config.url, config.token, onState, onConn)
 }
 
 export type TaskDetail = {
@@ -86,7 +83,7 @@ export type TaskDetail = {
 }
 export async function fetchTask(n: number): Promise<TaskDetail | null> {
   try {
-    const r = await fetch(config.url + '/api/task/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
+    const r = await apiRequest(config.url + '/api/task/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
     if (!r.ok) return null
     return (await r.json()) as TaskDetail
   } catch { return null }
@@ -105,7 +102,7 @@ export async function facilitateMessage(
   history: FacilitateMessage[]
 ): Promise<FacilitateResult> {
   try {
-    const r = await fetch(config.url + '/api/facilitate', {
+    const r = await apiRequest(config.url + '/api/facilitate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify({ kind, draft, message, history }),
@@ -121,7 +118,7 @@ export type IssueResult = { ok: boolean; msg: string; number?: number }
 
 export async function createIssue(payload: IssuePayload): Promise<IssueResult> {
   try {
-    const r = await fetch(config.url + '/api/issue', {
+    const r = await apiRequest(config.url + '/api/issue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify(payload),
@@ -135,7 +132,7 @@ export async function createIssue(payload: IssuePayload): Promise<IssueResult> {
 export type IssueComment = { id: string; author: string; created: string; body: string }
 export async function fetchComments(n: number): Promise<IssueComment[]> {
   try {
-    const r = await fetch(config.url + '/api/comments/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
+    const r = await apiRequest(config.url + '/api/comments/' + n, { headers: { Authorization: 'Bearer ' + config.token } })
     if (!r.ok) return []
     const data = (await r.json()) as { ok: boolean; comments: IssueComment[] }
     return data.ok ? data.comments : []
@@ -144,7 +141,7 @@ export async function fetchComments(n: number): Promise<IssueComment[]> {
 
 export async function deleteComment(n: number, commentId: string): Promise<CmdResult> {
   try {
-    const r = await fetch(config.url + '/api/command', {
+    const r = await apiRequest(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify({ action: 'delete-comment', number: n, comment_id: commentId }),
@@ -157,7 +154,7 @@ export async function deleteComment(n: number, commentId: string): Promise<CmdRe
 
 export async function resolveDecision(n: number, decisionText: string): Promise<CmdResult> {
   try {
-    const r = await fetch(config.url + '/api/command', {
+    const r = await apiRequest(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify({ action: 'resolve-decision', number: n, decision_text: decisionText }),
@@ -170,7 +167,7 @@ export async function resolveDecision(n: number, decisionText: string): Promise<
 
 export async function setCheck(n: number, index: number, checked: boolean): Promise<CmdResult> {
   try {
-    const r = await fetch(config.url + '/api/command', {
+    const r = await apiRequest(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify({ action: 'set-check', number: n, index, checked }),
@@ -182,7 +179,7 @@ export async function setCheck(n: number, index: number, checked: boolean): Prom
 }
 
 export async function postQueue(order: number[]): Promise<void> {
-  const r = await fetch(config.url + '/api/queue', {
+  const r = await apiRequest(config.url + '/api/queue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
     body: JSON.stringify({ order }),
@@ -200,7 +197,7 @@ export async function searchBoard(q: string): Promise<Task[] | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 5000)
   try {
-    const r = await fetch(
+    const r = await apiRequest(
       config.url + '/api/search?q=' + encodeURIComponent(q),
       { headers: { Authorization: 'Bearer ' + config.token }, signal: controller.signal }
     )
@@ -219,7 +216,7 @@ export async function command(action: string, number?: number, comment?: string)
   try {
     const payload: Record<string, unknown> = { action, number }
     if (comment !== undefined) payload.comment = comment
-    const r = await fetch(config.url + '/api/command', {
+    const r = await apiRequest(config.url + '/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify(payload),

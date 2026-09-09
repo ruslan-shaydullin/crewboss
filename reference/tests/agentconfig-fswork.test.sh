@@ -46,7 +46,7 @@ echo "$(run_dryrun executor unset)" | grep -q "WORK_MOUNT=-B" \
   || ko "fs_work unset did NOT default to -B"
 
 # 3. the flag is actually wired into the real nsjail invocation (not only the dry-run)
-grep -qF '$WORK_MOUNT "$WORK:/work"' "$SPAWN" \
+grep -qF '"$WORK_MOUNT" "$WORK:/work"' "$SPAWN" \
   && ok "nsjail call uses \$WORK_MOUNT for /work (flag wired into real spawn)" \
   || ko "nsjail call does NOT use \$WORK_MOUNT — dry-run and real spawn diverge"
 
@@ -77,7 +77,7 @@ echo "$out" | grep -q "CBNET_MOUNT=-B" \
   || ko "fs_cbnet unset did NOT default to -B: $out"
 
 # 7. /cbnet flag wired into the real nsjail call; old hardcode removed
-grep -qF '$CBNET_MOUNT "$CB_HOME:/cbnet"' "$SPAWN" \
+grep -qF '"$CBNET_MOUNT" "$CB_HOME:/cbnet"' "$SPAWN" \
   && ok "nsjail call uses \$CBNET_MOUNT for /cbnet (flag wired into real spawn)" \
   || ko "nsjail call does NOT use \$CBNET_MOUNT"
 grep -qF -- '-B "$CB_HOME:/cbnet"' "$SPAWN" \

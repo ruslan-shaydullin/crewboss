@@ -15,7 +15,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../runtime/crewboss-prep-spawn-gh.sh"
-BOARD_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_SRC="$HERE/../../reference/runtime/board-gh.sh"
 TEAM_EXAMPLE="$(cd "$HERE/../../team-example" && pwd)"
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT

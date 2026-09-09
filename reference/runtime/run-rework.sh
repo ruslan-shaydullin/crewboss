@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-source ~/.crewboss.env
-export CB_HOME=$HOME/cbnet GH_REPO=ruslan-shaydullin/crewboss
-mkdir -p ~/cbnet/run/rework-logs
-nohup bash ~/cbnet/rework-prep.sh 7 task/7-1781179662 > ~/cbnet/run/rework-logs/7.out 2>&1 &
-echo "  dispatched #7 (animations, integrate) pid=$!"
-nohup bash ~/cbnet/rework-prep.sh 6 task/6-1781179664 > ~/cbnet/run/rework-logs/6.out 2>&1 &
-echo "  dispatched #6 (role form, integrate) pid=$!"
-nohup bash ~/cbnet/rework-prep.sh 26 > ~/cbnet/run/rework-logs/26.out 2>&1 &
-echo "  dispatched #26 (modal bug, fresh) pid=$!"
+# Start rework for explicitly selected issue numbers. Optional CB_REWORK_ROLE
+# selects the owning role; CB_OLD_BRANCH retains rework-prep's integration mode.
+set -euo pipefail
+[ "$#" -gt 0 ] || { echo 'usage: run-rework.sh ISSUE_NUMBER [ISSUE_NUMBER ...]' >&2; exit 2; }
+for issue; do
+  [[ "$issue" =~ ^[0-9]+$ ]] || { echo 'run-rework: every issue must be numeric' >&2; exit 2; }
+done
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh"
+bash "$CB_HOME/crewboss-doctor.sh" --preflight
+umask 077
+export GH_REPO="$CB_REPO"
+mkdir -p "$CB_HOME/run/rework-logs"
+for issue; do
+  nohup bash "$CB_HOME/rework-prep.sh" "$issue" "${CB_REWORK_ROLE:-executor}" \
+    > "$CB_HOME/run/rework-logs/$issue.out" 2>&1 < /dev/null &
+  printf 'dispatched rework #%s (PID %s)\n' "$issue" "$!"
+done

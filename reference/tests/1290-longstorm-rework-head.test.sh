@@ -32,7 +32,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INTEGRATOR="${INTEGRATOR_OVERRIDE:-$HERE/../runtime/crewboss-integrator.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 
 pass=0; fail=0; skip=0
 ok(){ pass=$((pass+1)); printf 'ok   %s\n' "$1"; }

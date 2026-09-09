@@ -37,3 +37,66 @@ jobs:
         run: make check
       - name: Verify checks did not change tracked files
         run: git diff --exit-code HEAD
+
+  linux-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/app/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Build the release that will be installed
+        run: |
+          make setup
+          make release
+      - name: Install pinned nsjail on the disposable host
+        run: bash tests/linux/install-nsjail.sh
+      - name: Test installed runtime with real systemd, flock and sandbox
+        run: |
+          sudo python3 tests/linux/integration.py --bundle "dist/releases/crewboss-$(cat VERSION).tar.gz" --report "$RUNNER_TEMP/linux-runtime.json"
+      - name: Verify integration did not change tracked files
+        run: git diff --exit-code HEAD
+      - name: Save Linux acceptance report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-runtime-report
+          path: ${{ runner.temp }}/linux-runtime.json
+          if-no-files-found: warn
+      - name: Save tested alpha bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: alpha-bundle
+          path: dist/releases/
+
+  browser-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/app/package-lock.json
+      - run: make setup
+      - name: Install browser test runtime
+        run: npm exec --prefix ui/app -- playwright install --with-deps chromium
+      - name: Exercise credential-free demo and production dashboard
+        env:
+          CB_DEMO_SCREENSHOT_DIR: ${{ runner.temp }}/demo-screenshots
+        run: |
+          node ui/app/scripts/demo-smoke.mjs
+          node ui/app/scripts/production-smoke.mjs
+      - name: Verify browser tests did not change tracked files
+        run: git diff --exit-code HEAD

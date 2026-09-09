@@ -11,12 +11,19 @@ Endpoints (all under /api, bearer-auth except /api/health):
     GET  /api/state                  -> {board:[...], budget:{...}, flags:{...}, autonomy:{...}}
     GET  /api/events                 -> text/event-stream; emits "state" events on change
     POST /api/command {action,...}   -> run | pause | resume | kill | unkill | approve(#) | hold(#) | unhold(#)
-Auth: header  Authorization: Bearer <CB_API_TOKEN>.  CORS open (UI is a separate origin).
+Auth: header Authorization: Bearer <CB_API_TOKEN>. CORS uses an exact origin allowlist.
 """
 import hmac, hashlib
 import json, os, shutil, subprocess, sys, tempfile, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Companion modules also resolve when this file is loaded by importlib in tests.
+_API_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if _API_DIRECTORY not in sys.path:
+    sys.path.insert(0, _API_DIRECTORY)
+from crewboss_http import SecureRequestMixin, allowed_origins, require_api_token
+from crewboss_launch import launcher_environment, load_runtime_environment, reap_launcher
 
 REPO   = os.environ.get("CB_REPO", "")
 CB_HOME= os.environ.get("CB_HOME", os.path.expanduser("~/cbnet"))
@@ -162,29 +169,10 @@ def build_agents(by_n, loop_running=False):
 
 def build_loop_info(board=None):
     """Read loop-mode info from run-env.sh (same source as action=run, #148)."""
-    run_env_sh = os.path.join(CB_HOME, "run-env.sh")
-    home = os.environ.get("HOME", os.path.expanduser("~"))
-    seed_env = {
-        "HOME": home,
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-    }
-    # Pass CB_NO_INTEGRATE through so D2 opt-out is respected when the daemon carries it
-    if os.environ.get("CB_NO_INTEGRATE"):
-        seed_env["CB_NO_INTEGRATE"] = os.environ["CB_NO_INTEGRATE"]
-    env = {}
-    if os.path.isfile(run_env_sh):
-        try:
-            env_raw = subprocess.run(
-                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
-                capture_output=True, text=True, env=seed_env, timeout=15
-            ).stdout
-            for line in env_raw.splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    if k and k.isidentifier():
-                        env[k] = v
-        except Exception:
-            pass
+    try:
+        env = load_runtime_environment(CB_HOME, REPO)
+    except RuntimeError:
+        env = {}
     # integrate: CB_GIT_REMOTE non-empty after sourcing run-env.sh (D2 logic)
     integrate = bool(env.get("CB_GIT_REMOTE", "").strip())
     try:    max_ticks    = int(env.get("CB_MAX_TICKS",    "1800"))
@@ -704,6 +692,78 @@ def build_team():
     return {"present": True, "nodes": nodes, "roles": roles,
             "departments": org.get("departments", []), "policy": org.get("policy", {})}
 
+_launch_lock = threading.Lock()
+_launch_process = None
+
+
+def _start_launcher(scoped_number=None):
+    """Serialize API starts through preflight and the launcher's PID publication.
+
+    The launcher owns launcher.pid. API-owned children are retained while alive
+    so a second request cannot start work before that file has been published.
+    The launcher's own flock remains authoritative across API and systemd.
+    """
+    global _launch_process
+    scoped = scoped_number is not None
+    with _launch_lock:
+        if os.path.exists(os.path.join(RUN, "kill_switch")):
+            return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
+        scoped_lock = os.path.join(RUN, "scoped_charter")
+        if os.path.exists(scoped_lock):
+            return {"ok": False, "msg": "scoped run already active" if scoped else "queue blocked: scoped run active"}
+        running = _launch_process is not None and _launch_process.returncode is None
+        if not running:
+            try:
+                with open(os.path.join(RUN, "launcher.pid")) as pid_file:
+                    pid = int(pid_file.read().strip())
+                if pid <= 0:
+                    raise ValueError("invalid launcher pid")
+                os.kill(pid, 0)
+                running = True
+            except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+                pass
+        if running:
+            return {"ok": not scoped, "msg": "launcher already starting or running"}
+        try:
+            launch_env = launcher_environment(CB_HOME, REPO)
+        except RuntimeError as error:
+            return {"ok": False, "msg": str(error)}
+        os.makedirs(RUN, exist_ok=True)
+        if scoped:
+            try:
+                with open(scoped_lock, "x") as scope_file:
+                    scope_file.write(str(scoped_number))
+            except FileExistsError:
+                return {"ok": False, "msg": "scoped run already active"}
+            launch_env["CREWBOSS_CHARTER"] = str(scoped_number)
+        launcher_sh = os.path.join(CB_HOME, "crewboss-launcher-gh.sh")
+        command = (["bash", "-c", 'bash "$1" run; result=$?; rm -f -- "$2"; exit "$result"',
+                    "crewboss-scoped", launcher_sh, scoped_lock] if scoped
+                   else ["bash", launcher_sh, "run"])
+        try:
+            with open(os.path.join(RUN, "launcher.out"), "a") as output:
+                process = subprocess.Popen(command, env=launch_env, stdout=output, stderr=subprocess.STDOUT)
+        except OSError:
+            if scoped:
+                try: os.remove(scoped_lock)
+                except FileNotFoundError: pass
+            return {"ok": False, "msg": "Could not start the launcher; check the runtime installation"}
+        _launch_process = process
+
+        def finished():
+            global _launch_process
+            with _launch_lock:
+                if _launch_process is process:
+                    _launch_process = None
+                    if scoped:
+                        try: os.remove(scoped_lock)
+                        except FileNotFoundError: pass
+
+        reap_launcher(process, finished)
+        return {"ok": True, "msg": (f"scoped launcher started for charter {scoped_number}"
+                                     if scoped else "launcher started")}
+
+
 def do_command(body):
     a = body.get("action"); n = str(body.get("number","")).strip()
     def flag(name, on):
@@ -715,101 +775,12 @@ def do_command(body):
     elif a=="kill":   flag("kill_switch",True);  return {"ok":True,"msg":"kill-switch on"}
     elif a=="unkill": flag("kill_switch",False); return {"ok":True,"msg":"kill-switch off"}
     elif a=="run":
-        ks = os.path.join(RUN, "kill_switch")
-        if os.path.exists(ks):
-            return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
-        # scoped_charter guard: if a scoped launcher is active, block queue run (#421).
-        if os.path.exists(os.path.join(RUN, "scoped_charter")):
-            return {"ok": False, "msg": "queue blocked: scoped run active"}
-        # Singleton guard (root D): consult run/launcher.pid before spawning. If a live
-        # loop already holds it, do NOT add another launcher process — keepalive and
-        # operators both hit action=run, so an unguarded Popen over-spawns launchers.
-        # A stale/absent pid (os.kill -> ProcessLookupError/OSError) means no live loop;
-        # fall through and spawn as today, preserving the run-env seeding below.
-        pid_file = os.path.join(RUN, "launcher.pid")
-        try:
-            with open(pid_file) as _pf:
-                _pid = int(_pf.read().strip())
-            os.kill(_pid, 0)
-        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
-            pass  # absent / unreadable / stale -> proceed to spawn
-        else:
-            return {"ok": True, "msg": "launcher already running"}
-        os.makedirs(RUN,exist_ok=True)
-        # Build full env from run-env.sh so the loop gets the complete contract even when
-        # the daemon was restarted with an empty env (e.g. after deploy-runtime.sh — issue #148).
-        # Never pass the daemon's os.environ directly — it is empty post-deploy, giving the
-        # launcher 120 ticks / no integration (finding #1+#2/#142).  set -a auto-exports
-        # everything sourced from run-env.sh including ~/.crewboss.env (CLAUDE_CODE_OAUTH_TOKEN).
-        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
-        home = os.environ.get("HOME", os.path.expanduser("~"))
-        seed_env = {
-            "HOME": home,
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-        }
-        try:
-            env_raw = subprocess.run(
-                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
-                capture_output=True, text=True, env=seed_env, timeout=15
-            ).stdout
-            launch_env = {}
-            for line in env_raw.splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    if k and k.isidentifier():
-                        launch_env[k] = v
-            if not launch_env:
-                launch_env = dict(seed_env)
-        except Exception:
-            launch_env = dict(seed_env)
-        subprocess.Popen(["bash", os.path.join(CB_HOME, "crewboss-launcher-gh.sh"), "run"],
-                         env=launch_env,
-                         stdout=open(os.path.join(RUN,"launcher.out"),"a"),
-                         stderr=subprocess.STDOUT)
-        return {"ok":True,"msg":"launcher started"}
+        return _start_launcher()
     elif a=="run-scoped":
-        ks = os.path.join(RUN, "kill_switch")
-        if os.path.exists(ks):
-            return {"ok": False, "msg": "kill-switch present — unkill first (run/kill_switch exists)"}
         n_val = body.get("number")
-        if not isinstance(n_val, int):
+        if not isinstance(n_val, int) or isinstance(n_val, bool):
             return {"ok": False, "msg": "number must be an integer"}
-        scoped_lock = os.path.join(RUN, "scoped_charter")
-        if os.path.exists(scoped_lock):
-            return {"ok": False, "msg": "scoped run already active"}
-        os.makedirs(RUN, exist_ok=True)
-        open(scoped_lock, "w").write(str(n_val))
-        run_env_sh = os.path.join(CB_HOME, "run-env.sh")
-        home = os.environ.get("HOME", os.path.expanduser("~"))
-        seed_env = {
-            "HOME": home,
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-        }
-        try:
-            env_raw = subprocess.run(
-                ["bash", "-c", f'set -a; source "{run_env_sh}"; set +a; env'],
-                capture_output=True, text=True, env=seed_env, timeout=15
-            ).stdout
-            launch_env = {}
-            for line in env_raw.splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    if k and k.isidentifier():
-                        launch_env[k] = v
-            if not launch_env:
-                launch_env = dict(seed_env)
-        except Exception:
-            launch_env = dict(seed_env)
-        launch_env["CREWBOSS_CHARTER"] = str(n_val)
-        launcher_sh = os.path.join(CB_HOME, "crewboss-launcher-gh.sh")
-        p = subprocess.Popen(
-            ["bash", "-c", f"bash {launcher_sh} run; rm -f {scoped_lock}"],
-            env=launch_env,
-            stdout=open(os.path.join(RUN, "launcher.out"), "a"),
-            stderr=subprocess.STDOUT
-        )
-        open(os.path.join(RUN, "launcher.pid"), "w").write(str(p.pid))
-        return {"ok": True, "msg": f"scoped launcher started for charter {n_val}"}
+        return _start_launcher(n_val)
     elif a=="approve" and n.isdigit():
         # Guard: block approve while plan-convergence is in progress (plan:agreed not yet set).
         # Reads policy.plan_review_role fresh from org.json and fetches the live issue on
@@ -1286,43 +1257,45 @@ def save_role(body):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-class H(BaseHTTPRequestHandler):
+class H(SecureRequestMixin, BaseHTTPRequestHandler):
+    @property
+    def api_token(self):
+        return TOKEN
+
+    @property
+    def permitted_origins(self):
+        return allowed_origins(os.environ.get("CB_ALLOWED_ORIGINS"), PORT)
+
     def log_message(self, *a): pass
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Headers","authorization,content-type")
-        self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS")
-    def _send(self, code, obj):
-        b=json.dumps(obj).encode(); self.send_response(code)
-        self.send_header("Content-Type","application/json"); self._cors()
-        self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
-    def _auth_ok(self):
-        if not TOKEN: return True
-        if self.headers.get("Authorization","") == f"Bearer {TOKEN}": return True
-        # EventSource (SSE) can't set headers -> allow ?token= on GET requests.
-        from urllib.parse import urlparse, parse_qs
-        return parse_qs(urlparse(self.path).query).get("token",[""])[0] == TOKEN
-    def do_OPTIONS(self): self.send_response(204); self._cors(); self.end_headers()
     def _serve_static(self, path):
         # Serve the built dashboard (vite dist) so the box serves both API and UI on one
         # port — the user opens http://127.0.0.1:<port>/ over the existing SSH tunnel.
         import mimetypes
-        root = os.environ.get("CB_WEB_DIR",
-                              os.path.join(os.path.dirname(os.path.abspath(__file__)), "www"))
-        rel = "index.html" if path in ("/", "") else path.lstrip("/")
-        full = os.path.normpath(os.path.join(root, rel))
-        if not full.startswith(os.path.normpath(root)):
+        from pathlib import Path
+        from urllib.parse import unquote
+        root = Path(os.environ.get("CB_WEB_DIR", os.path.join(CB_HOME, "ui"))).resolve()
+        try:
+            rel = "index.html" if path in ("/", "") else unquote(path).lstrip("/")
+            full = (root / rel).resolve()
+            full.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
             return self._send(403, {"ok": False, "msg": "forbidden"})
-        if not os.path.isfile(full):
-            full = os.path.join(root, "index.html")  # SPA fallback for client routes
-        if not os.path.isfile(full):
-            return self._send(404, {"ok": False, "msg": "ui not built (set CB_WEB_DIR or build ui/app)"})
+        if not full.is_file():
+            full = (root / "index.html").resolve()  # SPA fallback for client routes
+            try:
+                full.relative_to(root)
+            except ValueError:
+                return self._send(403, {"ok": False, "msg": "forbidden"})
+        if not full.is_file():
+            return self._send(404, {"ok": False, "msg": "ui not built (set CB_WEB_DIR or install dashboard assets)"})
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
         with open(full, "rb") as f: data = f.read()
         self.send_response(200); self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data))); self._cors(); self.end_headers()
         self.wfile.write(data)
     def do_GET(self):
+        if not self._origin_ok():
+            return self._send(403, {"ok": False, "msg": "origin not allowed"})
         path = self.path.split("?",1)[0]
         if not path.startswith("/api"): return self._serve_static(path)  # dashboard UI
         if path=="/api/health": return self._send(200,{"ok":True,"repo":REPO})
@@ -1367,6 +1340,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, search_board(q))
         return self._send(404,{"ok":False,"msg":"not found"})
     def do_POST(self):
+        if not self._origin_ok():
+            return self._send(403, {"ok": False, "msg": "origin not allowed"})
         path = self.path.split("?",1)[0]          # 1. extract path first
         if path == "/api/gh-webhook":              # 2. webhook bypass (before Bearer check)
             return self._handle_webhook()
@@ -1726,6 +1701,13 @@ if __name__=="__main__":
             sys.exit(1)
         print("PASS selftest-merge: idempotency-guard, atomic-cleanup, close-fail")
         sys.exit(0)
+
+    try:
+        require_api_token(TOKEN)
+        allowed_origins(os.environ.get("CB_ALLOWED_ORIGINS"), PORT)
+    except ValueError as error:
+        print(f"crewboss-api: {error}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"crewboss-api on :{PORT}  repo={REPO}  auth={'on' if TOKEN else 'OFF'}", flush=True)
     ThreadingHTTPServer((os.environ.get("CB_API_HOST","127.0.0.1"), PORT), H).serve_forever()

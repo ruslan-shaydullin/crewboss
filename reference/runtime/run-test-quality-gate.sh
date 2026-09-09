@@ -24,7 +24,7 @@
 # --charter  CID       GitHub issue number of the charter
 # --qa-leaf  QID       GitHub issue number of the qa-engineer leaf
 # --impl-leaf IID      GitHub issue number of the executor/impl leaf
-# --repo     OWNER/REPO  defaults to CB_REPO env (ruslan-shaydullin/crewboss)
+# --repo     OWNER/REPO  defaults to required CB_REPO from the shared configuration
 # --repo-dir DIR       local path to charter branch tree (for lint + harness);
 #                      omit to skip Stage 1 lint and Stage 3 harness execution
 #
@@ -35,7 +35,7 @@
 
 set -uo pipefail
 
-REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
+REPO=""
 CHARTER_ID=""
 QA_LEAF=""
 IMPL_LEAF=""
@@ -53,6 +53,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A CLI repository is explicit configuration too; load the same contract as the launcher.
+[ -z "$REPO" ] || export CB_REPO="$REPO"
+source "$HERE/run-env.sh" || exit 2
+[ -z "$REPO" ] || export CB_REPO="$REPO"
+REPO="$CB_REPO"
+
 [ -n "$CHARTER_ID" ] || { echo "run-test-quality-gate: --charter required" >&2; exit 2; }
 [ -n "$QA_LEAF" ]    || { echo "run-test-quality-gate: --qa-leaf required"  >&2; exit 2; }
 [ -n "$IMPL_LEAF" ]  || { echo "run-test-quality-gate: --impl-leaf required" >&2; exit 2; }
@@ -60,18 +67,33 @@ done
 _route_test_broken() {
   local reason="$1"
   echo "tqg: status:test-broken (charter #${CHARTER_ID} qa-leaf #${QA_LEAF}): ${reason}" >&2
-  gh issue edit   "$QA_LEAF" -R "$REPO" --add-label    "status:test-broken"  >/dev/null 2>&1 || true
-  gh issue reopen "$QA_LEAF" -R "$REPO"                                       >/dev/null 2>&1 || true
-  gh issue edit   "$QA_LEAF" -R "$REPO" --add-label    "status:needs-rework"  >/dev/null 2>&1 || true
+  gh issue edit   "$QA_LEAF" -R "$REPO" --add-label    "status:test-broken"  >/dev/null 2>&1 || return 2
+  gh issue reopen "$QA_LEAF" -R "$REPO"                                       >/dev/null 2>&1 || return 2
+  gh issue edit   "$QA_LEAF" -R "$REPO" --add-label    "status:needs-rework"  >/dev/null 2>&1 || return 2
 }
 
 _route_impl_broken() {
   local reason="$1"
   echo "tqg: status:impl-broken (charter #${CHARTER_ID} impl-leaf #${IMPL_LEAF}): ${reason}" >&2
-  gh issue edit   "$IMPL_LEAF" -R "$REPO" --add-label    "status:impl-broken"  >/dev/null 2>&1 || true
-  gh issue reopen "$IMPL_LEAF" -R "$REPO"                                       >/dev/null 2>&1 || true
-  gh issue edit   "$IMPL_LEAF" -R "$REPO" --add-label    "status:needs-rework"  >/dev/null 2>&1 || true
+  gh issue edit   "$IMPL_LEAF" -R "$REPO" --add-label    "status:impl-broken"  >/dev/null 2>&1 || return 2
+  gh issue reopen "$IMPL_LEAF" -R "$REPO"                                       >/dev/null 2>&1 || return 2
+  gh issue edit   "$IMPL_LEAF" -R "$REPO" --add-label    "status:needs-rework"  >/dev/null 2>&1 || return 2
 }
+
+# Runtime mistakes belong to the implementation, never the independently
+# authored tests. A transport error must not become false/[] or a double zero.
+if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/reference/runtime" ]; then
+  _runtime_linter="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-io-lint.py"
+  _runtime_lint_rc=0
+  _runtime_lint=$(python3 "$_runtime_linter" "$REPO_DIR/reference/runtime") || _runtime_lint_rc=$?
+  if [ "$_runtime_lint_rc" -eq 1 ]; then
+    _route_impl_broken "runtime I/O lint: $_runtime_lint" || exit 2
+    exit 1
+  elif [ "$_runtime_lint_rc" -ne 0 ]; then
+    echo "tqg: runtime I/O lint could not run" >&2
+    exit 2
+  fi
+fi
 
 # ── Stage 1: Anti-pattern lint ──────────────────────────────────────────────
 # Scan test files in the charter tree for patterns known to cause false failures.
@@ -99,7 +121,7 @@ if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/reference/tests" ]; then
   done < <(find "$REPO_DIR/reference/tests" -name "*.test.sh" -print0 2>/dev/null)
 
   if [ -n "$_lint_reason" ]; then
-    _route_test_broken "lint: $_lint_reason"
+    _route_test_broken "lint: $_lint_reason" || exit 2
     exit 1
   fi
 fi
@@ -135,7 +157,7 @@ fi
 # ── Stage 3: Routing decision ────────────────────────────────────────────────
 if [ "$_stage2_rc" != "0" ]; then
   # Test suite failed; route to impl-broken (lint was clean — Stage 1 passed)
-  _route_impl_broken "test suite RED in charter #${CHARTER_ID} tree (lint clean → impl is broken)"
+  _route_impl_broken "test suite RED in charter #${CHARTER_ID} tree (lint clean → impl is broken)" || exit 2
   exit 1
 fi
 

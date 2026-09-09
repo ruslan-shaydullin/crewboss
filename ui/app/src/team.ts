@@ -1,3 +1,4 @@
+import { apiRequest } from './transport'
 import { config } from './api'
 
 export type OrgNode = {
@@ -54,7 +55,7 @@ export const FALLBACK_TEAM: Team = {
 
 export async function fetchTeam(): Promise<Team> {
   try {
-    const r = await fetch(config.url + '/api/team', { headers: { Authorization: 'Bearer ' + config.token } })
+    const r = await apiRequest(config.url + '/api/team', { headers: { Authorization: 'Bearer ' + config.token } })
     if (r.ok) {
       const t = (await r.json()) as Team
       if (t && t.present && t.nodes?.length) return t
@@ -65,7 +66,7 @@ export async function fetchTeam(): Promise<Team> {
 
 export async function saveTeam(t: Team): Promise<{ ok: boolean; msg: string }> {
   try {
-    const r = await fetch(config.url + '/api/team', {
+    const r = await apiRequest(config.url + '/api/team', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify(t),
@@ -107,7 +108,7 @@ export type RoleSave = {
 
 export async function fetchRole(name: string): Promise<RoleDetail | null> {
   try {
-    const r = await fetch(config.url + '/api/role/' + encodeURIComponent(name), {
+    const r = await apiRequest(config.url + '/api/role/' + encodeURIComponent(name), {
       headers: { Authorization: 'Bearer ' + config.token },
     })
     if (r.ok) {
@@ -120,7 +121,7 @@ export async function fetchRole(name: string): Promise<RoleDetail | null> {
 
 export async function saveRole(role: RoleSave): Promise<{ ok: boolean; msg?: string }> {
   try {
-    const r = await fetch(config.url + '/api/role', {
+    const r = await apiRequest(config.url + '/api/role', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
       body: JSON.stringify(role),

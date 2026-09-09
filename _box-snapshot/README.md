@@ -1,15 +1,10 @@
-# Historical runtime snapshot
+# Retired deployment snapshot
 
-`cbnet/` preserves a June 2026 operator snapshot used to bring runtime files back
-into the repository. It is retained as a compatibility fixture, not an install
-source. Scripts here can contain old credentials used for demos, host-specific
-paths, and commands that modify external resources.
+The June 2026 deployment copies have been removed after extracting the two test
+dependencies into [reference/tests/fixtures/legacy-runtime](../reference/tests/fixtures/legacy-runtime/):
+the original filename inventory and one intentionally stale launcher entrypoint.
 
-The current source of truth is
-[`reference/runtime-manifest.tsv`](../reference/runtime-manifest.tsv), which maps
-canonical runtime files to their locations in the repository.
-
-The snapshot cannot yet be removed: `runtime-manifest.test.sh` checks its inventory
-coverage and `deploy-verify.test.sh` uses snapshot scripts. Extract those fixture
-dependencies before retiring this directory. Do not deploy or execute the
-snapshot as a current setup guide.
+The manifest coverage and deployment drift tests use these focused fixtures.
+Current runtime files live in [reference/runtime](../reference/runtime/); install
+from a versioned release, not a historical snapshot. Git history preserves the
+original copies for investigation.

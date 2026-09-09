@@ -9,9 +9,24 @@ agent activity, and operator controls through a Python API.
 
 **Status: experimental.** The repository contains an evolving Bash runtime,
 Claude Code configuration, a dashboard, and the prototypes behind them. Expect
-manual setup and changes to interfaces. The hosted runtime targets Linux; the
+manual setup and changes to interfaces. The hosted runtime targets Linux x86_64; the
 local dashboard and contributor checks can run on macOS or Linux with the
 prerequisites below.
+
+## Try the alpha
+
+Run `make setup` and `make demo` for a local dashboard with fictional tasks and
+no credentials. The [demo walkthrough](docs/demo.md) shows the board, team and
+human decisions.
+
+For an agent runtime, use the [versioned installation guide](docs/install.md).
+The current target is Linux x86_64 with systemd and nsjail; see
+[Linux acceptance checks](docs/linux-validation.md) for the tested boundaries.
+`make release` creates the archive and SHA256 checksums.
+
+See the [contributor roadmap](docs/roadmap.md) for small open tasks and the
+[changelog](CHANGELOG.md) for alpha changes.
+
 
 ## How it works
 
@@ -36,7 +51,7 @@ server-side branch protection for shared branches, and inspect the
 
 ## Start with the local checks
 
-You need Git, Bash 4.4+, Python 3, jq, Node.js 22, npm, Make, and GNU coreutils.
+You need Git, Bash 5+, Python 3.12+, jq, Node.js 22, npm, Make, and GNU coreutils.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and platform requirements.
 Agent credentials and a cloud server are not required for these checks.
 
@@ -50,8 +65,9 @@ make check
 The checks include the Layer-A and Layer-B gate harnesses, selected offline
 runtime and API contracts, UI tests, and a production build. These cover local
 behavior using fixtures and stubs. Live GitHub permissions, Claude Code
-integration, and deployment behavior require separate verification. Required
-checks must be configured on GitHub: the merge-gate fixtures include a case that
+integration, and operator deployments require separate verification. A separate
+Linux CI job checks the installed runtime with real systemd and nsjail. Required
+checks must be configured on each target repository: the merge-gate fixtures include a case that
 accepts an approved PR with no checks.
 
 To start the dashboard, follow the [local UI guide](ui/README.md). It includes
@@ -102,7 +118,8 @@ environment. See the [reference guide](reference/README.md) and
 | [`team-example/`](team-example/) | Example team manifest, roles, and review rubric |
 | [`reference/tests/`](reference/tests/), [`tests/`](tests/) | Runtime and regression tests |
 | [`docs/`](docs/README.md) | Design, operations, and historical records |
-| [`proto/`](proto/), [`_box-snapshot/`](_box-snapshot/) | Prototypes and compatibility fixtures; some remain runtime/test dependencies |
+| [`proto/`](proto/) | Historical prototypes; excluded from runtime installation |
+| [`reference/tests/fixtures/`](reference/tests/fixtures/) | Small regression fixtures extracted from the retired deployment snapshot |
 
 The root `.claude/` configures development of crewboss itself; it is distinct from
 the distributable configuration in `reference/.claude/`.

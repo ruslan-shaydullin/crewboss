@@ -1,7 +1,7 @@
 # Example system service. Create a dedicated crewboss account with home
 # /var/lib/crewboss and install the runtime in /var/lib/crewboss/cbnet.
-# The launcher requires CB_HOME=$HOME/cbnet and reads $HOME/.crewboss.env.
-# Keep these paths aligned when adapting User/Group and HOME to your installation.
+# CB_HOME and CB_ENV_FILE can be overridden together for other installations.
+# Use render-units.py to render all services for a different service account.
 #
 # Copy api.env.example to /var/lib/crewboss/.crewboss.env, set CB_REPO and a private
 # CB_API_TOKEN, and restrict its permissions. The EnvironmentFile is mandatory.
@@ -24,8 +24,8 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=CB_HOME=/var/lib/crewboss/cbnet
 Environment=CB_API_HOST=127.0.0.1
 # systemd loads the same configuration that run-env.sh reads for API Run actions.
-# The API starter does not need to source it a second time.
-Environment=CB_ENV_FILE=/dev/null
+# Entrypoints re-read the same trusted file before launching work.
+Environment=CB_ENV_FILE=/var/lib/crewboss/.crewboss.env
 EnvironmentFile=/var/lib/crewboss/.crewboss.env
 ExecStart=/bin/bash /var/lib/crewboss/cbnet/start-api.sh --foreground
 Restart=on-failure

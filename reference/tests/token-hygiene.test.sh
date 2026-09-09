@@ -34,7 +34,7 @@ BARE_REMOTE="$ROOT/bare.git"
 mkdir -p "$FAKE_HOME" "$BIN"
 
 # ── ~/.crewboss.env with FAKETOKEN123 (0600) ──────────────────────────────────
-printf 'GH_TOKEN=FAKETOKEN123\n' > "$FAKE_HOME/.crewboss.env"
+printf 'CB_REPO=test/repo\nGH_TOKEN=FAKETOKEN123\n' > "$FAKE_HOME/.crewboss.env"
 chmod 600 "$FAKE_HOME/.crewboss.env"
 
 # ── Stub gh: auth token → FAKETOKEN123; issue view → Charter: #5 ──────────────
@@ -68,6 +68,8 @@ rm -rf "$_t"
 # ── Fake CB_HOME ───────────────────────────────────────────────────────────────
 CB_HOME_T="$FAKE_HOME/cbnet"
 mkdir -p "$CB_HOME_T/run"
+# This suite exercises local git/credential wiring, not the Linux jail probe.
+printf '#!/usr/bin/env bash\n[ "${1:-}" = --preflight ]\n' > "$CB_HOME_T/crewboss-doctor.sh"
 
 # Spawn stub: dumps its entire env to a file then exits 0.
 SPAWN_ENV_DUMP="$ROOT/spawn-env-dump"
