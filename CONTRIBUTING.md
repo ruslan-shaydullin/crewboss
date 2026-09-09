@@ -131,4 +131,6 @@ Do not run that system-level fixture on a shared production runtime.
 When changing a canonical runtime file, run
 `bash reference/bin/regen-manifest.sh` after the relevant behavior tests and review
 the manifest diff. Verification checks the committed hashes without regenerating
-them. New runtime helpers must be included in the release inventory.
+them. New runtime helpers must be included in the release inventory. When changing
+production UI dependencies, update the complete license notices collected by
+`scripts/package-release.py`; these are installed with the dashboard.

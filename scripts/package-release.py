@@ -357,6 +357,19 @@ def _collect_team_and_gov(plan: BundlePlan, repo_root: Path) -> None:
 
 
 def _collect_ui(plan: BundlePlan, repo_root: Path) -> None:
+    # These packages are included by the production esbuild bundle. Preserve
+    # their complete notices alongside its generated @license comments.
+    packages = ("react", "react-dom", "scheduler")
+    for package in packages:
+        plan.add(f"ui/third-party/{package}/LICENSE", source=_require_file(
+            repo_root, f"ui/app/node_modules/{package}/LICENSE",
+            "run make setup before packaging the built dashboard"))
+    notices = "# Third-party notices\n\nThe compiled dashboard includes:\n\n"
+    notices += "".join(f"- [{package}](third-party/{package}/LICENSE)\n" for package in packages)
+    notices += "\nDependency versions are recorded in the source checkout's ui/app/package-lock.json.\n"
+    notices += "\nCrewBoss dashboard code: [project license](CREWBOSS_LICENSE).\n"
+    plan.add("ui/THIRD_PARTY_NOTICES.md", data=notices.encode("utf-8"))
+    plan.add("ui/CREWBOSS_LICENSE", source=_require_file(repo_root, "LICENSE"))
     dist = repo_root / UI_DIST_REL
     if not (dist / "index.html").is_file():
         raise PackageError(
@@ -396,6 +409,7 @@ def build_plan(repo_root: Path) -> BundlePlan:
         "The installer verifies its payload and starts no services. Credentials\n"
         "are supplied separately by the operator.\n\n"
         "See the [changelog](CHANGELOG.md), [license](LICENSE), and\n"
+        "[third-party notices](ui/THIRD_PARTY_NOTICES.md), plus the\n"
         "[source repository, demo and contributor guides](https://github.com/ruslan-shaydullin/crewboss).\n"
         ).encode("utf-8"))
     plan.add("VERSION", data=(version + "\n").encode("utf-8"))

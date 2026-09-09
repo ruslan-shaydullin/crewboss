@@ -89,6 +89,9 @@ OTHER_SOURCES = {
     "team-example/roles/python-dev.md": "# python-dev fixture role\n",
     "ui/app/dist/index.html": "<!doctype html><title>fixture ui</title>\n",
     "ui/app/dist/assets/app.js": "console.log('fixture');\n",
+    "ui/app/node_modules/react/LICENSE": "fixture React license\n",
+    "ui/app/node_modules/react-dom/LICENSE": "fixture React DOM license\n",
+    "ui/app/node_modules/scheduler/LICENSE": "fixture Scheduler license\n",
     # Host build artifact: must be silently excluded from the bundle.
     "ui/app/dist/.vite/manifest.json": "{}\n",
 }
@@ -204,6 +207,10 @@ class PackageBuildTests(FixtureCase):
             f"{PREFIX}/runtime/launchable.sh", f"{PREFIX}/runtime/labels-setup.sh",
             f"{PREFIX}/team/org.json", f"{PREFIX}/team/rubric.json",
             f"{PREFIX}/team/manifest-doctor.sh",
+            f"{PREFIX}/ui/THIRD_PARTY_NOTICES.md", f"{PREFIX}/ui/CREWBOSS_LICENSE",
+            f"{PREFIX}/ui/third-party/react/LICENSE",
+            f"{PREFIX}/ui/third-party/react-dom/LICENSE",
+            f"{PREFIX}/ui/third-party/scheduler/LICENSE",
             f"{PREFIX}/team/roles/python-dev.md",
             f"{PREFIX}/gov/.claude/settings.json",
             f"{PREFIX}/gov/.claude/hooks/crewboss-gate.sh",
@@ -365,7 +372,9 @@ class InstallerTests(FixtureCase):
                     "gov/.claude/agents/python-dev.md",
                     "systemd/crewboss-api.service",
                     "systemd/crewboss-loop-keepalive-killmode.conf",
-                    "ui/index.html", "ui/assets/app.js"):
+                    "ui/index.html", "ui/assets/app.js", "ui/THIRD_PARTY_NOTICES.md",
+                    "ui/CREWBOSS_LICENSE", "ui/third-party/react/LICENSE",
+                    "ui/third-party/react-dom/LICENSE", "ui/third-party/scheduler/LICENSE"):
             self.assertTrue((self.dest / rel).is_file(), rel)
         for executable in ("gov/.claude/hooks/crewboss-gate.sh",
                            "systemd/render-units.py"):
