@@ -12,7 +12,7 @@
 # and requires real systemd cgroup teardown — cannot be reproduced in CI.
 #
 # Usage:
-#   CB_HOST=ec2-user@1.2.3.4 bash reference/runtime/deploy-units.sh
+#   CB_HOST=user@hostname bash reference/runtime/deploy-units.sh
 #
 # Env:
 #   CB_HOST      — remote target (user@hostname or hostname). REQUIRED.
@@ -21,22 +21,35 @@ set -euo pipefail
 
 CB_HOST="${CB_HOST:-}"
 CB_SSH_OPTS="${CB_SSH_OPTS:-}"
+CB_SERVICE_USER="${CB_SERVICE_USER:-crewboss}"
+CB_SERVICE_HOME="${CB_SERVICE_HOME:-/var/lib/crewboss}"
+CB_REMOTE_HOME="${CB_REMOTE_HOME:-$CB_SERVICE_HOME/cbnet}"
+CB_REMOTE_ENV_FILE="${CB_REMOTE_ENV_FILE:-$CB_SERVICE_HOME/.crewboss.env}"
 
 if [ -z "$CB_HOST" ]; then
-  printf 'ERROR: CB_HOST is not set (e.g. CB_HOST=ec2-user@1.2.3.4)\n' >&2
+  printf 'ERROR: CB_HOST is not set (user@hostname)\n' >&2
   exit 2
 fi
+[[ "$CB_HOST" =~ ^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$ ]] \
+  || { echo 'deploy-units: CB_HOST must be a hostname or user@hostname' >&2; exit 2; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+RENDERED="$(mktemp -d)"
+trap 'rm -rf "$RENDERED"' EXIT
+python3 "$HERE/render-units.py" --output-dir "$RENDERED" \
+  --user "$CB_SERVICE_USER" --home "$CB_SERVICE_HOME" \
+  --runtime-dir "$CB_REMOTE_HOME" --env-file "$CB_REMOTE_ENV_FILE"
 
 # Hard-coded unit files and their /etc/systemd/system/ targets. The killmode drop-in goes
 # into the crewboss-loop-keepalive.service.d/ drop-in directory as 10-killmode.conf.
-LAUNCHER_SVC="$HERE/crewboss-launcher.service"
-KA_SVC="$HERE/crewboss-loop-keepalive.service"
-KA_TIMER="$HERE/crewboss-loop-keepalive.timer"
-KILLMODE_CONF="$HERE/crewboss-loop-keepalive-killmode.conf"
+API_SVC="$RENDERED/crewboss-api.service"
+LAUNCHER_SVC="$RENDERED/crewboss-launcher.service"
+KA_SVC="$RENDERED/crewboss-loop-keepalive.service"
+KA_TIMER="$RENDERED/crewboss-loop-keepalive.timer"
+KILLMODE_CONF="$RENDERED/crewboss-loop-keepalive-killmode.conf"
 
 LAUNCHER_SVC_DST="/etc/systemd/system/crewboss-launcher.service"
+API_SVC_DST="/etc/systemd/system/crewboss-api.service"
 KA_SVC_DST="/etc/systemd/system/crewboss-loop-keepalive.service"
 KA_TIMER_DST="/etc/systemd/system/crewboss-loop-keepalive.timer"
 KILLMODE_CONF_DST="/etc/systemd/system/crewboss-loop-keepalive.service.d/10-killmode.conf"
@@ -45,14 +58,20 @@ KILLMODE_CONF_DST="/etc/systemd/system/crewboss-loop-keepalive.service.d/10-kill
 # under /etc/systemd/system/ which is not writable by scp's ssh user without sudo).
 deploy_one() {
   local src="$1" dst="$2" stage
-  stage="/tmp/$(basename "$dst")"
+  # A private remote directory prevents another local user from replacing a
+  # predictable /tmp unit filename between upload and privileged installation.
+  # shellcheck disable=SC2086
+  stage="$(ssh $CB_SSH_OPTS "$CB_HOST" 'mktemp -d /tmp/crewboss-units.XXXXXXXX')"
+  [[ "$stage" =~ ^/tmp/crewboss-units\.[A-Za-z0-9]+$ ]] \
+    || { echo 'deploy-units: remote staging directory was not created' >&2; return 2; }
   printf '=== deploy-units: %s -> %s:%s ===\n' "$(basename "$src")" "$CB_HOST" "$dst"
   # shellcheck disable=SC2086
-  scp $CB_SSH_OPTS "$src" "$CB_HOST:$stage"
+  scp $CB_SSH_OPTS "$src" "$CB_HOST:$stage/unit"
   # shellcheck disable=SC2086
-  ssh $CB_SSH_OPTS "$CB_HOST" "sudo mkdir -p '$(dirname "$dst")' && sudo cp '$stage' '$dst' && rm -f '$stage'"
+  ssh $CB_SSH_OPTS "$CB_HOST" "sudo mkdir -p '$(dirname "$dst")' && sudo install -o root -g root -m 0644 '$stage/unit' '$dst' && rm -rf '$stage'"
 }
 
+deploy_one "$API_SVC"       "$API_SVC_DST"
 deploy_one "$LAUNCHER_SVC"  "$LAUNCHER_SVC_DST"
 deploy_one "$KA_SVC"        "$KA_SVC_DST"
 deploy_one "$KA_TIMER"      "$KA_TIMER_DST"
@@ -61,6 +80,6 @@ deploy_one "$KILLMODE_CONF" "$KILLMODE_CONF_DST"
 printf '=== deploy-units: daemon-reload + enable on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086
 ssh $CB_SSH_OPTS "$CB_HOST" \
-  "sudo systemctl daemon-reload && sudo systemctl enable crewboss-launcher crewboss-loop-keepalive.timer"
+  "sudo systemctl daemon-reload && sudo systemctl enable crewboss-api crewboss-launcher crewboss-loop-keepalive.timer"
 
 printf 'done. FIELD-TEST REQUIRED: confirm launcher PID persists across a manual keepalive tick.\n'

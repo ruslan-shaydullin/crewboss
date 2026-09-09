@@ -58,7 +58,7 @@ mkdir -p "$CB_HOME_DIR/run"
 # ── Start API ─────────────────────────────────────────────────────────────────
 CB_TEAM="$CB_TEAM_DIR" \
 CB_HOME="$CB_HOME_DIR" \
-CB_API_TOKEN="" \
+CB_API_TOKEN="fixture-role-token" \
 CB_API_PORT="$API_PORT" \
     python3 "$API_PY" --port "$API_PORT" \
     > "$API_OUT" 2>&1 &
@@ -68,7 +68,7 @@ API_PID=$!
 api_ready=0
 deadline=$(( $(date +%s) + 25 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    code=$(curl -s -m1 -o /dev/null -w '%{http_code}' "$B/api/health" 2>/dev/null)
+    code=$(curl -H "Authorization: Bearer fixture-role-token" -s -m1 -o /dev/null -w '%{http_code}' "$B/api/health" 2>/dev/null)
     if [ "$code" = "200" ]; then api_ready=1; break; fi
     sleep 0.2
 done
@@ -99,7 +99,7 @@ ROLE_PAYLOAD=$(cat <<'JSON'
 JSON
 )
 
-save_resp=$(curl -s -m15 -X POST \
+save_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m15 -X POST \
     -H "Content-Type: application/json" \
     -d "$ROLE_PAYLOAD" \
     "$B/api/role" 2>/dev/null)
@@ -112,7 +112,7 @@ else
 fi
 
 # GET /api/role/<name> and check frontmatter
-get_resp=$(curl -s -m10 "$B/api/role/$ROLE_NAME" 2>/dev/null)
+get_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m10 "$B/api/role/$ROLE_NAME" 2>/dev/null)
 
 if echo "$get_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
     ok "T1: GET /api/role/$ROLE_NAME ok=true"
@@ -190,7 +190,7 @@ ROLE2_PAYLOAD=$(cat <<'JSON'
 JSON
 )
 
-save2_resp=$(curl -s -m15 -X POST \
+save2_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m15 -X POST \
     -H "Content-Type: application/json" \
     -d "$ROLE2_PAYLOAD" \
     "$B/api/role" 2>/dev/null)
@@ -234,7 +234,7 @@ BAD_ACCESSES_PAYLOAD=$(cat <<'JSON'
 JSON
 )
 
-bad_resp=$(curl -s -m15 -X POST \
+bad_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m15 -X POST \
     -H "Content-Type: application/json" \
     -d "$BAD_ACCESSES_PAYLOAD" \
     "$B/api/role" 2>/dev/null)
@@ -268,14 +268,14 @@ ROLE5_PAYLOAD=$(cat <<'JSON'
 JSON
 )
 
-save5_resp=$(curl -s -m15 -X POST \
+save5_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m15 -X POST \
     -H "Content-Type: application/json" \
     -d "$ROLE5_PAYLOAD" \
     "$B/api/role" 2>/dev/null)
 
 if echo "$save5_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
     ok "T5: POST /api/role model=qwen ok=true"
-    get5_resp=$(curl -s -m10 "$B/api/role/schema-test-qwen" 2>/dev/null)
+    get5_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m10 "$B/api/role/schema-test-qwen" 2>/dev/null)
     fm5_model=$(echo "$get5_resp" | jq -r '.frontmatter.model // ""' 2>/dev/null)
     [ "$fm5_model" = "qwen" ] \
         && ok "T5: model=qwen round-trips via GET /api/role" \
@@ -301,7 +301,7 @@ ROLE6_PAYLOAD=$(cat <<'JSON'
 JSON
 )
 
-save6_resp=$(curl -s -m15 -X POST \
+save6_resp=$(curl -H "Authorization: Bearer fixture-role-token" -s -m15 -X POST \
     -H "Content-Type: application/json" \
     -d "$ROLE6_PAYLOAD" \
     "$B/api/role" 2>/dev/null)

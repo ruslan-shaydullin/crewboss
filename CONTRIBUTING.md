@@ -10,7 +10,7 @@ Fork the repository, clone your fork, and create a branch for your change. The
 default checks run locally without GitHub authentication, a Claude account, or a
 deployed crewboss instance.
 
-Use Git, Make, Bash 4.4 or newer, `jq`, and GNU coreutils (`sha256sum` and `sort -z`).
+Use Git, Make, Bash 5.0 or newer, `jq`, and GNU coreutils (`sha256sum` and `sort -z`).
 CI uses Python 3.12 and Node.js 22 with npm; use those versions to reproduce its
 environment. The API uses the Python standard library; there is no Python package
 installation step. The UI has its own locked npm dependencies:
@@ -117,3 +117,18 @@ In the pull request, explain what changes for a user or operator, include the
 commands and outcomes of your checks, and state any relevant checks you could
 not run. Do not present fixture results as live verification. Be considerate in
 issues and reviews: explain disagreements with reproducible examples and evidence.
+
+## Contributor backlog and installed runtime checks
+
+The [roadmap](docs/roadmap.md) separates small public contributions from the
+existing orchestration milestones. Start with a task labeled `good first issue`
+or `help wanted`; the local demo needs no provider account.
+
+CI also runs the [installed Linux acceptance test](docs/linux-validation.md) with
+real systemd, flock and nsjail. GitHub and provider traffic are local fixtures.
+Do not run that system-level fixture on a shared production runtime.
+
+When changing a canonical runtime file, run
+`bash reference/bin/regen-manifest.sh` after the relevant behavior tests and review
+the manifest diff. Verification checks the committed hashes without regenerating
+them. New runtime helpers must be included in the release inventory.

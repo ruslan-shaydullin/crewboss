@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SHELL_TESTS = (
     "launchable", "manifest-lib", "composition-parse", "board-states",
     "cli-smoke", "role-model-policy", "gate-layer-a", "gate-layer-b",
-    "runtime-lint", "runtime-manifest",
+    "runtime-lint", "runtime-manifest", "doctor-drift",
     "webhook-security", "token-hygiene",
 )
 SOURCE_TESTS = (
@@ -62,9 +62,9 @@ def syntax():
         ["bash", "-c", 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"'],
         text=True,
     )
-    if tuple(map(int, version.split("."))) < (4, 4):
+    if tuple(map(int, version.split("."))) < (5, 0):
         raise RuntimeError(
-            f"Bash 4.4+ is required to parse the runtime (found {version}). "
+            f"Bash 5+ is required to parse the runtime (found {version}). "
             "On macOS, put a modern Bash on PATH or run in Linux."
         )
     names = subprocess.check_output(
@@ -109,7 +109,15 @@ def offline():
     checks = [
         (f"reference/tests/{name}.test.sh", "bash", {}) for name in SHELL_TESTS
     ] + [(path, runner, {mode: "source"}) for path, mode, runner in SOURCE_TESTS]
-    checks.append(("reference/tests/api-startup.test.py", sys.executable, {}))
+    for path in (
+        "reference/tests/api-startup.test.py",
+        "reference/tests/runtime-portability.test.py",
+        "reference/tests/launcher-honesty.test.py",
+        "reference/tests/runtime-io-lint.test.py",
+        "tests/test_api_auth.py", "tests/test_api_launch.py",
+        "tests/test_release_package.py",
+    ):
+        checks.append((path, sys.executable, {}))
     checks.append(("tests/994-search-abort.test.mjs", "node", {}))
     missing = [path for path, _, _ in checks if not (ROOT / path).is_file()]
     if missing:

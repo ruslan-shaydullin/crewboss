@@ -1,115 +1,109 @@
 # Runtime operator notes
 
-The board launcher and its sandboxed agents target Linux. This directory is part
-of a runtime assembled from
-[`runtime-manifest.tsv`](../runtime-manifest.tsv); installing the API alone does
-not provision agents, nsjail, GitHub permissions, or the launcher. For local UI
-work, start with the [dashboard guide](../../ui/README.md).
+Start with the [installation guide](../../docs/install.md) for the versioned
+archive, account configuration, sandbox preflight, and systemd setup. The agent
+runtime targets Linux x86_64 and Bash 5+; the [local demo](../../docs/demo.md) and
+[standalone API](../../ui/README.md) do not need an agent environment.
 
-The checked-in systemd unit is a template for a new installation. Existing
-operators must adapt its account and paths before replacing a deployed unit.
-The current launcher requires its runtime at `$HOME/cbnet` and reads shared
-configuration from `$HOME/.crewboss.env`. The API unit uses those same locations
-so dashboard Run actions inherit the intended repository and credentials.
-Older prototypes and incident records describe specific historical hosts.
+This directory contains maintained runtime source. The release packager combines
+canonical files from [`runtime-manifest.tsv`](../runtime-manifest.tsv) with the
+Python API and its helper modules, example team, governance hooks, dashboard, and
+systemd templates. Install the archive into an explicit empty `CB_HOME`; copying
+this directory alone omits required files. Historical host snapshots and
+prototype provisioners are not the alpha installation path.
 
-## Configure API startup
+## Shared configuration
 
-[`start-api.sh`](start-api.sh) starts an already deployed API. It requires:
+Copy [`api.env.example`](api.env.example) to the runtime account's
+`$HOME/.crewboss.env` for a new installation and fill in the values. Keep the
+file private, mode `0600`, outside Git. API startup, CLI launcher entrypoints,
+systemd units, and dashboard Run actions use the same configuration contract:
 
-- `CB_REPO`: the GitHub `owner/repository` the operator intends to manage.
-- `CB_API_TOKEN`: a nonempty, private bearer token.
-- `CB_HOME`: the deployed runtime directory, defaulting to `$HOME/cbnet`.
+| Variable | Contract |
+| --- | --- |
+| `CB_ENV_FILE` | Trusted configuration file; defaults to `$HOME/.crewboss.env` |
+| `CB_HOME` | Absolute installed runtime path; defaults to `$HOME/cbnet` |
+| `CB_REPO` | Required GitHub `owner/repository`; no personal fallback |
+| `CB_API_TOKEN` | Required nonblank bearer token for the HTTP API |
+| `GH_TOKEN` | Explicit GitHub credential required before agent work |
+| `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | Provider credential required before agent work |
+| `CB_API_HOST`, `CB_API_PORT` | Default `127.0.0.1` and `8787` |
+| `CB_WEB_DIR` | Dashboard assets; defaults to `$CB_HOME/ui` |
+| `CB_ALLOWED_ORIGINS` | Comma-separated exact HTTP(S) browser origins; loopback defaults |
 
-Generate a token locally with `openssl rand -hex 32`. Copy
-[`api.env.example`](api.env.example) to the service account's `$HOME/.crewboss.env`,
-fill in the required values, and restrict it to that account (`chmod 600`). The
-API and launcher must read the same file. Keep the real file outside Git. Use plain `KEY=value` assignments and absolute paths so
-the file can also be loaded by systemd; systemd does not expand shell expressions
-such as `$HOME`, `~`, or `$(...)`.
+Use literal `KEY=value` assignments: no `export`, `$HOME`, `~`, or command
+substitutions inside the file. It is trusted shell input when sourced by Bash,
+and must also work as a systemd `EnvironmentFile`. File values override inherited
+environment values. An explicitly selected missing file is an error;
+`CB_ENV_FILE=/dev/null` selects an environment-only session.
 
-For a foreground operator session:
+Provider executable and configuration paths are configurable through the
+`CB_AGENT_HOME`, `CB_CLAUDE_*`, `CB_NSJAIL_BIN`, and `CB_GH_BIN` settings in the
+example. The installation guide describes required mounts and permissions.
+Credentials are supplied by the operator; startup does not extract a stored
+`gh auth` token. Custom `CB_HOME` and `CB_ENV_FILE` paths apply to both API and
+launcher. Restart the API after changing its repository or runtime directory;
+Run refuses a configuration that disagrees with the running API.
 
-```sh
-bash reference/runtime/start-api.sh --foreground
-```
+## Entrypoints and checks
 
-`CB_ENV_FILE` is sourced as a **trusted shell file** by the startup script. If it
-is not specified, the script loads `~/.crewboss.env` when present. File values
-override inherited environment values. Set `CB_ENV_FILE=/dev/null` to use only
-the current environment. Without `--foreground`, the script starts a background
-process and records its PID and log under `$CB_HOME/run/`; it refuses to replace
-a running process from an existing PID file.
-
-The script defaults to `CB_API_HOST=127.0.0.1` and `CB_API_PORT=8787`, and refuses
-to start without a repository and token. Set `CB_API_SCRIPT` to an absolute path
-to `ui/server/crewboss-api.py` when using a source checkout instead of a deployed
-copy. A custom `CB_ENV_FILE` or `CB_HOME` supports API-only development; dashboard
-Run actions still need the shared `$HOME/.crewboss.env` and `$HOME/cbnet` runtime.
-Set `CB_WEB_DIR` to the absolute path of built dashboard assets if the API
-should serve the UI. Authentication for `gh` must be configured separately for
-the account running the service; API startup does not retrieve or print tokens.
-
-## Run under systemd
-
-[`crewboss-api.service`](crewboss-api.service) expects:
-
-- A dedicated `crewboss` user and group, with home `/var/lib/crewboss`.
-- An installed runtime at `/var/lib/crewboss/cbnet`, including `start-api.sh` and
-  `crewboss-api.py`. The service account must be able to write its runtime state
-  and read any configured credentials and UI assets.
-- A private configuration file at `/var/lib/crewboss/.crewboss.env` based on the example.
-  The file is mandatory and must contain the intended repository and API token.
-- Python 3 and GitHub CLI available on the service's PATH, plus any additional
-  runtime dependencies needed for enabled actions.
-
-Create or adapt those resources before enabling the unit. With the prerequisites
-in place, install the reviewed unit:
+Run these commands as the runtime account after installation:
 
 ```sh
-sudo install -m 644 reference/runtime/crewboss-api.service /etc/systemd/system/crewboss-api.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now crewboss-api
-sudo systemctl status crewboss-api
+export CB_HOME="$HOME/cbnet"
+export CB_ENV_FILE="$HOME/.crewboss.env"
+bash "$CB_HOME/crewboss-doctor.sh" --preflight
+bash "$CB_HOME/start-api.sh" --foreground
 ```
 
-Use `journalctl -u crewboss-api` for startup failures. The unit loads the environment
-file itself and invokes the same validated startup script in foreground mode.
-Do not use `export` statements in the systemd environment file. For an existing
-installation with a different account or directory, adapt `User`, `Group`,
-`WorkingDirectory`, `HOME`, `CB_HOME`, `EnvironmentFile`, and `ExecStart` together.
-Keep `CB_HOME` at `$HOME/cbnet` and the shared file at `$HOME/.crewboss.env` for
-launcher compatibility. Keep deployment tooling's destination directory aligned
-with the unit.
+Preflight checks the Linux architecture, dependencies, configuration, governance
+hook, and a real nsjail `/bin/true` sandbox probe. It makes no GitHub or provider
+requests. Agent launch entrypoints and API Run actions repeat it before starting
+work. It does not establish that live credentials or repository permissions work.
 
-## Remote access and webhooks
+`start-api.sh --foreground` runs under a terminal or process supervisor. Without
+the flag, it starts a background API, checks `/api/health` using curl, and records
+its PID and output under `$CB_HOME/run/`. It refuses to replace a running process
+from the existing PID file. `CB_API_SCRIPT` can override the installed Python
+entrypoint with an absolute source path; its sibling helper modules must remain
+available. Starting the API does not start the launcher.
 
-For the dashboard, prefer an SSH tunnel to the loopback-bound API:
+For systemd, use the installed `$CB_HOME/systemd/render-units.py` to generate
+templates for your account and paths. Review and install the generated units as
+described in the installation guide. API and launcher execute as the same
+unprivileged account and load the same mandatory environment file. The optional
+keepalive oneshot requests the dedicated launcher service to start; it does not
+execute user-writable runtime scripts as root.
+
+## HTTP access
+
+Every real Python server entrypoint requires a nonblank token. Operator routes,
+including the streaming state endpoint, require `Authorization: Bearer TOKEN`.
+Tokens in query strings are rejected. The UI holds its token in memory and uses
+authenticated fetch streams; reenter the token after a reload. Static dashboard
+files and `/api/health` remain public.
+
+The API normally sends a state frame or keepalive every 10 seconds. The dashboard
+retries a stream after 60 seconds without data and falls back to authenticated
+polling. Keep a custom `CB_API_POLL` interval below that inactivity timeout.
+
+CORS allows exact origins. Defaults cover `localhost`, `127.0.0.1`, and `[::1]`
+on port `5500` and the configured API port. Set `CB_ALLOWED_ORIGINS` explicitly
+for a reverse proxy or another dashboard origin; wildcard origins are rejected.
+An explicit empty list rejects browser requests carrying an Origin header.
+Requests without an Origin header, such as CLI clients, still require their
+normal authentication.
+
+The server binds to loopback by default and does not provide TLS. For remote
+dashboard access, use an SSH tunnel:
 
 ```sh
 ssh -N -L 8787:127.0.0.1:8787 user@your-server
 ```
 
-GitHub webhook delivery needs an HTTPS endpoint reachable from GitHub. Use a TLS
-reverse proxy or an appropriate forwarding service; the Python API does not
-terminate TLS. Route webhook traffic to `/api/gh-webhook` without exposing
-operator routes unnecessarily.
-
-Generate a separate secret with `openssl rand -hex 32`. Add it as
-`CB_WEBHOOK_SECRET` in the API environment and in the GitHub repository's webhook
-settings. Choose JSON content and the **Issues** and **Pull requests** events,
-with a payload URL such as `https://your-server.example.com/api/gh-webhook`.
-Restart the API after changing its environment. Deliveries are checked using
-HMAC-SHA256 and the `X-Hub-Signature-256` header.
-
-## Authentication limits
-
-The Python API itself permits requests when `CB_API_TOKEN` is empty. The startup
-script above rejects that configuration; invoking Python directly bypasses this
-startup check. `/api/health` and static UI files are public even with a token.
-Webhooks use their own signature check instead of bearer authentication.
-
-The browser stores the API token in local storage and includes it in EventSource
-URLs. Avoid logging token-bearing URLs. The API has permissive CORS, so network
-exposure and token handling must be configured deliberately. Read
-[SECURITY.md](../../SECURITY.md) for the broader boundaries and reporting process.
+Optional GitHub webhooks need a reachable HTTPS endpoint at `/api/gh-webhook`,
+JSON content, and Issues/Pull requests events. Set a separate
+`CB_WEBHOOK_SECRET` in the API environment and GitHub webhook settings. The API
+checks `X-Hub-Signature-256` using HMAC-SHA256; webhook signatures are independent
+of operator bearer authentication. Restart after environment changes. See the
+[security policy](../../SECURITY.md) for the wider trust boundaries.

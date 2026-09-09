@@ -43,7 +43,9 @@ RUN = os.path.join(APIHOME, "run")
 os.makedirs(RUN, exist_ok=True)
 os.makedirs(os.path.join(HOMEDIR, "cbnet"), exist_ok=True)
 shutil.copy(RUN_ENV_SRC, os.path.join(APIHOME, "run-env.sh"))
-EXPECT_CBHOME = os.path.join(HOMEDIR, "cbnet")   # run-env.sh => CB_HOME=$HOME/cbnet
+EXPECT_CBHOME = APIHOME  # explicit CB_HOME must stay aligned with API state
+with open(os.path.join(APIHOME, "crewboss-doctor.sh"), "w") as doctor:
+    doctor.write("#!/usr/bin/env bash\nexit 0\n")
 
 # Env BEFORE import (module reads CB_HOME/RUN at import time).
 os.environ["CB_HOME"] = APIHOME
@@ -66,7 +68,8 @@ class Recorder:
     def __call__(self, *a, **kw):
         # consume/close any file objects passed as stdout/stderr to avoid fd leaks
         self.calls.append({"args": a, "kwargs": kw, "env": kw.get("env")})
-        return None
+        from types import SimpleNamespace
+        return SimpleNamespace(pid=12345, returncode=0, wait=lambda: 0)
 
 class SubShim:
     def __init__(self, popen): self._popen = popen

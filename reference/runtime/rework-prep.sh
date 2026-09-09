@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# rework-prep: spawn a jailed executor to rework issue $ID onto charter/C.
+# rework-prep: spawn the owning role to rework issue $ID onto charter/C.
 # Usage: rework-prep.sh <id> <role>
 #   CB_OLD_BRANCH set  -> integrate mode (merge prior work onto charter/C, resolve conflicts)
 #   CB_OLD_BRANCH empty -> fresh-fix mode (implement the issue on charter/C)
 set -uo pipefail
-CB_HOME="${CB_HOME:-$HOME/cbnet}"; RUN="$CB_HOME/run"
-CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
-ID="$1"; OLD="${CB_OLD_BRANCH:-}"
-GH_TOKEN="$(gh auth token)"; export GH_TOKEN
-URL="https://x-access-token:${GH_TOKEN}@github.com/${CB_REPO}.git"
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] && [[ "$1" =~ ^[0-9]+$ ]] \
+  || { echo 'usage: rework-prep.sh TASK_NUMBER [ROLE_IDENTIFIER]' >&2; exit 2; }
+ID="$1"; ROLE="${2:-executor}"
+[[ "$ROLE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo 'rework: invalid role identifier' >&2; exit 2; }
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
+OLD="${CB_OLD_BRANCH:-}"
+bash "$CB_HOME/crewboss-doctor.sh" --preflight || exit 2
+RUN="$CB_HOME/run"
+URL="https://github.com/${CB_REPO}.git"
 BODY="$(gh issue view "$ID" -R "$CB_REPO" --json body --jq .body 2>/dev/null)"
 # Carry the latest gate feedback (verify-merged RED reason) into the prompt so rework is targeted, not blind.
 REDREASON="$(gh issue view "$ID" -R "$CB_REPO" --json comments --jq '[.comments[].body | select(test("verify-merged confirmed engine RED"))] | last // ""' 2>/dev/null)"
@@ -53,4 +58,14 @@ $BODY$FEEDBACK"
 fi
 
 PF="$RUN/work/$ID/task.prompt"; printf '%s' "$PROMPT" > "$PF"
-exec "$CB_HOME/crewboss-spawn.sh" "$ID" executor "$PF" "$WA/work" "$CB_REPO"
+if [ "${CB_GOVERNED:-1}" = 1 ] && [ -d "$CB_HOME/gov/.claude" ]; then
+  mkdir -p "$WA/work/.claude"
+  cp -R "$CB_HOME/gov/.claude/." "$WA/work/.claude"
+  printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+if [ -n "${CB_MANIFEST:-}" ] && [ -f "$CB_MANIFEST/roles/$ROLE.md" ]; then
+  mkdir -p "$WA/work/.claude/agents"
+  cp "$CB_MANIFEST/roles/$ROLE.md" "$WA/work/.claude/agents/$ROLE.md"
+  printf '.claude\n' >> "$WA/work/.git/info/exclude"
+fi
+exec "$CB_HOME/crewboss-spawn.sh" "$ID" "$ROLE" "$PF" "$WA/work" "$CB_REPO"

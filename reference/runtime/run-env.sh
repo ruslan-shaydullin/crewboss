@@ -6,14 +6,45 @@
 # D2: интеграция ВКЛ по умолчанию; отключается явным CB_NO_INTEGRATE=1.
 # D1/token: GH_TOKEN НЕ вшивается в URL — используется git credential-helper (inline).
 
-# Load operator secrets / overrides from ~/.crewboss.env if present
-# shellcheck source=/dev/null
-[ -f "$HOME/.crewboss.env" ] && . "$HOME/.crewboss.env"
+# Load one trusted operator configuration. Keep this file self-contained so it
+# can be copied with the runtime and sourced by API, services and CLI entrypoints.
+_cb_explicit_env_file="${CB_ENV_FILE:+1}"
+CB_ENV_FILE="${CB_ENV_FILE:-$HOME/.crewboss.env}"
+if [ -e "$CB_ENV_FILE" ]; then
+  [ -r "$CB_ENV_FILE" ] || { echo 'run-env: CB_ENV_FILE is not readable' >&2; return 2 2>/dev/null || exit 2; }
+  _cb_allexport=0; case "$-" in *a*) _cb_allexport=1 ;; esac
+  set -a
+  # shellcheck disable=SC1090
+  . "$CB_ENV_FILE" || { echo 'run-env: configuration could not be loaded' >&2; return 2 2>/dev/null || exit 2; }
+  [ "$_cb_allexport" -eq 1 ] || set +a
+  unset _cb_allexport
+elif [ "$_cb_explicit_env_file" = 1 ]; then
+  echo 'run-env: CB_ENV_FILE does not exist' >&2
+  return 2 2>/dev/null || exit 2
+else
+  # Carry env-only startup into child processes without advertising a missing
+  # explicit config file on the next source of this contract.
+  CB_ENV_FILE=/dev/null
+fi
+unset _cb_explicit_env_file
+export CB_ENV_FILE
 
 # ── Core ──────────────────────────────────────────────────────────────────────
-export CB_REPO="${CB_REPO:-ruslan-shaydullin/crewboss}"
-# CB_HOME явный $HOME/cbnet (закрывает рассинхрон с дефолтом лаунчера /tmp/cbnet)
-export CB_HOME="$HOME/cbnet"
+[[ "${CB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+  echo 'run-env: CB_REPO is required (owner/repository)' >&2
+  return 2 2>/dev/null || exit 2
+}
+export CB_REPO
+export CB_HOME="${CB_HOME:-$HOME/cbnet}"
+case "$CB_HOME" in /*) ;; *) echo 'run-env: CB_HOME must be an absolute path' >&2; return 2 2>/dev/null || exit 2 ;; esac
+export CB_AGENT_HOME="${CB_AGENT_HOME:-$HOME}"
+export CB_CLAUDE_BIN="${CB_CLAUDE_BIN:-$CB_AGENT_HOME/.local/bin/claude}"
+export CB_CLAUDE_INSTALL_DIR="${CB_CLAUDE_INSTALL_DIR:-$CB_AGENT_HOME/.local}"
+export CB_CLAUDE_CONFIG_DIR="${CB_CLAUDE_CONFIG_DIR:-$CB_AGENT_HOME/.claude}"
+export CB_CLAUDE_CONFIG_FILE="${CB_CLAUDE_CONFIG_FILE:-$CB_AGENT_HOME/.claude.json}"
+export CB_NSJAIL_BIN="${CB_NSJAIL_BIN:-/usr/local/bin/nsjail}"
+export CB_GH_BIN="${CB_GH_BIN:-/usr/bin/gh}"
+export CB_GOVERNED="${CB_GOVERNED:-1}"
 # CB_MAX_TICKS не меньше 1800 (T6 тик-бюджет: лист ~8-10 мин, 120 тиков = один батч)
 export CB_MAX_TICKS="${CB_MAX_TICKS:-1800}"
 export CB_MAX_PARALLEL="${CB_MAX_PARALLEL:-4}"
@@ -24,11 +55,11 @@ export CB_MAX_PARALLEL="${CB_MAX_PARALLEL:-4}"
 # throughput. Lower via env for snappier reaction at higher RL cost.
 export CB_POLL="${CB_POLL:-20}"
 export CB_TASK_TIMEOUT="${CB_TASK_TIMEOUT:-3600}"
-export CB_SPAWN="${CB_SPAWN:-$HOME/cbnet/charter-leaf-prep.sh}"
+export CB_SPAWN="${CB_SPAWN:-$CB_HOME/charter-leaf-prep.sh}"
 
 # ── Gate / integrator env (F8 contract — soft link, just pass through) ────────
-GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null)}"
-export GH_TOKEN
+# Tokens are supplied by the operator, never extracted from a login by startup.
+export GH_TOKEN="${GH_TOKEN:-}"
 
 # D2: интеграция ВКЛ по умолчанию; CB_NO_INTEGRATE=1 → пусто → лаунчер громко дизейблит
 # integrator+finale И rework/escalation trigger (off-mode != off-escalation, #207)
@@ -49,7 +80,7 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=credential.helper
 export GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f'
 
-export CB_PLAN_SPAWN="${CB_PLAN_SPAWN:-$HOME/cbnet/crewboss-prep-spawn-gh.sh}"
+export CB_PLAN_SPAWN="${CB_PLAN_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
 # CB_HARNESS: passthrough — empty by default; gate uses marker-grep only; override for harness tests.
 export CB_HARNESS="${CB_HARNESS:-}"
 # Gate location for charter finale: intentionally NOT configured here.

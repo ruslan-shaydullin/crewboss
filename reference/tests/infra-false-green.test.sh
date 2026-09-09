@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 INTEGRATOR="${INTEGRATOR_OVERRIDE:-$HERE/../runtime/crewboss-integrator.sh}"
 FRESHNESS_SCRIPT="${FRESHNESS_SCRIPT_OVERRIDE:-$HERE/../bin/check-freshness.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 CI_YML="$HERE/../../.github/workflows/ci.yml"
 

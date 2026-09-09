@@ -11,8 +11,9 @@ import re
 import sys
 import time
 
-SOCK = sys.argv[1] if len(sys.argv) > 1 else "/tmp/cbnet/proxy.sock"
-LOG = os.environ.get("CB_PROXY_LOG", "/tmp/cbnet/proxy.log")
+CB_HOME = os.environ.get("CB_HOME", os.path.expanduser("~/cbnet"))
+SOCK = sys.argv[1] if len(sys.argv) > 1 else os.path.join(CB_HOME, "run", "proxy.sock")
+LOG = os.environ.get("CB_PROXY_LOG") or os.path.join(os.path.dirname(SOCK), "proxy.log")
 
 ALLOW_EXACT = {
     "github.com",
@@ -101,15 +102,19 @@ async def handle(reader, writer):
 
 
 async def main():
+    os.umask(0o077)
+    os.makedirs(os.path.dirname(os.path.abspath(SOCK)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(LOG)), exist_ok=True)
     try:
         os.unlink(SOCK)
     except FileNotFoundError:
         pass
     server = await asyncio.start_unix_server(handle, SOCK)
-    os.chmod(SOCK, 0o666)
+    os.chmod(SOCK, 0o600)
     log("proxy up on %s pid=%d" % (SOCK, os.getpid()))
     async with server:
         await server.serve_forever()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

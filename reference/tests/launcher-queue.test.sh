@@ -16,9 +16,13 @@
 # Q-c: absent queue.json → both A (51) and B (101) are spawned (regression lock).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+export CB_FIXTURE_LIB="$HERE/lib/runtime-fixture.sh"
+# shellcheck source=lib/runtime-fixture.sh
+. "$CB_FIXTURE_LIB"
+export CB_ENV_FILE=/dev/null CB_NO_INTEGRATE=1
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 LAUNCHER="$HERE/../runtime/crewboss-launcher-gh.sh"
-BOARD_GH_SRC="$REPO_ROOT/proto/r6/board-gh.sh"
+BOARD_GH_SRC="$REPO_ROOT/reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$REPO_ROOT/proto/r6/launchable.sh"
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
@@ -35,6 +39,7 @@ mkdir -p "$BIN" "$CBHOME"
 cp "$BOARD_GH_SRC"   "$CBHOME/board-gh.sh"
 cp "$LAUNCHABLE_SRC" "$CBHOME/launchable.sh"
 chmod +x "$CBHOME/board-gh.sh" "$CBHOME/launchable.sh"
+cb_fixture_runtime "$CBHOME"
 
 pass=0; fail=0
 ok(){ pass=$((pass+1)); printf 'ok   %s\n' "$1"; }
@@ -43,6 +48,9 @@ ko(){ fail=$((fail+1)); printf 'FAIL %s\n' "$1"; }
 # ── gh stub: stateful board JSON mutations ────────────────────────────────────
 cat > "$BIN/gh" <<'GH'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  . "$CB_FIXTURE_LIB"; cb_fixture_gh_api "$@"; exit $?
+fi
 obj="$1"; verb="$2"; shift 2
 # strip -R/--repo and -L flags (with their values)
 _args=()
@@ -140,6 +148,7 @@ run_launcher(){
     # any queue logic runs (and would inject --require-composition into launchable,
     # silently making all leaves non-launchable even when the path exists).
     unset CREWBOSS_CHARTER CB_PLAN_SPAWN CB_ANALYSIS_SPAWN CB_APPROVAL_SPAWN CB_CONFLICT_SPAWN CB_REWORK_SPAWN CB_MANIFEST CB_MANIFEST_LIB
+    export CB_PLAN_SPAWN="$ROOT/stub-spawn.sh"
     # Apply explicit overrides.
     for kv in "$@"; do export "${kv?}"; done
     PATH="$BIN:$PATH" bash "$LAUNCHER" "$sub"

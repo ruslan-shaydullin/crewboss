@@ -5,7 +5,7 @@
 # Stubs scp/ssh via PATH shims that model a "box" as a local tmpdir (no network,
 # real file names from the manifest).  HOME is isolated.
 #
-# Case A: box = copy of _box-snapshot/cbnet (stale, pre-F9 state)
+# Case A: box = minimal stale deployment fixture
 #         → verify must exit non-zero AND name run-charter.sh (sha drift)
 #           AND name crewboss-integrator.sh (absent from snapshot)
 #
@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 DEPLOY="$HERE/../runtime/deploy-runtime.sh"
 MANIFEST="$REPO_ROOT/reference/runtime-manifest.tsv"
-SNAPSHOT="$REPO_ROOT/_box-snapshot/cbnet"
+SNAPSHOT="$HERE/fixtures/legacy-runtime/stale"
 DOCTOR="$HERE/../runtime/crewboss-doctor.sh"
 
 pass=0; fail=0
@@ -39,7 +39,7 @@ if [ ! -f "$MANIFEST" ]; then
   printf '=== SUMMARY: 0 passed, 1 failed ===\n'; exit 1
 fi
 if [ ! -d "$SNAPSHOT" ]; then
-  printf 'SKIP: _box-snapshot/cbnet not found at %s\n' "$SNAPSHOT"
+  printf 'SKIP: stale fixture not found at %s\n' "$SNAPSHOT"
   printf '=== SUMMARY: 0 passed, 1 failed ===\n'; exit 1
 fi
 if [ ! -f "$DOCTOR" ]; then
@@ -84,7 +84,7 @@ SSH_EOF
 chmod +x "$SHIM_DIR/ssh"
 
 # ============================================================================
-printf '\n=== Case A: box = _box-snapshot/cbnet (stale) → verify must fail ===\n'
+printf '\n=== Case A: box = historical stale fixture → verify must fail ===\n'
 
 BOX_A="$WORK/box_a"
 mkdir -p "$BOX_A"

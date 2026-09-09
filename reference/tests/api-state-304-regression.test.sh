@@ -144,7 +144,7 @@ fi
 export PATH="$TMP/bin:$PATH"
 export CB_REPO="test/repo"
 export CB_HOME="$CBHOME"
-export CB_API_TOKEN=""
+export CB_API_TOKEN="fixture-state-token"
 export CB_API_PORT="$PORT"
 
 python3 "$API_PY" --port "$PORT" \
@@ -154,7 +154,7 @@ SERVER_PID=$!
 # Poll /api/health until ready (up to 10 s).
 READY=0
 for _i in $(seq 1 20); do
-    _code="$(curl -s -o /dev/null -w "%{http_code}" \
+    _code="$(curl -H "Authorization: Bearer fixture-state-token" -s -o /dev/null -w "%{http_code}" \
         "http://127.0.0.1:$PORT/api/health" 2>/dev/null || true)"
     if [ "$_code" = "200" ]; then READY=1; break; fi
     sleep 0.5
@@ -169,7 +169,7 @@ ok "server started on port $PORT (pid $SERVER_PID)"
 
 # ── Request 1: GET /api/state — first call (stub returns 200 + ETag) ──────────
 echo "=== Request 1: GET /api/state (charter fetch: 200 + ETag) ==="
-RESP1="$(curl -s "http://127.0.0.1:$PORT/api/state")"
+RESP1="$(curl -H "Authorization: Bearer fixture-state-token" -s "http://127.0.0.1:$PORT/api/state")"
 printf '%s' "$RESP1" > "$TMP/resp1.json"
 
 # 1a. Response is a JSON object (not a raw list).
@@ -210,7 +210,7 @@ fi
 
 # ── Request 2: GET /api/state — second call (stub returns 304) ─────────────────
 echo "=== Request 2: GET /api/state (charter fetch: 304 Not Modified) ==="
-RESP2="$(curl -s "http://127.0.0.1:$PORT/api/state")"
+RESP2="$(curl -H "Authorization: Bearer fixture-state-token" -s "http://127.0.0.1:$PORT/api/state")"
 printf '%s' "$RESP2" > "$TMP/resp2.json"
 
 # 2a. Response is still a JSON object after the 304 path.

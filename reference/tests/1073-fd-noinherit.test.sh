@@ -21,7 +21,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 
 ROOT="$(mktemp -d)"; trap 'kill "$(cat "$ROOT/holder.pid" 2>/dev/null)" 2>/dev/null; rm -rf "$ROOT"; pkill -P $$ 2>/dev/null; true' EXIT

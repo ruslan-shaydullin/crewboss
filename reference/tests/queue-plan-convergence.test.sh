@@ -24,8 +24,12 @@
 #   spurious label increments failed.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+export CB_FIXTURE_LIB="$HERE/lib/runtime-fixture.sh"
+# shellcheck source=lib/runtime-fixture.sh
+. "$CB_FIXTURE_LIB"
+export CB_ENV_FILE=/dev/null CB_NO_INTEGRATE=1
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 TEAM_EXAMPLE="$(cd "$HERE/../../team-example" && pwd)"
 MANIFEST_LIB_SRC="$HERE/../../reference/launcher/manifest.sh"
@@ -64,6 +68,9 @@ chmod +x "$BIN/flock"
 # ── gh stub (stateful file-board; same contract as plan-convergence.test.sh) ──
 cat > "$BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  . "$CB_FIXTURE_LIB"; cb_fixture_gh_api "$@"; exit $?
+fi
 obj="$1"; verb="$2"; shift 2
 _args=()
 while [ $# -gt 0 ]; do
@@ -138,6 +145,7 @@ case "$obj $verb" in
     echo "issue create #$newn: $title" >> "$GH_LOG"
     printf 'https://github.com/test/repo/issues/%s\n' "$newn" ;;
   "auth token") echo "fake-token" ;;
+  "pr list") printf '[]\n' ;;
   "label create") ;;
   *) echo "gh-stub UNHANDLED: $obj $verb $*" >> "$GH_LOG" ;;
 esac
@@ -174,6 +182,7 @@ reset_sandbox(){
   cp "$BOARD_GH_SRC"   "$cbhome/board-gh.sh"
   cp "$LAUNCHABLE_SRC" "$cbhome/launchable.sh"
   chmod +x "$cbhome/board-gh.sh" "$cbhome/launchable.sh"
+  cb_fixture_runtime "$cbhome"
 }
 
 # Seed: both charters at status:plan-review + composition:approved (post-tech-lead
@@ -181,8 +190,8 @@ reset_sandbox(){
 seed_board(){
   local cbhome="$1"
   printf '[
-    {"number":50,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"}],"body":"charter A","comments":[]},
-    {"number":100,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"}],"body":"charter B","comments":[]}
+    {"number":50,"title":"Charter A","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"}],"body":"charter A","comments":[]},
+    {"number":100,"title":"Charter B","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"}],"body":"charter B","comments":[]}
   ]\n' > "$BOARD_STATE"
   mkdir -p "$cbhome/run"
   printf '{"order":[50,100]}' > "$cbhome/run/queue.json"
@@ -211,7 +220,7 @@ run_loop(){
     CB_REVIEW_STALE_TICKS=999 \
     CREWBOSS_CHARTER= \
     env "$@" \
-    bash "$LAUNCHER" run >"$logfile" 2>&1 || true
+    bash "$LAUNCHER" run >"$logfile" 2>&1 || tail -20 "$logfile" >&2
 }
 
 # =============================================================================

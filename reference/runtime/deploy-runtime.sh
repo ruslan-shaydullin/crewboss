@@ -11,7 +11,7 @@
 # Optional env:
 #   REPO_ROOT       — repo checkout root (default: auto-detected)
 #   MANIFEST        — path to manifest tsv (default: $REPO_ROOT/reference/runtime-manifest.tsv)
-#   CB_REMOTE_HOME  — path to cbnet dir on box (default: ~/cbnet)
+#   CB_REMOTE_HOME  — path to cbnet dir on box (default: /var/lib/crewboss/cbnet)
 #   CB_SSH_OPTS     — extra options forwarded to both scp and ssh (default: empty)
 
 set -euo pipefail
@@ -20,14 +20,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 MANIFEST="${MANIFEST:-$REPO_ROOT/reference/runtime-manifest.tsv}"
 CB_HOST="${CB_HOST:-}"
-CB_REMOTE_HOME="${CB_REMOTE_HOME:-~/cbnet}"
+CB_SERVICE_HOME="${CB_SERVICE_HOME:-/var/lib/crewboss}"
+CB_REMOTE_HOME="${CB_REMOTE_HOME:-$CB_SERVICE_HOME/cbnet}"
+CB_REMOTE_ENV_FILE="${CB_REMOTE_ENV_FILE:-$CB_SERVICE_HOME/.crewboss.env}"
+for _path in "$CB_SERVICE_HOME" "$CB_REMOTE_HOME" "$CB_REMOTE_ENV_FILE"; do
+  [[ "$_path" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "$_path" != *'/../'* ]] || {
+    echo 'deploy-runtime: remote paths must be absolute and contain no spaces or shell metacharacters' >&2; exit 2;
+  }
+done
+REMOTE_ENV="export HOME=$CB_SERVICE_HOME CB_HOME=$CB_REMOTE_HOME CB_ENV_FILE=$CB_REMOTE_ENV_FILE;"
 CB_SSH_OPTS="${CB_SSH_OPTS:-}"
 SUBCMD="${1:-}"
 
 if [ -z "$CB_HOST" ]; then
-  printf 'ERROR: CB_HOST is not set (e.g. CB_HOST=ec2-user@1.2.3.4)\n' >&2
+  printf 'ERROR: CB_HOST is not set (user@hostname)\n' >&2
   exit 1
 fi
+[[ "$CB_HOST" =~ ^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$ ]] \
+  || { echo 'deploy-runtime: CB_HOST must be a hostname or user@hostname' >&2; exit 2; }
 
 # ── verify step: ssh-check every canonical file on the box via crewboss-doctor ─
 # Reuses drift logic from crewboss-doctor.sh (already deployed on the box).
@@ -38,7 +48,7 @@ do_verify() {
   # literal tilde → "No such file or directory"). [deploy-debt 2026-06-17]
   # shellcheck disable=SC2086,SC2029
   ssh $CB_SSH_OPTS "$CB_HOST" \
-    "H=\$(eval echo $CB_REMOTE_HOME); CB_HOME=\$H bash \$H/crewboss-doctor.sh"
+    "$REMOTE_ENV H=$CB_REMOTE_HOME; CB_HOME=\$H bash \$H/crewboss-doctor.sh"
 }
 
 if [ "$SUBCMD" = "verify" ]; then
@@ -94,29 +104,18 @@ printf '  deployed: runtime-manifest.tsv (manifest copy)\n'
 # PATH=/cbnet:$PATH) resolves in-jail `gh` to the shim FIRST. The shim then walks past
 # itself in PATH to run the real gh binary. Idempotent (chmod / ln -sf).
 # shellcheck disable=SC2086,SC2029
-ssh $CB_SSH_OPTS "$CB_HOST" "
-  set -e; H=\$(eval echo $CB_REMOTE_HOME)
+ssh $CB_SSH_OPTS "$CB_HOST" "$REMOTE_ENV
+  set -e; H=$CB_REMOTE_HOME
   chmod +x \"\$H/gh-shim.sh\"
   ln -sf gh-shim.sh \"\$H/gh\"
 "
 printf '  wired: gh-shim.sh (chmod +x + gh -> gh-shim.sh symlink for PATH-prepend)\n'
 
-# ── Build + deploy the dashboard UI ───────────────────────────────────────────
-# The box serves the built vite dist from <home>/www (see crewboss-api.py static route).
-# Runs by default so CSS/JS fixes (e.g. #698) reach the live box on every deploy.
-# Pass CB_BUILD_UI=0 to skip for backend-only deploys. [deploy-debt 2026-06-17]
-if [ "${CB_BUILD_UI:-1}" != "0" ]; then
-  printf '=== building dashboard UI on %s ===\n' "$CB_HOST"
-  # shellcheck disable=SC2086,SC2029
-  ssh $CB_SSH_OPTS "$CB_HOST" "
-    set -e; H=\$(eval echo $CB_REMOTE_HOME)
-    [ -f \"\$H/run-env.sh\" ] && . \"\$H/run-env.sh\" || true
-    UB=\$HOME/cbnet-uibuild
-    if [ -d \"\$UB/.git\" ]; then git -C \"\$UB\" fetch -q origin main && git -C \"\$UB\" reset -q --hard origin/main
-    else git clone -q \"https://github.com/\${CB_REPO:-ruslan-shaydullin/crewboss}.git\" \"\$UB\"; fi
-    cd \"\$UB/ui/app\"; npm install --no-audit --no-fund >/tmp/ui-deploy.log 2>&1; npm run build >>/tmp/ui-deploy.log 2>&1
-    rm -rf \"\$H/www\"; cp -r dist \"\$H/www\"; echo '  UI built + deployed to '\"\$H\"'/www'
-  " || printf '  WARN: UI build step failed (see /tmp/ui-deploy.log on box)\n'
+# Optional local build: deploy this checkout's UI, never clone the operated repo.
+if [ "${CB_BUILD_UI:-0}" = 1 ]; then
+  (cd "$REPO_ROOT/ui/app" && npm ci --no-audit --no-fund && npm run build)
+  # shellcheck disable=SC2086
+  scp $CB_SSH_OPTS -r "$REPO_ROOT/ui/app/dist/." "$CB_HOST:$CB_REMOTE_HOME/ui/"
 fi
 
 # ── Optional: sync board labels to the repo (CB_SYNC_LABELS=1) ────────────────
@@ -125,8 +124,9 @@ fi
 if [ "${CB_SYNC_LABELS:-}" = "1" ]; then
   printf '=== syncing board labels to repo ===\n'
   # shellcheck disable=SC2086,SC2029
-  ssh $CB_SSH_OPTS "$CB_HOST" "
-    H=\$(eval echo $CB_REMOTE_HOME); [ -f \"\$H/run-env.sh\" ] && . \"\$H/run-env.sh\" || true
+  ssh $CB_SSH_OPTS "$CB_HOST" "$REMOTE_ENV
+    H=$CB_REMOTE_HOME; . \"\$H/run-env.sh\" || exit 2
+    bash \"\$H/crewboss-doctor.sh\" --preflight || exit 2
     bash \"\$H/labels-setup.sh\" >/dev/null 2>&1 && echo '  labels synced' || echo '  WARN: labels-setup non-zero'
   "
 fi
@@ -143,7 +143,7 @@ if [ "${CB_SYNC_TEAM:-1}" != "0" ]; then
   printf '=== syncing team catalog (role files) to %s ===\n' "$CB_HOST"
   # shellcheck disable=SC2086,SC2029
   ssh $CB_SSH_OPTS "$CB_HOST" \
-    "H=\$(eval echo $CB_REMOTE_HOME); mkdir -p \"\$H/team/roles\" \"\$H/gov/.claude/agents\"" \
+    "$REMOTE_ENV H=$CB_REMOTE_HOME; mkdir -p \"\$H/team/roles\" \"\$H/gov/.claude/agents\"" \
     || printf '  WARN: could not create team-catalog dirs on box\n' >&2
   role_count=0
   for _src in "$REPO_ROOT"/reference/.claude/agents/*.md "$REPO_ROOT"/team-example/roles/*.md; do
@@ -162,21 +162,18 @@ fi
 # ── Restart API daemon ────────────────────────────────────────────────────────
 printf '=== restarting API on %s ===\n' "$CB_HOST"
 # shellcheck disable=SC2086,SC2029
-ssh $CB_SSH_OPTS "$CB_HOST" "
+ssh $CB_SSH_OPTS "$CB_HOST" "$REMOTE_ENV
   # Preferred: the crewboss-api systemd service (survives ssh close, auto-restarts on crash,
   # starts on boot — closes the API-operability SPOF). reference/runtime/crewboss-api.service
   # documents the unit; install it once with: sudo cp + systemctl enable --now. [#188 gap-1]
   if [ -f /etc/systemd/system/crewboss-api.service ]; then
     sudo systemctl restart crewboss-api && echo 'API restarted (systemd crewboss-api, robust)'
   else
-    # Fallback: no unit installed — detached start (fragile, dies on abrupt ssh teardown).
-    H=\$(eval echo $CB_REMOTE_HOME); cd \"\$H\"
-    if [ -f run-env.sh ]; then . run-env.sh; elif [ -f \$HOME/.crewboss.env ]; then . \$HOME/.crewboss.env; fi
-    export CB_REPO=\${CB_REPO:-ruslan-shaydullin/crewboss} CB_HOME=\"\$H\"
-    for _p in \$(fuser 8787/tcp 2>/dev/null); do kill -9 \"\$_p\" 2>/dev/null || true; done; sleep 1
-    nohup setsid python3 crewboss-api.py --port 8787 > run/api.out 2>&1 < /dev/null & disown 2>/dev/null || true
-    echo \"\$!\" > run/api.pid; sleep 2
-    echo 'API restarted (FALLBACK detached — install crewboss-api.service for robustness)'
+    # The guarded starter validates required auth/config. It refuses to kill an
+    # arbitrary PID from an old file; install the service for managed restarts.
+    H=$CB_REMOTE_HOME
+    bash \"\$H/start-api.sh\"
+
   fi
 "
 

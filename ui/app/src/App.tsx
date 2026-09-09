@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { command, config, createIssue, deleteComment, facilitateMessage, fetchComments, fetchTask, postQueue, resolveDecision, searchBoard, subscribe, type Agent, type FacilitateMessage, type IssueComment, type IssuePayload, type IssueResult, type LoopInfo, type State, type Task, type TaskDetail } from './api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { command, postQueue, searchBoard, subscribe, type Agent, type LoopInfo, type State, type Task } from './api'
 import TeamPage from './TeamPage'
+import { DEMO_MODE } from './transport'
+import { resetDemo } from './demo'
+import NewIssueModal from './NewIssueModal'
+import TaskDrawer from './TaskDrawer'
+import QueuePanel from './QueuePanel'
+import { Modal, SettingsModal } from './Dialogs'
+import { useCountUp, useFlip, elapsed, prefersReducedMotion, type Toast } from './ui-interactions'
+
+type Confirm = { title: string; body: string; onOk: (reason?: string) => void; withInput?: boolean } | null
 
 // ── Lifecycle stage badge helpers ──────────────────────────────────────────
 const STATE_LIFECYCLE: Record<string, { label: string; modifier: string }> = {
@@ -23,104 +32,19 @@ function stateToModifier(state: string): string {
   return STATE_LIFECYCLE[state]?.modifier ?? state
 }
 
-/** Check whether a text contains a valid ## Acceptance (machine) block.
- *  Requires: the header line + at least one "- test: …" or "- check: …" entry. */
-function hasValidAcceptanceBlock(text: string): boolean {
-  if (!text.trim()) return false
-  const lines = text.split('\n')
-  let inBlock = false
-  for (const line of lines) {
-    if (/^## Acceptance \(machine\)/.test(line)) { inBlock = true; continue }
-    if (inBlock && /^## /.test(line)) break
-    if (inBlock && /^\s*- (test|check): .+/.test(line)) return true
-  }
-  return false
-}
-
-type Toast = { id: number; msg: string; err?: boolean; exiting?: boolean }
-type Confirm = { title: string; body: string; onOk: (reason?: string) => void; withInput?: boolean } | null
-
-/** Respect prefers-reduced-motion globally */
-function prefersReducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-/** animate a number toward `value` (easeOutCubic) — premium count-up on change. */
-function useCountUp(value: number, ms = 600): number {
-  const [n, setN] = useState(value)
-  const from = useRef(value)
-  useEffect(() => {
-    const a = from.current, b = value
-    if (a === b) { setN(b); return }
-    if (prefersReducedMotion()) { from.current = b; setN(b); return }
-    let raf = 0, start = 0
-    const tick = (t: number) => {
-      if (!start) start = t
-      const p = Math.min(1, (t - start) / ms)
-      const e = 1 - Math.pow(1 - p, 3)
-      setN(a + (b - a) * e)
-      if (p < 1) raf = requestAnimationFrame(tick); else { from.current = b; setN(b) }
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [value, ms])
-  return n
-}
-
-/** Relative position of an element within its FLIP container. */
-type FlipPos = { left: number; top: number }
-
-/**
- * FLIP hook: measures children by data-flip-key before/after renders and
- * plays translate animations for moved items.
- *
- * Positions are read from offsetLeft/offsetTop (the LAYOUT box, relative to
- * offsetParent) — NOT getBoundingClientRect, which includes the element's
- * current CSS transform. A transform-inclusive read makes the hook ingest its
- * own in-flight .animate() output (and the `.task` `rise` entry animation),
- * fabricating a phantom ~5px delta on every render → a self-sustaining jitter
- * that fires on every idle re-render (e.g. the 1s setTick). offsetTop/offsetLeft
- * are transform-free, so an idle render yields dy=0 and nothing animates; cards
- * only FLIP on a genuine layout change (real reorder / add / remove).
- */
-function useFlip(containerRef: React.RefObject<HTMLElement | null>) {
-  const snapshot = useRef<Map<string, FlipPos>>(new Map())
-
-  useLayoutEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-
-    const prev = snapshot.current
-    const reduced = prefersReducedMotion()
-
-    // INVERT + PLAY: animate children from old layout positions to new
-    Array.from(el.children).forEach((child) => {
-      const c = child as HTMLElement
-      const key = c.dataset.flipKey
-      if (!key) return
-      const oldPos = prev.get(key)
-      if (!oldPos) return
-      const dx = oldPos.left - c.offsetLeft
-      const dy = oldPos.top - c.offsetTop
-      if ((Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) || reduced) return
-      c.animate(
-        [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }],
-        { duration: 300, easing: 'cubic-bezier(.2,.7,.2,1)' }
-      )
-    })
-
-    // FIRST (for next render): snapshot current layout positions (transform-free)
-    const next = new Map<string, FlipPos>()
-    Array.from(el.children).forEach((child) => {
-      const c = child as HTMLElement
-      const key = c.dataset.flipKey
-      if (key) next.set(key, { left: c.offsetLeft, top: c.offsetTop })
-    })
-    snapshot.current = next
-  })
-}
 
 export default function App() {
+  const [session, setSession] = useState(0)
+  return <DashboardSession key={session} onReconnect={() => setSession(value => value + 1)} />
+}
+
+function DashboardSession({ onReconnect }: { onReconnect: () => void }) {
+  // A connection change unmounts all repository-specific state and callbacks.
+  // Invalidate immediately, before React's cleanup, to stop delayed operations
+  // from using newly saved credentials with an old queue or confirmation.
+  const active = useRef(true)
+  const reconnect = () => { active.current = false; onReconnect() }
+  useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   const [state, setState] = useState<State | null>(null)
   const [conn, setConn] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -153,12 +77,13 @@ export default function App() {
   }, [])
 
   useEffect(() => subscribe((s) => {
+    if (!active.current) return
     setState(s)
     // Sync queue from server only if user is not actively editing
     if (!dirtyRef.current) {
       setQueueOrder(s.queue?.order ?? [])
     }
-  }, setConn), [])
+  }, value => { if (active.current) setConn(value) }), [])
   useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i) }, [])
 
   useEffect(() => {
@@ -168,27 +93,33 @@ export default function App() {
       return
     }
     setSearchLoading(true)
+    let currentSearch = true
     const timer = setTimeout(async () => {
       const results = await searchBoard(searchQuery)
+      if (!active.current || !currentSearch) return
       setSearchResults(results)
       setSearchLoading(false)
     }, 300)
-    return () => clearTimeout(timer)
+    return () => { currentSearch = false; clearTimeout(timer) }
   }, [searchQuery])
 
   const handleQueueChange = useCallback(async (newOrder: number[]) => {
+    if (!active.current) return
     dirtyRef.current = true
     setQueueOrder(newOrder)
     try {
       await postQueue(newOrder)
+      if (!active.current) return
       dirtyRef.current = false
       setSavedOrder(newOrder)
     } catch {
+      if (!active.current) return
       dirtyRef.current = true
     }
   }, [])
 
   const toast = useCallback((msg: string, err?: boolean) => {
+    if (!active.current) return
     const id = ++tid.current
     setToasts((t) => [...t, { id, msg, err }])
     // Start exit animation before removing
@@ -198,6 +129,7 @@ export default function App() {
     }, 3100)
   }, [])
   const run = useCallback(async (action: string, number?: number, comment?: string) => {
+    if (!active.current) return
     const r = await command(action, number, comment); toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
   }, [toast])
   const ask = useCallback((title: string, body: string, onOk: (reason?: string) => void, withInput?: boolean) => setConfirm({ title, body, onOk, withInput }), [])
@@ -212,6 +144,11 @@ export default function App() {
         onPause={() => run(state?.flags.paused ? 'resume' : 'pause')}
         onKill={() => state?.flags.killed ? run('unkill') : ask('Kill-switch', 'Stops the launcher loop at the next tick. In-flight agents finish on their own.', () => run('kill'))}
         onSettings={() => setSettings(true)}
+        onReset={() => {
+          active.current = false
+          resetDemo()
+          onReconnect()
+        }}
         onNew={() => setNewIssue(true)} />
 
       {view === 'board' ? (
@@ -277,9 +214,9 @@ export default function App() {
         ))}
       </div>
       {confirm && <Modal title={confirm.title} body={confirm.body}
-        onCancel={() => setConfirm(null)} onOk={(reason) => { const f = confirm.onOk; setConfirm(null); f(reason) }}
+        onCancel={() => setConfirm(null)} onOk={(reason) => { if (!active.current) return; const f = confirm.onOk; setConfirm(null); f(reason) }}
         withInput={confirm.withInput} />}
-      {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={() => location.reload()} />}
+      {settings && <SettingsModal onClose={() => setSettings(false)} onSaved={reconnect} />}
       {newIssue && <NewIssueModal state={state} onClose={() => setNewIssue(false)} onToast={toast} />}
       {open != null && <TaskDrawer n={open} task={state?.board.find((b) => b.n === open) ?? null}
         onClose={() => setOpen(null)} onAction={run} ask={ask} mergeBlockReason={mergeBlockReason} />}
@@ -287,9 +224,9 @@ export default function App() {
   )
 }
 
-function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew }: {
+function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings, onNew, onReset }: {
   state: State | null; conn: boolean; view: 'board' | 'team' | 'human'; setView: (v: 'board' | 'team' | 'human') => void
-  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void
+  onRun: () => void; onPause: () => void; onKill: () => void; onSettings: () => void; onNew: () => void; onReset: () => void
 }) {
   const paused = state?.flags.paused, killed = state?.flags.killed
   return (
@@ -301,7 +238,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
           <button className={view === 'team' ? 'on' : ''} onClick={() => setView('team')}>Team</button>
           <button className={view === 'human' ? 'on' : ''} onClick={() => setView('human')} data-testid="tab-human">Задачи на человека</button>
         </nav>
-        <span className={'conn' + (conn ? ' live' : '')}>{conn ? 'live' : 'offline'}</span>
+        <span className={'conn' + (conn ? ' live' : '')} data-testid={DEMO_MODE ? 'demo-badge' : undefined}>{DEMO_MODE ? 'Local demo' : conn ? 'live' : 'offline'}</span>
         <span className="repo">{state?.autonomy.repo || '—'}</span>
       </div>
       <div className="hdr-r">
@@ -309,7 +246,7 @@ function Header({ state, conn, view, setView, onRun, onPause, onKill, onSettings
         <button className="btn pri" onClick={onRun}>▶ Run</button>
         <button className="btn" onClick={onPause}>{paused ? 'Resume' : 'Pause'}</button>
         <button className={'btn' + (killed ? '' : ' warn')} onClick={onKill}>{killed ? 'Un-kill' : 'Kill'}</button>
-        <button className="btn ghost" onClick={onSettings} aria-label="settings">⚙</button>
+        <button className="btn ghost" onClick={DEMO_MODE ? onReset : onSettings} aria-label={DEMO_MODE ? "Reset demo" : "settings"}>{DEMO_MODE ? "Reset demo" : "⚙"}</button>
       </div>
     </header>
   )
@@ -980,116 +917,6 @@ function SkeletonBoard() {
   )
 }
 
-function QueuePanel({ queueOrder, savedOrder, board, isLoopRunning, onQueueChange, onLaunch, pendingQueue, onRemovePending, onOpen }: {
-  queueOrder: number[]
-  savedOrder: number[]
-  board: Task[]
-  isLoopRunning: boolean
-  onQueueChange: (order: number[]) => Promise<void>
-  onLaunch: () => Promise<void>
-  pendingQueue: number[]
-  onRemovePending: (n: number) => void
-  onOpen: (n: number) => void
-}) {
-  const [isEditing, setIsEditing] = useState(false)
-  const charterMap = new Map(board.filter((t) => t.kind === 'charter').map((t) => [t.n, t]))
-  const isDirty = JSON.stringify(queueOrder) !== JSON.stringify(savedOrder)
-  const move = (idx: number, dir: -1 | 1) => {
-    const newOrder = [...queueOrder]
-    const target = idx + dir
-    if (target < 0 || target >= newOrder.length) return
-    ;[newOrder[idx], newOrder[target]] = [newOrder[target], newOrder[idx]]
-    onQueueChange(newOrder)
-  }
-  const remove = (idx: number) => {
-    const newOrder = queueOrder.filter((_, i) => i !== idx)
-    onQueueChange(newOrder)
-  }
-  const launchLabel = isEditing
-    ? '💾 Сохранить'
-    : isLoopRunning
-    ? '✎ Редактировать'
-    : '▶ Запустить очередь'
-  const handleLaunchBtn = async () => {
-    if (isEditing) {
-      setIsEditing(false)
-    } else if (isLoopRunning) {
-      setIsEditing(true)
-    } else {
-      await onLaunch()
-    }
-  }
-  return (
-    <div className="queue-panel" data-testid="queue-panel">
-      <div className="queue-panel__head">
-        <span>Queue</span>
-        <span className="queue-panel__count">{queueOrder.length}</span>
-        {isDirty && (
-          <span className="queue-panel__dirty" data-testid="queue-dirty-indicator" title="Unsaved changes">●</span>
-        )}
-      </div>
-      {queueOrder.length === 0 ? (
-        <div className="queue-panel__empty" data-testid="queue-empty">
-          Queue is empty — click + Queue on a charter card
-        </div>
-      ) : (
-        <ol className="queue-panel__list">
-          {queueOrder.map((n, idx) => {
-            const charter = charterMap.get(n)
-            return (
-              <li key={n} className={`queue-panel__item${charter?.stuck?.is_stuck ? " queue-panel__item--stuck" : ""}`} title={charter?.stuck?.is_stuck ? (charter.stuck?.reason ?? undefined) : undefined} data-testid="queue-item" data-n={n} onClick={() => onOpen(n)}>
-                <span className="queue-panel__pos">{idx + 1}.</span>
-                <span className="queue-panel__label">
-                  <span className="num">#{n}</span>
-                  {charter && <span className="queue-panel__title"> — {charter.title}</span>}
-                </span>
-                <div className="queue-panel__controls">
-                  <button className="btn ghost xs" onClick={() => move(idx, -1)} disabled={idx === 0} aria-label="Move up">↑</button>
-                  <button className="btn ghost xs" onClick={() => move(idx, 1)} disabled={idx === queueOrder.length - 1} aria-label="Move down">↓</button>
-                  <button className="btn ghost xs" onClick={() => remove(idx)} aria-label="Remove from queue" data-testid="queue-remove-btn">✕</button>
-                </div>
-              </li>
-            )
-          })}
-        </ol>
-      )}
-      <button
-        className="queue-btn--launch"
-        disabled={!isEditing && !isLoopRunning && queueOrder.length === 0}
-        data-testid="queue-launch-btn"
-        onClick={handleLaunchBtn}
-      >
-        {launchLabel}
-      </button>
-      {pendingQueue.length > 0 && (
-        <div className="queue-panel__pending" data-testid="queue-pending-section">
-          <div className="queue-panel__pending-head">Pending</div>
-          <ol className="queue-panel__list">
-            {pendingQueue.map((n) => {
-              const charter = charterMap.get(n)
-              return (
-                <li key={n} className="queue-panel__item queue-panel__item--pending" data-testid="queue-pending-item" data-n={n}>
-                  <span className="queue-panel__label">
-                    <span className="num">#{n}</span>
-                    {charter && <span className="queue-panel__title"> — {charter.title}</span>}
-                  </span>
-                  <button
-                    className="btn sm pri"
-                    data-testid="queue-pending-confirm-btn"
-                    onClick={() => {
-                      onQueueChange([...queueOrder, n])
-                      onRemovePending(n)
-                    }}
-                  >Подтвердить добавление</button>
-                </li>
-              )
-            })}
-          </ol>
-        </div>
-      )}
-    </div>
-  )
-}
 
 function AgentsRail({ agents, onOpen }: { agents: Agent[]; onOpen: (n: number) => void }) {
   const listRef = useRef<HTMLElement>(null)
@@ -1129,743 +956,6 @@ function AgentCard({ a, onOpen }: { a: Agent; onOpen: (n: number) => void }) {
         </div>
         <div className="agent-title">{a.title || a.phase}</div>
         <div className="agent-phase"><span className="phase-dot" />{a.phase}</div>
-      </div>
-    </div>
-  )
-}
-
-/** Plays a short exit animation on the overlay refs, then calls `done`. */
-function animateOverlayOut(
-  bgRef: React.RefObject<HTMLElement | null>,
-  panelRef: React.RefObject<HTMLElement | null>,
-  done: () => void,
-  slideDir: 'scale' | 'right' = 'scale'
-) {
-  if (prefersReducedMotion() || !bgRef.current || !panelRef.current) { done(); return }
-  const dur = 180
-  bgRef.current.animate([{ opacity: 1 }, { opacity: 0 }], { duration: dur, easing: 'ease-in', fill: 'forwards' })
-  const panelKf = slideDir === 'right'
-    ? [{ transform: 'translateX(0)', opacity: 1 }, { transform: 'translateX(40px)', opacity: 0 }]
-    : [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(.97)', opacity: 0 }]
-  panelRef.current.animate(panelKf, { duration: dur, easing: 'ease-in', fill: 'forwards' })
-  setTimeout(done, dur + 10)
-}
-
-/** Parse checkbox lines from a markdown body string. Returns items in order. */
-function parseCheckboxes(body: string): { index: number; checked: boolean; text: string }[] {
-  if (!body) return []
-  const lines = body.split('\n')
-  const result: { index: number; checked: boolean; text: string }[] = []
-  let idx = 0
-  for (const line of lines) {
-    const m = line.match(/^\s*[-*]\s+\[([ xX])\]\s*(.*)$/)
-    if (m) {
-      result.push({ index: idx++, checked: m[1].toLowerCase() === 'x', text: m[2].trim() })
-    }
-  }
-  return result
-}
-
-/** History marker prefixes emitted by set-check */
-const HISTORY_MARKERS = ['✅ выполнено:', '↩️ снята отметка:']
-
-function TaskDrawer({ n, task, onClose, onAction, ask, mergeBlockReason }: {
-  n: number; task: Task | null; onClose: () => void
-  onAction: (a: string, n?: number, comment?: string) => void; ask: (t: string, b: string, ok: (reason?: string) => void, withInput?: boolean) => void
-  mergeBlockReason: string | undefined
-}) {
-  const [d, setD] = useState<TaskDetail | null>(null)
-  const [comments, setComments] = useState<IssueComment[]>([])
-  const [commentText, setCommentText] = useState('')
-  const [sending, setSending] = useState(false)
-  const [resolveText, setResolveText] = useState('')
-  const [resolving, setResolving] = useState(false)
-  const [mergeErr, setMergeErr] = useState<string | null>(null)
-  const [merging, setMerging] = useState(false)
-  const [mergeVerifyOutput, setMergeVerifyOutput] = useState<string | null>(null)
-  const [mergeVerifyVerdict, setMergeVerifyVerdict] = useState<string | null>(null)
-  const logRef = useRef<HTMLPreElement>(null)
-  const tid = useRef(0)
-  const [toasts, setToasts] = useState<Toast[]>([])
-  const toast = useCallback((msg: string, err?: boolean) => {
-    const id = ++tid.current
-    setToasts((t) => [...t, { id, msg, err }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3400)
-  }, [])
-  const bgRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    let on = true
-    const load = async () => { const x = await fetchTask(n); if (on) setD(x) }
-    load(); const i = setInterval(load, 2500); return () => { on = false; clearInterval(i) }
-  }, [n])
-  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [d?.log])
-
-  const loadComments = useCallback(async () => {
-    const cs = await fetchComments(n); setComments(cs)
-  }, [n])
-  useEffect(() => {
-    loadComments()
-    const i = setInterval(loadComments, 15000)
-    return () => clearInterval(i)
-  }, [loadComments])
-
-  const sendComment = async () => {
-    const text = commentText.trim()
-    if (!text) return
-    setSending(true)
-    const r = await command('comment', n, text)
-    setSending(false)
-    toast(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok)
-    if (r.ok) { setCommentText(''); loadComments() }
-  }
-
-  const close = () => animateOverlayOut(bgRef, panelRef, onClose, 'right')
-
-  const phase = d?.status.phase ?? (d?.alive ? 'running' : '—')
-  const cost = d?.status.cost_usd
-  const pr = d?.status.pr || task?.pr
-
-  const checkboxItems = parseCheckboxes(d?.body ?? '')
-  const historyComments = comments.filter((c) => HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
-  const discussionComments = comments.filter((c) => !HISTORY_MARKERS.some((p) => c.body.startsWith(p)))
-
-  const CONVERGENCE_MARKERS = [
-    'needs-rework', 'verify-merged', 're-check', 'request-changes',
-    'plan failed', 'rework', 'analyst',
-  ]
-  const convComments = comments.filter((c) => {
-    const lower = c.body.toLowerCase()
-    return CONVERGENCE_MARKERS.some((m) => lower.includes(m))
-  })
-
-  return (
-    <div ref={bgRef} className="drawer-bg" onClick={close}>
-      <div ref={panelRef} className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-head">
-          <div>
-            <div className="drawer-id"><span className="num">#{n}</span>{task && <span className={'badge b-' + task.state}>{task.state}</span>}
-              {d?.alive && <span className="live-tag"><span className="phase-dot" />live</span>}</div>
-            <h2 className="drawer-title">{task?.title ?? 'task #' + n}</h2>
-          </div>
-          <button className="btn ghost" onClick={close}>✕</button>
-        </div>
-
-        <div className="drawer-stats">
-          <div><span className="ds-label">phase</span><span className="ds-val">{phase}</span></div>
-          {d?.started && d.alive && <div><span className="ds-label">elapsed</span><span className="ds-val">{elapsed(d.started)}</span></div>}
-          {cost != null && <div><span className="ds-label">cost</span><span className="ds-val">${Number(cost).toFixed(3)}</span></div>}
-          {pr && <div><span className="ds-label">pr</span><a className="ds-val pr" href={pr} target="_blank" rel="noreferrer">open ↗</a></div>}
-        </div>
-
-        {task?.kind === 'charter' && (
-          <div className="convergence-section" data-testid="convergence-section">
-            <div className="drawer-section">
-              Convergence
-              {(task.rework_n ?? 0) > 0
-                ? <span className="conv-count" data-testid="conv-count">
-                    {'↺'}{task.rework_n} re-check{task.rework_n === 1 ? '' : 's'}
-                  </span>
-                : <span className="conv-clean" data-testid="conv-clean">clean</span>
-              }
-            </div>
-            {convComments.length > 0 ? (
-              <div className="conv-feed" data-testid="conv-feed">
-                {convComments.map((c) => (
-                  <div key={c.id} className="conv-event">
-                    <span className="conv-meta">
-                      <span className="conv-author">{c.author}</span>
-                      <span className="conv-ts">
-                        {new Date(c.created).toLocaleString()}
-                      </span>
-                    </span>
-                    <pre className="conv-body">
-                      {c.body.length > 320 ? c.body.slice(0, 320) + '…' : c.body}
-                    </pre>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="conv-empty" data-testid="conv-empty">no re-checks yet</div>
-            )}
-          </div>
-        )}
-
-        {task && task.state !== 'done' && (
-          <div className="drawer-actions">
-            {task.state === 'plan-review' && !task.plan_convergence_active && (
-              <>
-                <button className="btn sm pri" onClick={() => ask('Approve plan #' + n, "Releases this charter's tasks to be launched.", () => onAction('approve', n))}>Approve plan</button>
-                <button className="btn sm ghost" onClick={() => ask('Request changes #' + n,
-                  'Опишите, что нужно доработать в плане:',
-                  (reason) => onAction('request-changes', n, reason),
-                  true)}>Request changes</button>
-              </>
-            )}
-            {task.state === 'plan-review' && task.plan_convergence_active && (
-              <span className="dim">plan-convergence in progress</span>
-            )}
-            {task.state === 'approved' && task.finale_pr && (
-              <>
-                <button className="btn sm pri" disabled={merging || mergeBlockReason !== undefined} title={mergeBlockReason} onClick={async () => {
-                  setMergeErr(null)
-                  setMergeVerifyVerdict(null)
-                  setMergeVerifyOutput(null)
-                  setMerging(true)
-                  const r = await command('merge', n)
-                  setMerging(false)
-                  if (!r.ok) {
-                    setMergeErr(r.msg || 'merge failed')
-                    if (r.verify_verdict) setMergeVerifyVerdict(r.verify_verdict)
-                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
-                  } else if (r.verify_verdict && r.verify_verdict !== 'green') {
-                    setMergeVerifyVerdict(r.verify_verdict)
-                    if (r.verify_output) setMergeVerifyOutput(r.verify_output)
-                  }
-                }}>{merging ? '⏳ Merging…' : 'Merge'}</button>
-                {mergeErr && <span className="err-inline">{mergeErr}</span>}
-                {mergeVerifyVerdict && (
-                  <span className={mergeVerifyVerdict === 'green' ? 'verify-ok' : 'err-inline'}>
-                    CI: {mergeVerifyVerdict}
-                  </span>
-                )}
-                {mergeVerifyOutput && mergeVerifyVerdict !== 'green' && (
-                  <details className="verify-details">
-                    <summary>CI output</summary>
-                    <pre className="verify-pre">{mergeVerifyOutput}</pre>
-                  </details>
-                )}
-              </>
-            )}
-            {task.state === 'held'
-              ? <button className="btn sm" onClick={() => onAction('unhold', n)}>Un-hold</button>
-              : <button className="btn sm ghost" onClick={() => onAction('hold', n)}>Hold</button>}
-          </div>
-        )}
-
-        {task && task.labels.includes('type:human-decision') && task.state !== 'done' && (
-          <>
-            <div className="drawer-section">Решить задачу</div>
-            <div className="disc-compose">
-              <textarea
-                className="disc-input"
-                value={resolveText}
-                onChange={(e) => setResolveText(e.target.value)}
-                placeholder="Текст решения (опционально)…"
-                rows={3}
-                data-testid="resolve-text"
-              />
-              <button
-                className="btn sm pri"
-                data-testid="resolve-submit-btn"
-                disabled={resolving}
-                onClick={async () => {
-                  setResolving(true)
-                  const r = await resolveDecision(n, resolveText)
-                  setResolving(false)
-                  toast(r.msg || (r.ok ? 'resolved' : 'failed'), !r.ok)
-                  if (r.ok) close()
-                }}
-              >{resolving ? 'Решение…' : 'Решить'}</button>
-            </div>
-          </>
-        )}
-
-        {d?.body && (
-          <>
-            <div className="drawer-section">Description</div>
-            <div className="task-body-prose" data-testid="task-body-prose"><pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{d.body}</pre></div>
-          </>
-        )}
-
-        {d?.prompt && <><div className="drawer-section">Brief</div><div className="brief">{d.prompt}</div></>}
-
-        {checkboxItems.length > 0 && (
-          <>
-            <div className="drawer-section" data-testid="checklist-section">Checklist</div>
-            <div className="checklist">
-              {checkboxItems.map((item) => (
-                <div
-                  key={item.index}
-                  className="checklist-item"
-                  data-testid="checklist-item"
-                  data-index={item.index}
-                >
-                  <span className={'checklist-box' + (item.checked ? ' checklist-box-checked' : '')} aria-hidden="true">
-                    {item.checked ? '✓' : ''}
-                  </span>
-                  <span className={item.checked ? 'checked' : ''}>{item.text}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {historyComments.length > 0 && (
-          <>
-            <div className="drawer-section" data-testid="history-section">История</div>
-            <div className="history">
-              {historyComments.map((c, i) => (
-                <div key={c.id || i} className="history-entry" data-testid="history-entry">
-                  <span className="history-body">{c.body}</span>
-                  <span className="history-meta muted">{c.author}{c.created ? ' · ' + elapsed(c.created) : ''}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        <div className="drawer-section">Discussion</div>
-        <div className="discussion">
-          {discussionComments.length === 0
-            ? <div className="disc-empty muted">no comments yet</div>
-            : discussionComments.map((c, i) => (
-              <div className="disc-comment" key={c.id || i} data-testid="disc-comment">
-                <div className="disc-meta">
-                  <span className="disc-author">{c.author}</span>
-                  {c.created && <span className="disc-time muted">{elapsed(c.created)}</span>}
-                  <button
-                    className="btn ghost disc-del"
-                    data-testid="delete-comment-btn"
-                    title="Delete comment"
-                    onClick={() => ask(
-                      'Delete comment',
-                      'Are you sure you want to delete this comment? This cannot be undone.',
-                      async () => {
-                        const r = await deleteComment(n, c.id)
-                        if (!r.ok) toast(r.msg || 'delete failed', true)
-                        else loadComments()
-                      }
-                    )}
-                  >✕</button>
-                </div>
-                <div className="disc-body">{c.body}</div>
-              </div>
-            ))}
-          <div className="disc-compose">
-            <textarea
-              className="disc-input"
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              placeholder="Leave a comment…"
-              rows={3}
-            />
-            <button
-              className="btn sm pri"
-              disabled={!commentText.trim() || sending}
-              onClick={sendComment}
-            >{sending ? 'Sending…' : 'Send'}</button>
-          </div>
-        </div>
-        {toasts.map((t) => <div key={t.id} className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>)}
-
-        <div className="drawer-section">Agent log {d?.alive && <span className="muted">· live</span>}</div>
-        <pre className="log" ref={logRef}>{d?.log?.trim() || (d?.alive ? 'agent working… (output appears when it streams/finishes)' : 'no log yet')}</pre>
-      </div>
-    </div>
-  )
-}
-
-function elapsed(iso: string): string {
-  if (!iso) return ''
-  const t = Date.parse(iso); if (isNaN(t)) return ''
-  let s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  const m = Math.floor(s / 60); s = s % 60
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
-}
-
-function Modal({ title, body, onCancel, onOk, withInput }: {
-  title: string; body: string; onCancel: () => void; onOk: (reason?: string) => void; withInput?: boolean
-}) {
-  const [reason, setReason] = useState('')
-  const bgRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const cancel = () => animateOverlayOut(bgRef, panelRef, onCancel)
-  const ok = () => animateOverlayOut(bgRef, panelRef, () => onOk(withInput ? reason : undefined))
-  return (
-    <div ref={bgRef} className="modal-bg" onClick={cancel}>
-      <div ref={panelRef} className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3><p>{body}</p>
-        {withInput && (
-          <label className="fld"><textarea rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Причина…" /></label>
-        )}
-        <div className="m-actions">
-          <button className="btn" onClick={cancel}>Cancel</button>
-          <button className="btn pri" disabled={withInput === true && !reason.trim()} onClick={ok}>Confirm</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function NewIssueModal({ state, onClose, onToast }: {
-  state: State | null
-  onClose: () => void
-  onToast: (msg: string, err?: boolean) => void
-}) {
-  const [kind, setKind] = useState<'charter' | 'task'>('charter')
-  const [title, setTitle] = useState('')
-  const [what, setWhat] = useState('')
-  const [why, setWhy] = useState('')
-  const [scope, setScope] = useState('')
-  const [constraints, setConstraints] = useState('')
-  const [acceptance, setAcceptance] = useState('')
-  const [description, setDescription] = useState('')
-  const [charterN, setCharterN] = useState('')
-  const [dependsOn, setDependsOn] = useState('')
-  const [autoPlanApprove, setAutoPlanApprove] = useState(false)
-  const [autoMerge, setAutoMerge] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [step, setStep] = useState<'form' | 'discuss' | 'summary'>('form')
-  const [charterSuccess, setCharterSuccess] = useState<IssueResult | null>(null)
-  const [launching, setLaunching] = useState(false)
-
-  // Facilitator discussion state
-  const [chatMessages, setChatMessages] = useState<FacilitateMessage[]>([])
-  const [chatInput, setChatInput] = useState('')
-  const [facilitating, setFacilitating] = useState(false)
-  const [acceptanceBlock, setAcceptanceBlock] = useState('')
-  const [facilitatorError, setFacilitatorError] = useState<string | null>(null)
-
-  const charters = (state?.board ?? []).filter((x) => x.kind === 'charter')
-  const charterLabel = charters.find((c) => String(c.n) === charterN)
-
-  const isValid = kind === 'charter'
-    ? !!(title.trim() && what.trim() && why.trim())
-    : !!(title.trim() && description.trim() && charterN)
-
-  const isBlockValid = hasValidAcceptanceBlock(acceptanceBlock)
-
-  const handleFacilitate = async () => {
-    const msg = chatInput.trim()
-    if (!msg) return
-    setChatInput('')
-    const newHistory: FacilitateMessage[] = [...chatMessages, { role: 'user', content: msg }]
-    setChatMessages(newHistory)
-    setFacilitating(true)
-    setFacilitatorError(null)
-    try {
-      const draft: Record<string, unknown> = kind === 'charter'
-        ? { title, what, why, scope, constraints }
-        : { title, description, charter: charterN, depends_on: dependsOn }
-      const r = await facilitateMessage(kind, draft, msg, chatMessages)
-      if (r.ok) {
-        setChatMessages([...newHistory, { role: 'facilitator', content: r.message }])
-        if (r.acceptance_block) {
-          setAcceptanceBlock(r.acceptance_block)
-        }
-      } else {
-        setFacilitatorError(r.message)
-      }
-    } finally {
-      setFacilitating(false)
-    }
-  }
-
-  const handleSubmit = async () => {
-    if (!isValid || submitting) return
-    const p: IssuePayload = kind === 'charter'
-      ? { kind: 'charter', title, what, why, scope, constraints, acceptance, acceptance_block: acceptanceBlock.trim() || undefined, auto_plan_approve: autoPlanApprove, auto_merge: autoMerge }
-      : { kind: 'task', title, description, charter: Number(charterN), depends_on: dependsOn.trim() || undefined, acceptance_block: acceptanceBlock.trim() || undefined }
-    setSubmitting(true)
-    try {
-      const r = await createIssue(p)
-      if (r.ok && kind === 'charter') {
-        setCharterSuccess(r)
-      } else {
-        onToast(r.msg || (r.ok ? 'created' : 'failed'), !r.ok)
-        if (r.ok) onClose()
-      }
-    } catch (e: unknown) {
-      onToast('request failed: ' + String(e), true)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleLaunch = async () => {
-    setLaunching(true)
-    try {
-      const r = await command('run')
-      onToast(r.msg || (r.ok ? 'Launcher started' : 'failed'), !r.ok)
-    } catch (e: unknown) {
-      onToast('request failed: ' + String(e), true)
-    } finally {
-      setLaunching(false)
-      onClose()
-    }
-  }
-
-  if (charterSuccess) {
-    return (
-      <div className="modal-bg" data-testid="ni-success-backdrop">
-        <div className="modal ni-modal" data-testid="ni-success-panel" onClick={(e) => e.stopPropagation()}>
-          <div className="ni-head">
-            <h3>Чартер создан</h3>
-            <button className="btn ghost" onClick={onClose}>✕</button>
-          </div>
-          <div className="ni-success" data-testid="ni-success-msg">
-            <div className="ni-success-icon">✓</div>
-            <div className="ni-success-text">
-              Чартер <strong>#{charterSuccess.number}</strong> успешно создан
-            </div>
-          </div>
-          <div className="ni-run-warning" data-testid="ni-run-warning">
-            ⚠ Запуск лаунчера захватит все доступные задачи и запустит реальных агентов — это тратит средства из вашего пула ($).
-          </div>
-          <div className="m-actions">
-            <button className="btn" data-testid="ni-close-btn" onClick={onClose}>Закрыть</button>
-            <button className="btn pri" data-testid="ni-launch-btn" disabled={launching} onClick={handleLaunch}>
-              {launching ? 'Запуск…' : '▶ Запустить'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (step === 'discuss') {
-    return (
-      <div className="modal-bg" data-testid="ni-discuss-backdrop" onClick={onClose}>
-        <div className="modal ni-modal ni-discuss-modal" data-testid="ni-discuss-panel" onClick={(e) => e.stopPropagation()}>
-          <div className="ni-head">
-            <h3>Обсуждение с фасилитатором</h3>
-            <button className="btn ghost" onClick={onClose}>✕</button>
-          </div>
-
-          {/* Chat section */}
-          <div className="ni-chat" data-testid="ni-facilitator-chat">
-            {chatMessages.length === 0 && !facilitatorError && (
-              <div className="ni-chat-hint muted">
-                Опишите что нужно — фасилитатор задаст уточняющие вопросы и предложит блок Acceptance (machine). Или заполните блок ниже вручную.
-              </div>
-            )}
-            {facilitatorError && (
-              <div className="ni-facilitator-error" data-testid="ni-facilitator-error">
-                {facilitatorError}
-              </div>
-            )}
-            {chatMessages.map((m, i) => (
-              <div
-                key={i}
-                className={'ni-chat-msg ni-chat-' + m.role}
-                data-testid="ni-chat-message"
-                data-role={m.role}
-              >
-                <span className="ni-chat-role">{m.role === 'user' ? 'Вы' : 'Фасилитатор'}</span>
-                <span className="ni-chat-content">{m.content}</span>
-              </div>
-            ))}
-            {facilitating && <div className="ni-chat-loading muted">Фасилитатор думает…</div>}
-          </div>
-
-          {/* Chat input */}
-          <div className="ni-chat-compose">
-            <textarea
-              className="disc-input"
-              data-testid="ni-chat-input"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && chatInput.trim() && !facilitating) handleFacilitate() }}
-              placeholder="Ваш ответ или уточнение…"
-              rows={2}
-              disabled={facilitating}
-            />
-            <button
-              className="btn sm pri"
-              data-testid="ni-chat-send"
-              disabled={!chatInput.trim() || facilitating}
-              onClick={handleFacilitate}
-            >{facilitating ? 'Отправка…' : 'Отправить'}</button>
-          </div>
-
-          {/* Acceptance block manual entry / auto-populated */}
-          <div className="ni-acceptance-section">
-            <label className="fld">
-              <span>Acceptance (machine) <span className="ni-required">*</span></span>
-              <textarea
-                data-testid="ni-acceptance-input"
-                className="ni-acceptance-textarea"
-                value={acceptanceBlock}
-                onChange={(e) => setAcceptanceBlock(e.target.value)}
-                placeholder={'## Acceptance (machine)\n- check: make test\n- test: path/to/test.sh'}
-                rows={5}
-              />
-            </label>
-            {acceptanceBlock.trim() && (
-              isBlockValid
-                ? <div className="ni-acceptance-valid" data-testid="ni-acceptance-valid">✓ Валидный блок</div>
-                : <div className="ni-acceptance-invalid" data-testid="ni-acceptance-invalid">✗ Нужен заголовок «## Acceptance (machine)» и минимум одна строка «- test: …» или «- check: …»</div>
-            )}
-          </div>
-
-          <div className="m-actions">
-            <button className="btn" data-testid="ni-discuss-back" onClick={() => setStep('form')}>← Назад</button>
-            <button
-              className="btn pri"
-              data-testid="ni-discuss-continue"
-              disabled={!isBlockValid}
-              onClick={() => setStep('summary')}
-            >Продолжить →</button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (step === 'summary') {
-    return (
-      <div className="modal-bg" data-testid="ni-summary-backdrop" onClick={onClose}>
-        <div className="modal ni-modal ni-summary-modal" data-testid="ni-summary-panel" onClick={(e) => e.stopPropagation()}>
-          <div className="ni-head">
-            <h3>Подтвердить создание</h3>
-            <button className="btn ghost" onClick={onClose}>✕</button>
-          </div>
-          <div className="ni-summary" data-testid="ni-summary-body">
-            <div className="ni-summary-kind" data-testid="ni-summary-kind">
-              {kind === 'charter' ? 'Charter' : 'Task'}
-            </div>
-            <div className="ni-summary-title" data-testid="ni-summary-title">{title}</div>
-            {kind === 'charter' ? (
-              <div className="ni-summary-sections">
-                <div className="ni-summary-section">
-                  <div className="ni-summary-label">WHAT</div>
-                  <div className="ni-summary-value" data-testid="ni-summary-what">{what}</div>
-                </div>
-                <div className="ni-summary-section">
-                  <div className="ni-summary-label">WHY</div>
-                  <div className="ni-summary-value" data-testid="ni-summary-why">{why}</div>
-                </div>
-                {scope.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Скоуп</div>
-                    <div className="ni-summary-value">{scope}</div>
-                  </div>
-                )}
-                {constraints.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Констрейнты</div>
-                    <div className="ni-summary-value">{constraints}</div>
-                  </div>
-                )}
-                {acceptance.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Acceptance</div>
-                    <div className="ni-summary-value">{acceptance}</div>
-                  </div>
-                )}
-                {acceptanceBlock.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Acceptance (machine)</div>
-                    <div className="ni-summary-value" data-testid="ni-summary-acceptance-block">{acceptanceBlock}</div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="ni-summary-sections">
-                <div className="ni-summary-section">
-                  <div className="ni-summary-label">Description</div>
-                  <div className="ni-summary-value" data-testid="ni-summary-description">{description}</div>
-                </div>
-                <div className="ni-summary-section">
-                  <div className="ni-summary-label">Charter</div>
-                  <div className="ni-summary-value" data-testid="ni-summary-charter">
-                    #{charterN}{charterLabel ? ` ${charterLabel.title}` : ''}
-                  </div>
-                </div>
-                {dependsOn.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Depends-on</div>
-                    <div className="ni-summary-value" data-testid="ni-summary-depends">#{dependsOn.trim()}</div>
-                  </div>
-                )}
-                {acceptanceBlock.trim() && (
-                  <div className="ni-summary-section">
-                    <div className="ni-summary-label">Acceptance (machine)</div>
-                    <div className="ni-summary-value" data-testid="ni-summary-acceptance-block">{acceptanceBlock}</div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="m-actions">
-            <button className="btn" data-testid="ni-edit-btn" onClick={() => setStep('discuss')}>Редактировать</button>
-            <button className="btn pri" data-testid="ni-confirm-btn" disabled={submitting} onClick={handleSubmit}>
-              {submitting ? 'Creating…' : 'Подтвердить'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal ni-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="ni-head">
-          <h3>New issue</h3>
-          <button className="btn ghost" onClick={onClose}>✕</button>
-        </div>
-        <div className="ni-tabs">
-          <button className={'ni-tab' + (kind === 'charter' ? ' on' : '')} onClick={() => setKind('charter')}>Charter</button>
-          <button className={'ni-tab' + (kind === 'task' ? ' on' : '')} onClick={() => setKind('task')}>Task</button>
-        </div>
-        <label className="fld">Title *<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short descriptive title" data-testid="ni-title" /></label>
-        {kind === 'charter' ? (
-          <>
-            <label className="fld">WHAT *<textarea value={what} onChange={(e) => setWhat(e.target.value)} placeholder="What exactly needs to be built/done?" rows={2} data-testid="ni-what" /></label>
-            <label className="fld">WHY *<textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Why is this needed? Business / user value." rows={2} data-testid="ni-why" /></label>
-            <label className="fld">Scope<textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="In-scope / out-of-scope" rows={2} /></label>
-            <label className="fld">Constraints<textarea value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="Technical, time, or budget constraints" rows={2} /></label>
-            <label className="fld">Acceptance<textarea value={acceptance} onChange={(e) => setAcceptance(e.target.value)} placeholder="Acceptance criteria (checklist)" rows={3} /></label>
-            <label>
-              <input type="checkbox" checked={autoPlanApprove}
-                     onChange={e => setAutoPlanApprove(e.target.checked)} />
-              {" "}Auto-approve plan (skip manual plan-review gate for this charter)
-            </label>
-            <label>
-              <input type="checkbox" checked={autoMerge}
-                     onChange={e => setAutoMerge(e.target.checked)} />
-              {" "}Auto-merge on green CI (skip manual merge gate for this charter)
-            </label>
-          </>
-        ) : (
-          <>
-            <label className="fld">Description *<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this task does" rows={3} /></label>
-            <label className="fld">Charter *
-              <select value={charterN} onChange={(e) => setCharterN(e.target.value)}>
-                <option value="">— select charter —</option>
-                {charters.map((c) => <option key={c.n} value={String(c.n)}>#{c.n} {c.title}</option>)}
-              </select>
-            </label>
-            <label className="fld">Depends-on (optional)<input value={dependsOn} onChange={(e) => setDependsOn(e.target.value)} placeholder="Issue number, e.g. 42" /></label>
-          </>
-        )}
-        <div className="m-actions">
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn pri" data-testid="ni-submit" disabled={!isValid || submitting} onClick={() => { if (isValid) setStep('discuss') }}>{submitting ? 'Creating…' : 'Create'}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [url, setUrl] = useState(config.url)
-  const [token, setToken] = useState(config.token)
-  const bgRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const close = () => animateOverlayOut(bgRef, panelRef, onClose)
-  return (
-    <div ref={bgRef} className="modal-bg" onClick={close}>
-      <div ref={panelRef} className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Connection</h3>
-        <label className="fld">API URL<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://127.0.0.1:8787" /></label>
-        <label className="fld">API token<input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="CB_API_TOKEN" /></label>
-        <p className="hint">Tunnel: <code>ssh -N -L 8787:127.0.0.1:8787 ec2-user@&lt;ip&gt;</code></p>
-        <div className="m-actions"><button className="btn" onClick={close}>Close</button>
-          <button className="btn pri" onClick={() => { config.url = url.trim(); config.token = token.trim(); onSaved() }}>Save & reconnect</button></div>
       </div>
     </div>
   )

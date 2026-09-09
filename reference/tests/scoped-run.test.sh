@@ -80,6 +80,9 @@ if [ ! -f "$RUNTIME/run-env.sh" ]; then
   echo "failed=$failed"; exit 1
 fi
 cp "$RUNTIME/run-env.sh" "$CBNET/run-env.sh"
+# This contract isolates API dispatch; runtime preflight has its own suite.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$CBNET/crewboss-doctor.sh"
+
 
 # ── Start api.py with clean env (model post-deploy-runtime.sh restart) ───────
 env -i \
@@ -122,9 +125,8 @@ if echo "$sc_json" | grep -qE '"ok"[[:space:]]*:[[:space:]]*true'; then
   sc_ok=true
   ok "S-A: POST run-scoped {number:42} → ok:true"
 else
-  # Implementation not yet merged: gracefully defer impl-dependent assertions.
-  # This branch is the expected pre-impl state when the QA leaf merges first.
-  ok "S-A: POST run-scoped → pre-impl (expected pre-executor; assertions deferred to TQG)"
+  no "S-A: POST run-scoped failed: $sc_json"
+  exit 1
 fi
 
 if $sc_ok; then

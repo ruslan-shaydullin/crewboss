@@ -11,17 +11,11 @@
 # Env:   CLAUDE_CODE_OAUTH_TOKEN (req); GH_TOKEN/GH_REPO (if agent pushes)
 # Exit:  0 ok · 2 agent failed · 3 budget hard-stop (did not spawn)
 set -uo pipefail
-CB_HOME="${CB_HOME:-/tmp/cbnet}"
-RUN="$CB_HOME/run"
-PROFILE="$CB_HOME/claude.kafel"
-REDACT="$CB_HOME/redact.pl"
-PROXY_PY="$CB_HOME/proxy.py"; BRIDGE_REL="/cbnet/bridge.py"
-# SOCK is per-task (set after TDIR) so concurrent spawns never collide on a shared socket.
-mkdir -p "$RUN/work"
-CFG="$RUN/config.json"; [ -f "$CFG" ] || echo '{"monthly_credit_usd":100,"cost_pct":80}' > "$CFG"
-BUDGET="$RUN/budget.json"; [ -f "$BUDGET" ] || echo '{"spent_usd":0,"runs":[]}' > "$BUDGET"
-
+umask 077
+[ "$#" -ge 4 ] && [ "$#" -le 5 ] || { echo 'usage: crewboss-spawn.sh TASK ROLE PROMPT WORK [REPO]' >&2; exit 2; }
 TASK="$1"; ROLE="$2"; PROMPTSRC="$3"; WORK="$4"; PR_REPO="${5:-}"
+[[ "$TASK" =~ ^[0-9]+$ ]] && [ "${#TASK}" -le 20 ] && [[ "$ROLE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+  || { echo 'spawn: invalid task number or role identifier' >&2; exit 2; }
 # provision: bind-mount modes from role capabilities (#356 AgentConfigMap P1 + #356 follow-up).
 #   fs.work  → /work  (repo checkout); fs.cbnet → /cbnet (runtime: scripts, manifest, state).
 #   ro → read-only bind (-R): the agent physically cannot write it, even via Bash (EROFS).
@@ -37,6 +31,23 @@ if [[ "${CB_SPAWN_DRYRUN:-}" == "1" ]]; then
   echo "WORK_MOUNT=$WORK_MOUNT CBNET_MOUNT=$CBNET_MOUNT role=$ROLE fs_work=${CB_FS_WORK:-} fs_cbnet=${CB_FS_CBNET:-} model_flag=${MODEL_FLAG}"
   exit 0
 fi
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
+# Re-evaluate after loading operator configuration; malformed capabilities remain
+# read-only just as they do for values passed directly by the role resolver.
+WORK_MOUNT="-R";  case "${CB_FS_WORK:-}"  in ""|rw) WORK_MOUNT="-B"  ;; esac
+CBNET_MOUNT="-R"; case "${CB_FS_CBNET:-}" in ""|rw) CBNET_MOUNT="-B" ;; esac
+bash "$CB_HOME/crewboss-doctor.sh" --preflight || exit 2
+[ -f "$PROMPTSRC" ] && [ -r "$PROMPTSRC" ] && [ -d "$WORK" ] && [ -w "$WORK" ] \
+  || { echo 'spawn: readable prompt and writable work directory are required' >&2; exit 2; }
+WORK="$(cd "$WORK" && pwd)"
+RUN="$CB_HOME/run"
+PROFILE="$CB_HOME/claude.kafel"
+REDACT="$CB_HOME/redact.pl"
+PROXY_PY="$CB_HOME/proxy.py"
+mkdir -p "$RUN/work"
+CFG="$RUN/config.json"; [ -f "$CFG" ] || echo '{"monthly_credit_usd":100,"cost_pct":80}' > "$CFG"
+BUDGET="$RUN/budget.json"; [ -f "$BUDGET" ] || echo '{"spent_usd":0,"runs":[]}' > "$BUDGET"
 TDIR="$RUN/work/$TASK"; mkdir -p "$TDIR"
 LOG="$TDIR/run.log"; ST="$TDIR/status.json"
 : > "$LOG"; chmod 600 "$LOG"
@@ -69,11 +80,25 @@ echo "budget ok: spent \$$SPENT < cap \$$CAP" >> "$LOG"
 SOCK="$TDIR/proxy.sock"; rm -f "$SOCK"
 nohup python3 "$PROXY_PY" "$SOCK" > "$TDIR/proxy.out" 2>&1 &
 PROXY_PID=$!
+cleanup_spawn() {
+  kill "$PROXY_PID" 2>/dev/null || true
+  wait "$PROXY_PID" 2>/dev/null || true
+  rm -f "$SOCK" "$WORK/.task.prompt"
+}
+trap cleanup_spawn EXIT
 for i in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
+[ -S "$SOCK" ] || { echo 'spawn: proxy socket did not become ready' >&2; exit 2; }
 
 STARTTIME=$(awk '{print $22}' /proc/self/stat)  # placeholder; real pid below
-RO="-R /usr -R /bin -R /lib -R /lib64 -R /sbin -R /etc -R /home/ec2-user/.local"
-PE="--env HTTPS_PROXY=http://127.0.0.1:3128 --env https_proxy=http://127.0.0.1:3128 --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1"
+RO=()
+for system_path in /usr /bin /lib /lib64 /sbin /etc; do
+  [ ! -e "$system_path" ] || RO+=(-R "$system_path")
+done
+RO+=(-R "$CB_CLAUDE_INSTALL_DIR")
+CLAUDE_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CB_CLAUDE_BIN")"
+GH_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CB_GH_BIN")"
+PE=(--env HTTPS_PROXY=http://127.0.0.1:3128 --env https_proxy=http://127.0.0.1:3128
+    --env NO_PROXY=localhost,127.0.0.1 --env no_proxy=localhost,127.0.0.1)
 # --- Session-token split (#1274 P4; canonicalized from the 2026-07-02 box hotpatch) ---
 # Jail sessions authenticate as the machine account (own rate-limit bucket) when the
 # operator provides CB_SESSION_GH_TOKEN (e.g. via ~/.crewboss.env); the launcher/API keep
@@ -82,18 +107,22 @@ if [ -n "${CB_SESSION_GH_TOKEN:-}" ]; then
   export GH_TOKEN="$CB_SESSION_GH_TOKEN"
   unset CB_SESSION_GH_TOKEN   # hygiene: do not leak the extra var into the jail (keep_env)
 fi
-GHENV=""; [ -n "$PR_REPO" ] && GHENV="--env GH_TOKEN --env GH_REPO=$PR_REPO"
+GHENV=(--env GH_TOKEN)
+[ -z "$PR_REPO" ] || GHENV+=(--env "GH_REPO=$PR_REPO")
+AUTH_ENV=()
+[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || AUTH_ENV+=(--env CLAUDE_CODE_OAUTH_TOKEN)
+[ -z "${ANTHROPIC_API_KEY:-}" ] || AUTH_ENV+=(--env ANTHROPIC_API_KEY)
 
 # in-jail wrapper: bridge up, then claude reads the prompt from file
-cat > "$TDIR/payload.sh" <<PJ
-python3 $BRIDGE_REL /cbnet/run/work/$TASK/proxy.sock 3128 &
-BR=\$!
-for i in \$(seq 1 50); do (echo >/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.1; done
-/home/ec2-user/.local/bin/claude --agent $ROLE \
-  $MODEL_FLAG \
-  -p "\$(cat /work/.task.prompt)" --output-format json
-kill \$BR 2>/dev/null
-PJ
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+  printf 'python3 /cbnet/bridge.py %q 3128 &\n' "/cbnet/run/work/$TASK/proxy.sock"
+  printf 'BR=$!\ntrap '\''kill "$BR" 2>/dev/null || true'\'' EXIT\n'
+  printf 'for i in $(seq 1 50); do (echo >/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.1; done\n'
+  printf '%q --agent %q ' "$CLAUDE_REAL" "$ROLE"
+  [[ "${CB_MODEL:-}" != claude-* ]] || printf -- '--model %q ' "$CB_MODEL"
+  printf '%s\n' '-p "$(cat /work/.task.prompt)" --output-format json'
+} > "$TDIR/payload.sh"
 cp "$TDIR/task.prompt" "$WORK/.task.prompt"
 
 writestatus "starting" "" "0" ""
@@ -112,20 +141,24 @@ set +e
 #     "real" gh and recursed. The resolver bug is fixed in gh-shim.sh; this override makes
 #     the whole PATH-walk moot so the class cannot re-arm from a resolver regression).
 # seccomp: the shim runs the real gh via execve, already in the claude.kafel allowlist.
-/usr/local/bin/nsjail -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
+"$CB_NSJAIL_BIN" -Mo -t "${CB_TASK_TIMEOUT:-3600}" \
   --rlimit_as max --rlimit_cpu max --rlimit_fsize max --rlimit_nofile 8192 \
   --seccomp_policy "$PROFILE" --seccomp_log \
-  $RO -B /home/ec2-user/.claude -B /home/ec2-user/.claude.json -B /dev $CBNET_MOUNT "$CB_HOME:/cbnet" \
+  "${RO[@]}" -R "$GH_REAL:/crewboss-gh-real" \
+  -B "$CB_CLAUDE_CONFIG_DIR:$CB_AGENT_HOME/.claude" \
+  -B "$CB_CLAUDE_CONFIG_FILE:$CB_AGENT_HOME/.claude.json" \
+  -B /dev "$CBNET_MOUNT" "$CB_HOME:/cbnet" \
   -B "$CB_HOME/run:/cbnet/run" \
-  $WORK_MOUNT "$WORK:/work" \
-  -m none:/tmp:tmpfs:size=256M -e --env HOME=/home/ec2-user --env CB_RL_STATE_FILE=/cbnet/run/rl_state --env CB_GH_REAL=/usr/bin/gh --cwd /work \
-  --env CLAUDE_CODE_OAUTH_TOKEN $GHENV $PE \
+  "$WORK_MOUNT" "$WORK:/work" \
+  -m none:/tmp:tmpfs:size=256M -e --env "HOME=$CB_AGENT_HOME" \
+  --env CB_RL_STATE_FILE=/cbnet/run/rl_state --env CB_GH_REAL=/crewboss-gh-real --cwd /work \
+  "${AUTH_ENV[@]}" "${GHENV[@]}" "${PE[@]}" \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --really_quiet \
   -- /bin/bash "/cbnet/run/work/$TASK/payload.sh" 2>&1 | perl "$REDACT" | tee -a "$LOG" > "$RESJSON.raw"
 EX=${PIPESTATUS[0]}
 set -e
-kill "$PROXY_PID" 2>/dev/null   # kill only this task's proxy (parallel-safe)
-rm -f "$SOCK" "$WORK/.task.prompt"
+cleanup_spawn
+trap - EXIT
 
 # the redacted run.log holds the JSON result line; extract last JSON object
 # extractions must tolerate no-match (pipefail+set-e would otherwise kill the spawn

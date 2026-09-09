@@ -7,7 +7,7 @@ const path     = require('path');
 const fs       = require('fs');
 
 const root = __dirname;
-const outdir = path.join(root, 'dist');
+const outdir = process.env.CB_UI_OUT_DIR || path.join(root, 'dist');
 
 // ── 1. TypeScript type-check (noEmit) ────────────────────────────────────
 const configFile = tsc.findConfigFile(root, tsc.sys.fileExists, 'tsconfig.json');
@@ -39,14 +39,17 @@ esbuild.buildSync({
   minify: true,
   sourcemap: false,
   loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: {
+    'process.env.NODE_ENV': '"production"',
+    'import.meta.env': JSON.stringify({ VITE_CREWBOSS_DEMO: process.env.VITE_CREWBOSS_DEMO || '' }),
+  },
   logLevel: 'info',
 });
 
 // ── 3. Emit index.html ────────────────────────────────────────────────────
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   .replace('<script type="module" src="/src/main.tsx"></script>',
-           '<script type="module" src="/main.js"></script>');
+           '<link rel="stylesheet" href="/main.css">\n    <script type="module" src="/main.js"></script>');
 fs.writeFileSync(path.join(outdir, 'index.html'), html);
 
-console.log('build complete → dist/');
+console.log('build complete → ' + outdir);

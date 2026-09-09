@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # shellcheck source=run-env.sh
 . "$(dirname "$0")/run-env.sh"
-API_PID="$HOME/cbnet/run/api.pid"
-mkdir -p "$HOME/cbnet/run"
+API_PID="$CB_HOME/run/api.pid"
+mkdir -p "$CB_HOME/run"
 if [ ! -f "$API_PID" ] || ! kill -0 "$(cat "$API_PID" 2>/dev/null)" 2>/dev/null; then
-  nohup python3 ~/cbnet/crewboss-api.py --port 8787 > ~/cbnet/run/api.out 2>&1 &
-  echo $! > "$API_PID"
+  bash "$(dirname "$0")/start-api.sh"
 fi
-sleep 2; curl -s http://127.0.0.1:8787/api/health; echo
 if [ "${1:-}" = "with-loop" ]; then
-  LAUNCHER_PID="$HOME/cbnet/run/launcher.pid"
-  if [ -f "$LAUNCHER_PID" ] && kill -0 "$(cat "$LAUNCHER_PID" 2>/dev/null)" 2>/dev/null; then
-    echo "loop already running"; exit 0
-  fi
-  nohup bash ~/cbnet/crewboss-launcher-gh.sh run >> ~/cbnet/run/launcher.out 2>&1 &
-  echo $! > "$LAUNCHER_PID"
-  sleep 2; tail -1 ~/cbnet/run/launcher.out
+  exec bash "$(dirname "$0")/run-charter.sh"
 fi

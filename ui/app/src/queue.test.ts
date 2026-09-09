@@ -28,6 +28,7 @@ function makeFetchOk() {
 }
 
 beforeEach(() => {
+  config.token = 'fixture-ui-token'
   vi.clearAllMocks()
   makeFetchOk()
 })

@@ -47,9 +47,9 @@ The current board runtime is a separate Linux deployment. See the
 [operator notes](runtime/README.md). `crewboss init` installs role configuration;
 it does not provision a complete hosted runtime.
 
-The manifest is authoritative for deployed file locations. Some canonical files
-still live in `../proto/`, and tests depend on `../_box-snapshot/`. Do not delete
-those directories merely because they contain older implementations.
+The manifest distinguishes maintained runtime files from historical prototypes
+and separately packaged assets. Snapshot regression data lives in
+`tests/fixtures/legacy-runtime/`; the duplicate deployment copies were retired.
 
 ## Roles and boundaries
 

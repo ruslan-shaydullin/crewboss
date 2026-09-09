@@ -104,7 +104,7 @@ sys.exit(0)
         self.env["CB_ENV_FILE"] = str(self.root / "missing.env")
         result = self.run_start("--foreground")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("cannot read CB_ENV_FILE", result.stderr)
+        self.assertIn("CB_ENV_FILE does not exist", result.stderr)
         self.assertFalse(self.record.exists())
 
     def test_defaults_bind_loopback_without_inventing_credentials(self):
@@ -115,7 +115,7 @@ sys.exit(0)
         self.assertEqual(record["env"]["CB_API_PORT"], "8787")
         self.assertEqual(record["env"]["CB_API_TOKEN"], self.env["CB_API_TOKEN"])
         self.assertIsNone(record["env"]["CB_WEBHOOK_SECRET"])
-        self.assertIsNone(record["env"]["GH_TOKEN"])
+        self.assertEqual(record["env"]["GH_TOKEN"], "")
         self.assertNotIn(self.env["CB_API_TOKEN"], result.stdout + result.stderr)
 
     def test_trusted_config_assignments_are_exported(self):
@@ -200,7 +200,7 @@ sys.exit(0)
         command = shlex.split(settings["ExecStart"][0])
         self.assertEqual(command, ["/bin/bash", "/var/lib/crewboss/cbnet/start-api.sh", "--foreground"])
         self.assertEqual(settings["EnvironmentFile"], ["/var/lib/crewboss/.crewboss.env"])
-        self.assertIn("CB_ENV_FILE=/dev/null", settings["Environment"])
+        self.assertIn("CB_ENV_FILE=/var/lib/crewboss/.crewboss.env", settings["Environment"])
         self.assertIn("CB_API_HOST=127.0.0.1", settings["Environment"])
         self.assertNotIn("root", settings["User"])
 
@@ -218,16 +218,27 @@ sys.exit(0)
         deployed = Path(service_env["CB_HOME"])
         self.assertEqual(deployed, fixture_home / "cbnet")
         self.assertEqual(settings["WorkingDirectory"], [template_home + "/cbnet"])
+        # Exercise the supported overrides as well as the template's defaults:
+        # neither runtime nor configuration needs to live under account HOME.
+        default_deployed = deployed
+        deployed = self.root / "separate-runtime"
+        service_env["CB_HOME"] = str(deployed)
+        shared_config = self.root / "operator.env"
+        service_env["CB_ENV_FILE"] = str(shared_config)
         deployed.mkdir(parents=True)
         shutil.copyfile(RUNTIME / "run-env.sh", deployed / "run-env.sh")
+        (deployed / "crewboss-doctor.sh").write_text(
+            '#!/bin/sh\n[ "$1" = --preflight ] && [ "$GH_TOKEN" = fixture-shared-github ]\n'
+        )
 
         # The real shared example uses literal assignments understood by systemd
         # and bash. Fill in fixture credentials and keep the rest of that file.
         config = (RUNTIME / "api.env.example").read_text().replace(template_home, str(fixture_home))
+        config = config.replace(str(default_deployed), str(deployed))
         config = config.replace("\nCB_REPO=\n", "\nCB_REPO=custom-owner/custom-project\n")
         config = config.replace("\nCB_API_TOKEN=\n", "\nCB_API_TOKEN=fixture-service-bearer\n")
         config += "\nGH_TOKEN=fixture-shared-github\nCLAUDE_CODE_OAUTH_TOKEN=fixture-shared-agent\n"
-        (fixture_home / ".crewboss.env").write_text(config)
+        shared_config.write_text(config)
         for line in config.splitlines():
             if line and not line.startswith("#"):
                 key, value = line.split("=", 1)
@@ -243,7 +254,7 @@ sys.exit(0)
             def record_launcher(args, **kwargs):
                 calls.append((args, kwargs["env"]))
                 kwargs["stdout"].close()
-                return types.SimpleNamespace(pid=987654)
+                return types.SimpleNamespace(pid=987654, returncode=0, wait=lambda: 0)
 
             # Keep the real shell env-building operation; only replace the final
             # launcher process. The API's clean HOME/PATH seed must recover all

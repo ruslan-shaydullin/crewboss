@@ -3,13 +3,17 @@
 # by reading pr_repo+prompt from the REAL board (board-gh.sh get), doing the §4.5 repo prep,
 # and exec'ing crewboss-spawn.sh with full args. Exit code = crewboss-spawn.sh's.
 set -uo pipefail
-CB_HOME="${CB_HOME:-/tmp/cbnet}"
+[ "$#" -eq 2 ] && [[ "$1" =~ ^[0-9]+$ ]] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+  || { echo 'usage: crewboss-prep-spawn-gh.sh TASK_NUMBER ROLE_IDENTIFIER' >&2; exit 2; }
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
+bash "$CB_HOME/crewboss-doctor.sh" --preflight || exit 2
 RUN="$CB_HOME/run"
 BOARD="$CB_HOME/board-gh.sh"
 ID="$1"; ROLE="$2"
 PR_REPO=$(bash "$BOARD" get "$ID" pr_repo)
-[ -n "$PR_REPO" ] || { echo "adapter-gh: #$ID has no pr_repo" >&2; exit 2; }
-GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"; export GH_TOKEN
+[[ "$PR_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { echo "adapter-gh: #$ID has no valid pr_repo" >&2; exit 2; }
 # Inline git credential helper (issue #149 — token hygiene).
 # Registered via GIT_CONFIG_* (highest git precedence). Inline function → no file path →
 # valid in both host and jail namespaces. nsjail keep_env (-e) + --env GH_TOKEN carry both.
@@ -443,7 +447,8 @@ echo ".task.prompt" >> "$WA/work/.git/info/exclude"
 # governed mode: inject the crewboss .claude (gate + role) into the work dir so the executor
 # runs role-gated (set CB_GOVERNED=1 to enable; the spawn then uses --agent <role>).
 if [ "${CB_GOVERNED:-0}" = "1" ] && [ -d "$CB_HOME/gov/.claude" ]; then
-  cp -r "$CB_HOME/gov/.claude" "$WA/work/.claude"
+  mkdir -p "$WA/work/.claude"
+  cp -R "$CB_HOME/gov/.claude/." "$WA/work/.claude"
   printf '.claude\n' >> "$WA/work/.git/info/exclude"
 fi
 # Manifest-role agent injection: materialise the role definition from the manifest into

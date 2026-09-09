@@ -25,8 +25,12 @@
 #                  human-decision fires at round 3 (label wins over env).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+export CB_FIXTURE_LIB="$HERE/lib/runtime-fixture.sh"
+# shellcheck source=lib/runtime-fixture.sh
+. "$CB_FIXTURE_LIB"
+export CB_ENV_FILE=/dev/null CB_NO_INTEGRATE=1
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 TEAM_EXAMPLE="$(cd "$HERE/../../team-example" && pwd)"
 MANIFEST_LIB_SRC="$HERE/../../reference/launcher/manifest.sh"
@@ -90,11 +94,15 @@ reset_sandbox(){
   cp "$BOARD_GH_SRC"   "$cbhome/board-gh.sh"
   cp "$LAUNCHABLE_SRC" "$cbhome/launchable.sh"
   chmod +x "$cbhome/board-gh.sh" "$cbhome/launchable.sh"
+  cb_fixture_runtime "$cbhome"
 }
 
 # ── gh stub (file-board; identical contract to convergence.test.sh) ────────────
 cat > "$BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = api ]; then
+  . "$CB_FIXTURE_LIB"; cb_fixture_gh_api "$@"; exit $?
+fi
 obj="$1"; verb="$2"; shift 2
 _args=()
 while [ $# -gt 0 ]; do
@@ -169,6 +177,7 @@ case "$obj $verb" in
     echo "issue create #$newn: $title" >> "$GH_LOG"
     printf 'https://github.com/test/repo/issues/%s\n' "$newn" ;;
   "auth token") echo "fake-token" ;;
+  "pr list") printf '[]\n' ;;
   "label create") ;;
   *) echo "gh-stub UNHANDLED: $obj $verb $*" >> "$GH_LOG" ;;
 esac
@@ -243,11 +252,11 @@ run_loop(){
     CB_RETRY_CAP=3 \
     CREWBOSS_CHARTER= \
     env "$@" \
-    bash "$LAUNCHER" run >"$logfile" 2>&1 || true
+    bash "$LAUNCHER" run >"$logfile" 2>&1 || tail -20 "$logfile" >&2
 }
 
 # Post-cto charter: needs-plan + composition:approved (isolates the PLAN stage)
-seed_needs_plan(){ printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"}],"body":"charter goal","comments":[]}]\n' > "$BOARD_STATE"; }
+seed_needs_plan(){ printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"}],"body":"charter goal","comments":[]}]\n' > "$BOARD_STATE"; }
 
 # =============================================================================
 # PLAN-CONVERGE: plan-reviewer CRITIQUE ×1 then AGREE → tech-lead RE-PLANS (the rework round) →
@@ -338,7 +347,7 @@ echo "=== AGREED-SKIP: plan:agreed present → plan-reviewer bypassed → status
 CBHOME_A="$ROOT/cbhome_a"; LOG_A="$ROOT/loop_a.log"
 reset_sandbox "$CBHOME_A"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_A" "$LOG_A" "CB_PLAN_CONVERGE_CAP=5"
@@ -361,7 +370,7 @@ echo "=== LIMBO-RECOVER: plan:agreed + composition:approved, no status:plan-revi
 CBHOME_L="$ROOT/cbhome_l"; LOG_L="$ROOT/loop_l.log"
 reset_sandbox "$CBHOME_L"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_L" "$LOG_L" "CB_PLAN_CONVERGE_CAP=5"
@@ -387,7 +396,7 @@ echo "=== NORMAL-FLOW-INTACT: status:plan-review + composition:approved + plan:a
 CBHOME_N="$ROOT/cbhome_n"; LOG_N="$ROOT/loop_n.log"
 reset_sandbox "$CBHOME_N"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:plan-review"},{"name":"composition:approved"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_N" "$LOG_N" "CB_PLAN_CONVERGE_CAP=5"
@@ -411,7 +420,7 @@ echo "=== NO-PREMATURE-APPROVE: partial-condition charters must NOT reach status
 CBHOME_Pa="$ROOT/cbhome_pa"; LOG_Pa="$ROOT/loop_pa.log"
 reset_sandbox "$CBHOME_Pa"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_Pa" "$LOG_Pa" "CB_PLAN_CONVERGE_CAP=5"
@@ -424,7 +433,7 @@ run_loop "$CBHOME_Pa" "$LOG_Pa" "CB_PLAN_CONVERGE_CAP=5"
 CBHOME_Pb="$ROOT/cbhome_pb"; LOG_Pb="$ROOT/loop_pb.log"
 reset_sandbox "$CBHOME_Pb"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"composition:approved"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_Pb" "$LOG_Pb" "CB_PLAN_CONVERGE_CAP=5"
@@ -437,7 +446,7 @@ run_loop "$CBHOME_Pb" "$LOG_Pb" "CB_PLAN_CONVERGE_CAP=5"
 CBHOME_Pc="$ROOT/cbhome_pc"; LOG_Pc="$ROOT/loop_pc.log"
 reset_sandbox "$CBHOME_Pc"
 printf '0' > "$PLAN_CRITIQUE_FLAG"
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"},{"name":"hold"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"plan:agreed"},{"name":"composition:approved"},{"name":"hold"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 run_loop "$CBHOME_Pc" "$LOG_Pc" "CB_PLAN_CONVERGE_CAP=5"
@@ -489,7 +498,7 @@ CBHOME_LBL="$ROOT/cbhome_lbl"; LOG_LBL="$ROOT/loop_lbl.log"
 reset_sandbox "$CBHOME_LBL"
 printf '99' > "$PLAN_CRITIQUE_FLAG"   # never agree
 # Seed charter with converge-cap:3 label in addition to standard needs-plan labels
-printf '[{"number":5,"state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"},{"name":"converge-cap:3"}],"body":"charter goal","comments":[]}]\n' \
+printf '[{"number":5,"title":"Test charter","state":"OPEN","labels":[{"name":"type:charter"},{"name":"status:needs-plan"},{"name":"composition:approved"},{"name":"review:agreed"},{"name":"converge-cap:3"}],"body":"charter goal","comments":[]}]\n' \
   > "$BOARD_STATE"
 
 # CB_PLAN_CONVERGE_CAP=6 in env (higher than label's 3) — label must win

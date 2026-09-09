@@ -18,7 +18,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PRED_PROTO="$HERE/../../proto/r6/launchable.sh"
 PRED_REF="$HERE/../launcher/launchable.sh"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHER_GH="$HERE/../runtime/crewboss-launcher-gh.sh"
 
 pass=0; fail=0

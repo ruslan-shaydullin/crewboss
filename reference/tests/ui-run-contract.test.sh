@@ -81,6 +81,9 @@ if [ ! -f "$RUNTIME/run-env.sh" ]; then
   printf '\n=== SUMMARY: %d passed, %d failed ===\n' "$pass" "$fail"; exit 1
 fi
 cp "$RUNTIME/run-env.sh" "$CBNET/run-env.sh"
+# This contract isolates API dispatch; runtime preflight has its own suite.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$CBNET/crewboss-doctor.sh"
+
 
 # ── Start api.py with clean env (model post-deploy-runtime.sh restart) ────────
 # The fixed deploy-runtime.sh sources ~/.crewboss.env on the box and passes

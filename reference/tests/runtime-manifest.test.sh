@@ -6,8 +6,8 @@
 #   RED condition (class e): manifest does not exist yet (absent before this leaf).
 #   GREEN after: manifest has parseable 4-field tab-separated data rows.
 #
-# Test 2: full snapshot coverage (builds list from snapshot tree — NOT hardcoded)
-#   Computes inventory from _box-snapshot/cbnet/; verifies every snapshot file is
+# Test 2: historical snapshot coverage (preserved filename inventory)
+#   Reads fixtures/legacy-runtime/inventory.txt; verifies every snapshot file is
 #   present in the manifest (by filename match in repo_path column) OR in the exclude
 #   file with a non-empty reason. RED if any file is uncovered (e.g. marker-grep-gate).
 #   GREEN after: all 67 snapshot files accounted for.
@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 MANIFEST="$HERE/../runtime-manifest.tsv"
 EXCLUDE="$HERE/../runtime-manifest.exclude"
-SNAP_DIR="$REPO_ROOT/_box-snapshot/cbnet"
+SNAP_INVENTORY="$HERE/fixtures/legacy-runtime/inventory.txt"
 LEGACY_LAUNCHER="$HERE/../launcher/crewboss-launcher.sh"
 
 pass=0; fail=0
@@ -54,15 +54,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2: full snapshot coverage (inventory built from snapshot tree, not hardcoded)
+# Test 2: full snapshot coverage (preserved historical inventory)
 # ---------------------------------------------------------------------------
 echo "=== Test 2: full snapshot coverage ==="
-if [ ! -d "$SNAP_DIR" ]; then
-  no "snapshot directory not found: $SNAP_DIR — cannot verify coverage"
+if [ ! -s "$SNAP_INVENTORY" ]; then
+  no "snapshot inventory not found: $SNAP_INVENTORY — cannot verify coverage"
 else
   t2_ok=0; t2_fail=0
-  while IFS= read -r -d '' snap_file; do
-    name=$(basename "$snap_file")
+  while IFS= read -r name; do
     # In manifest: check if any repo_path column (field 1) has this basename
     in_manifest=0
     if grep -v '^[[:space:]]*#' "$MANIFEST" 2>/dev/null | \
@@ -96,7 +95,7 @@ else
       printf '    UNCOVERED: %s\n' "$name"
       t2_fail=$((t2_fail+1))
     fi
-  done < <(find "$SNAP_DIR" -maxdepth 1 -type f -print0 | sort -z)
+  done < "$SNAP_INVENTORY"
   if [ "$t2_fail" -eq 0 ]; then
     ok "all $t2_ok snapshot files accounted for (manifest OR exclude with reason)"
   else

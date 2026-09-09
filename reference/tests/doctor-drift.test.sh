@@ -119,6 +119,26 @@ else
   no "doctor output does NOT mention 'extra.sh' — output: $out_c"
 fi
 
+# Installer's known alias is valid only when its tracked target matches.
+printf 'content-alpha\n' > "$FIXTURE/alpha.sh"
+rm "$FIXTURE/extra.sh"
+printf 'shim fixture\n' > "$FIXTURE/gh-shim.sh"
+SHA_SHIM="$(sha256sum "$FIXTURE/gh-shim.sh" | awk '{print $1}')"
+printf 'test/gh-shim.sh\t%s\tcanonical\tgh shim\n' "$SHA_SHIM" >> "$FIXTURE/runtime-manifest.tsv"
+ln -s gh-shim.sh "$FIXTURE/gh"
+if CB_HOME="$FIXTURE" bash "$DOCTOR" >/dev/null 2>&1; then
+  ok 'installer gh alias does not count as drift'
+else
+  no 'installer gh alias was rejected'
+fi
+rm "$FIXTURE/gh"
+ln -s alpha.sh "$FIXTURE/gh"
+if CB_HOME="$FIXTURE" bash "$DOCTOR" >/dev/null 2>&1; then
+  no 'wrong gh alias was accepted'
+else
+  ok 'wrong gh alias is rejected as drift'
+fi
+
 # ===========================================================================
 echo
 printf '=== SUMMARY: %d passed, %d failed ===\n' "$pass" "$fail"

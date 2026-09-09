@@ -13,19 +13,8 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || fail 'usage: start-api.sh [--foreground]'
 
-config_file="${CB_ENV_FILE:-$HOME/.crewboss.env}"
-if [ -n "${CB_ENV_FILE:-}" ] && [ ! -r "$config_file" ]; then
-  fail "cannot read CB_ENV_FILE: $config_file"
-fi
-if [ -r "$config_file" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$config_file"
-  set +a
-fi
-
-[[ "${CB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
-  || fail 'set CB_REPO to the GitHub owner/repository to operate'
+# shellcheck source=run-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || fail 'runtime configuration is invalid'
 [[ "${CB_API_TOKEN:-}" =~ [^[:space:]] ]] \
   || fail 'set CB_API_TOKEN to a private, randomly generated bearer token'
 
@@ -34,7 +23,6 @@ export CB_HOME="${CB_HOME:-$HOME/cbnet}"
 export CB_API_HOST="${CB_API_HOST:-127.0.0.1}"
 export CB_API_PORT="${CB_API_PORT:-8787}"
 export CB_API_SCRIPT="${CB_API_SCRIPT:-$CB_HOME/crewboss-api.py}"
-export CB_SPAWN="${CB_SPAWN:-$CB_HOME/crewboss-prep-spawn-gh.sh}"
 export CB_GOVERNED="${CB_GOVERNED:-1}"
 [[ "$CB_API_PORT" =~ ^[0-9]+$ ]] && [ "${#CB_API_PORT}" -le 5 ] \
   && (( 10#$CB_API_PORT >= 1 && 10#$CB_API_PORT <= 65535 )) \

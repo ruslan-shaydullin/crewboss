@@ -21,6 +21,81 @@
 
 set -uo pipefail
 
+# A local, fail-closed gate for every entrypoint that may launch or mutate work.
+# It does not contact GitHub or invoke an agent. The nsjail probe executes only
+# /bin/true with the real seccomp policy and namespace/mount settings.
+if [ "${1:-}" = --preflight ]; then
+  # shellcheck source=run-env.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/run-env.sh" || exit 2
+  errors=0
+  preflight_fail() { printf '[doctor] FAIL: %s\n' "$*" >&2; errors=$((errors+1)); }
+  [ "$(uname -s)" = Linux ] || preflight_fail 'the agent runtime requires Linux (the dashboard can run locally)'
+  [ "$(uname -m)" = x86_64 ] || preflight_fail 'the shipped seccomp policy supports x86_64 only; ARM64 agent execution is not supported'
+  [ "${BASH_VERSINFO[0]}" -ge 5 ] || preflight_fail 'the agent runtime requires Bash 5 or newer'
+  for binary in git gh jq python3 perl flock; do
+    command -v "$binary" >/dev/null 2>&1 || preflight_fail "missing executable: $binary"
+  done
+  for key in CB_HOME CB_AGENT_HOME CB_CLAUDE_INSTALL_DIR CB_CLAUDE_CONFIG_DIR; do
+    value="${!key}"
+    case "$value" in /*) ;; *) preflight_fail "$key must be an absolute path"; continue ;; esac
+    case "$value" in *:*|*$'\n'*) preflight_fail "$key cannot contain mount delimiters or newlines"; continue ;; esac
+    [ "$value" != / ] || { preflight_fail "$key must not be the filesystem root"; continue; }
+    [ -d "$value" ] && [ -r "$value" ] || preflight_fail "$key must name a readable directory"
+  done
+  [ -w "$CB_HOME" ] || preflight_fail 'CB_HOME must be writable by the runtime account'
+  [ -w "$CB_CLAUDE_CONFIG_DIR" ] || preflight_fail 'CB_CLAUDE_CONFIG_DIR must be writable by the runtime account'
+  for key in CB_CLAUDE_BIN CB_NSJAIL_BIN CB_GH_BIN; do
+    value="${!key}"
+    case "$value" in /*) ;; *) preflight_fail "$key must be an absolute executable path"; continue ;; esac
+    [ -f "$value" ] && [ -x "$value" ] || preflight_fail "$key is not an executable file"
+  done
+  [ -f "$CB_CLAUDE_CONFIG_FILE" ] && [ -r "$CB_CLAUDE_CONFIG_FILE" ] && [ -w "$CB_CLAUDE_CONFIG_FILE" ] \
+    || preflight_fail 'CB_CLAUDE_CONFIG_FILE must name a readable, writable file (create an empty JSON object for a new OAuth setup)'
+  case "$CB_CLAUDE_CONFIG_FILE" in /*) ;; *) preflight_fail 'CB_CLAUDE_CONFIG_FILE must be absolute' ;; esac
+  for required in claude.kafel proxy.py bridge.py redact.pl crewboss-spawn.sh crewboss-launcher-gh.sh; do
+    [ -r "$CB_HOME/$required" ] || preflight_fail "runtime file missing: $required"
+  done
+  if [ "${CB_GOVERNED:-1}" = 1 ]; then
+    [ -x "$CB_HOME/gov/.claude/hooks/crewboss-gate.sh" ] \
+      || preflight_fail 'governance hook is missing or not executable (gov/.claude/hooks/crewboss-gate.sh)'
+    if command -v jq >/dev/null 2>&1; then
+      jq -e 'any(.hooks.PreToolUse[]?.hooks[]?; .type == "command" and (.command | contains("crewboss-gate.sh")))' \
+        "$CB_HOME/gov/.claude/settings.json" >/dev/null 2>&1 \
+        || preflight_fail 'governance settings must wire the crewboss PreToolUse hook'
+    fi
+  fi
+  [ -n "${GH_TOKEN:-}" ] || preflight_fail 'GH_TOKEN is required in the operator configuration'
+  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] \
+    || preflight_fail 'configure CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY for the agent provider'
+  if [ "$errors" -gt 0 ]; then exit 2; fi
+  if ! python3 -c 'import os,sys; sys.exit(len(os.fsencode(sys.argv[1]+"/run/work/18446744073709551615/proxy.sock")) >= 108)' "$CB_HOME"; then
+    preflight_fail 'CB_HOME is too long for the per-task Unix proxy socket; choose a shorter runtime path'
+    exit 2
+  fi
+  # Resolve provider symlinks before validating the read-only installation mount.
+  resolved_provider="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CB_CLAUDE_BIN")"
+  resolved_install="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CB_CLAUDE_INSTALL_DIR")"
+  resolved_gh="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CB_GH_BIN")"
+  case "$resolved_provider" in "$resolved_install"/*|/usr/*|/bin/*) ;; *)
+    preflight_fail 'CB_CLAUDE_INSTALL_DIR must contain the resolved Claude executable'; exit 2 ;;
+  esac
+  probe_mounts=()
+  for mount in /usr /bin /lib /lib64 /sbin /etc; do
+    [ ! -e "$mount" ] || probe_mounts+=(-R "$mount")
+  done
+  if ! "$CB_NSJAIL_BIN" -Mo -t 5 --rlimit_as max --rlimit_cpu max --rlimit_fsize max \
+      --seccomp_policy "$CB_HOME/claude.kafel" "${probe_mounts[@]}" \
+      -R "$CB_CLAUDE_INSTALL_DIR" -R "$resolved_gh:/crewboss-gh-real" \
+      -R "$CB_CLAUDE_CONFIG_DIR:$CB_AGENT_HOME/.claude" \
+      -R "$CB_CLAUDE_CONFIG_FILE:$CB_AGENT_HOME/.claude.json" -R "$CB_HOME:/cbnet" -B /dev \
+      -m none:/tmp:tmpfs:size=16M --really_quiet -- /bin/true; then
+    preflight_fail 'nsjail probe failed: check Linux user namespaces, mount permissions and the seccomp policy'
+    exit 2
+  fi
+  printf '[doctor] ok: runtime configuration, dependencies and sandbox probe\n'
+  exit 0
+fi
+
 CB_HOME="${CB_HOME:-${HOME}/cbnet}"
 # CB_API_PORT has NO default — process check only runs when explicitly set.
 CB_API_PORT="${CB_API_PORT:-}"
@@ -167,6 +242,12 @@ if [ -f "$MANIFEST" ]; then
     [ -f "$f" ] || continue
     bname="$(basename "$f")"
     [ "$bname" = "runtime-manifest.tsv" ] && continue
+    # The installer creates this relative executable alias. Its target is
+    # already hash-checked above; a different link or regular file is drift.
+    if [ "$bname" = gh ] && [ -L "$f" ] && [ "$(readlink "$f")" = gh-shim.sh ] \
+        && [ -n "${expected_sha[gh-shim.sh]+x}" ]; then
+      continue
+    fi
     if [ -z "${expected_sha[$bname]+x}" ]; then
       printf 'EXTRA: %s\n' "$bname"
       drift_names="$drift_names $bname"

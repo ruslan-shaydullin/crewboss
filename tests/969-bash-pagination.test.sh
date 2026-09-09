@@ -3,7 +3,7 @@
 # pagination/state-window class.  Charter: #995 / issue: #1015.
 #
 # Surfaces covered:
-#   - proto/r6/board-gh.sh
+#   - reference/runtime/board-gh.sh
 #   - reference/runtime/crewboss-launcher-gh.sh
 #
 # Defects guarded (live-only breakages that #969 shipped green):
@@ -227,7 +227,7 @@ fi
 # CB_969_MODE=source: assert against the REAL source tree + guarded live smoke.
 # (Owned by the impl leaves at merge; runnable opportunistically when MODE=source.)
 # ===========================================================================
-BOARD_SH="$ROOT/proto/r6/board-gh.sh"
+BOARD_SH="$ROOT/reference/runtime/board-gh.sh"
 LAUNCHER_SH="$ROOT/reference/runtime/crewboss-launcher-gh.sh"
 if [ "$MODE" = "source" ]; then
   echo "=== D5(static, real source tree): no 'gh issue list ... --paginate' ==="

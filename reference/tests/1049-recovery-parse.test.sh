@@ -29,7 +29,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="${LAUNCHER_OVERRIDE:-$HERE/../runtime/crewboss-launcher-gh.sh}"
 RECOVERY_PARSE="${RECOVERY_PARSE_OVERRIDE:-$HERE/../runtime/recovery-parse.sh}"
 TRIAGE_PARSE="$HERE/../runtime/triage-parse.sh"
-BOARD_GH_SRC="$HERE/../../proto/r6/board-gh.sh"
+BOARD_GH_SRC="$HERE/../../reference/runtime/board-gh.sh"
 LAUNCHABLE_SRC="$HERE/../../proto/r6/launchable.sh"
 
 pass=0; fail=0
